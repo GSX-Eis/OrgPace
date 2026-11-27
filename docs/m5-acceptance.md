@@ -2,7 +2,7 @@
 
 核对基线：`master e1e67c542ce047f669838770ccf3c41cc624db73`，2026-11-15；对应父 issue NERE-21，记录任务 NERE-628（S17）。M5 按 E26 只交付功能、文档和回归，不发布。S1～S14 及审查修复均已合并，S15、S16 已由技术规划核对为 done。
 
-本记录对照合并后的代码、自动测试和 issue 结果，不重复运行业务测试。自动测试证明确定性行为；外部 MCP 实测、模拟角色操作各有自己的验证边界，不能互相替代。测试路径均从仓库根目录起算，PR 链接均指向本仓库。
+本记录对照合并后的代码、自动测试和 issue 结果，不重复运行业务测试。自动测试证明确定性行为；外部 MCP 实测、模拟角色操作各有自己的验证边界，不能互相替代。测试路径均从仓库根目录起算，历史 PR 编号对应早期开发记录。
 
 ## 依据与时间口径
 
@@ -22,21 +22,21 @@
 
 | 条目 | 结论与 PR | 自动测试文件及覆盖内容 |
 | --- | --- | --- |
-| 1.1 输入上限 | 已交付，S1 NERE-612 [#267](https://github.com/ft1148137/employee-profile-platform/pull/267)。陈述 200 字、说明各 4000 字、一次 50 条；表单、助手、MCP、JSON 与直接修改复用常量，超限用中文说明。只改等级且保留已发布旧长陈述可通过；旧超长草稿可保存，送审前须缩短 | `backend/tests/api/routes/test_m5_input_limits.py`：各入口超限、边界值、旧陈述、存量草稿送审及 MCP schema；`frontend/tests/m5-input-limits.spec.ts`：字数、提示和阻止预览 |
-| 1.2 恢复在职的上级 | 已交付，S2 NERE-613 [#269](https://github.com/ft1148137/employee-profile-platform/pull/269)。管理助手恢复在职时提示直属上级未设置；取最近已结束的汇报线，原上级在职且无循环才允许恢复。网页员工详情通过原调岗预览确认，不自动恢复 | `backend/tests/api/routes/test_m5_rehire_manager.py`：多人提示、材料带上级、上级离职、循环、Transfer 审计、普通员工/经理拒绝及跨企业；`frontend/tests/m5-rehire-manager.spec.ts` |
-| 1.3 旧初稿先核对 | 已交付，S3 NERE-614 [#268](https://github.com/ft1148137/employee-profile-platform/pull/268)。未看最新预览返回 409，网页打开预览，助手返回新卡，核对后再送审；不静默对齐、不覆盖正式值。审查修复 NERE-630 [#274](https://github.com/ft1148137/employee-profile-platform/pull/274) 将提示时间按企业时区显示，去掉内部工具名 | `backend/tests/api/routes/test_m5_stale_draft_confirm.py`：直接提交、过期预览、MCP 和助手确认；`frontend/tests/m5-stale-draft-confirm.spec.ts`；`backend/tests/api/routes/test_m5_stale_draft_time.py`：两企业时区及结构化时间保持 ISO |
-| 1.4 部门能力重试 | 已交付，S4 NERE-615 [#266](https://github.com/ft1148137/employee-profile-platform/pull/266)。失败记录 `capability_failed_at`，按部门冷却 24 小时后再调用模型，成功清除失败时间；不再每小时重复失败调用 | `backend/tests/domains/test_m5_department_defaults_retry.py`：冷却、24 小时边界、部门隔离、成功重算、迁移往返 |
-| 1.5 撤回证据标题与流式错误 | 已交付，S5 NERE-616 [#264](https://github.com/ft1148137/employee-profile-platform/pull/264)。建议不展示已撤回证据标题；流式失败显示按异常类型映射的中文原因，不回传上游原文或凭据 | `backend/tests/api/routes/test_m5_proposal_titles_stream_errors.py`：有效/撤回证据、安全错误和模型失败；`frontend/tests/m5-stream-errors.spec.ts`：建议与错误显示 |
-| 1.6 企业时区 | 已交付，S6 NERE-617 [#271](https://github.com/ft1148137/employee-profile-platform/pull/271)。默认 `Asia/Shanghai`，管理员设置 IANA 时区；直接修改通知、无时区工作记录和待办按企业时区处理，三条指定 shortcut 已去除。待办每小时检查、企业当地 09:00 发出 | `backend/tests/api/routes/test_m5_org_timezone.py`：设置权限与审计、通知、材料预览、时间偏移、当地日期/小时和迁移往返；NERE-629 [#272](https://github.com/ft1148137/employee-profile-platform/pull/272) 的 `backend/tests/test_m5_worker_periodic_isolation.py` 隔离手动 worker 测试的定时任务 |
+| 1.1 输入上限 | 已交付，S1 NERE-612 历史 PR #267。陈述 200 字、说明各 4000 字、一次 50 条；表单、助手、MCP、JSON 与直接修改复用常量，超限用中文说明。只改等级且保留已发布旧长陈述可通过；旧超长草稿可保存，送审前须缩短 | `backend/tests/api/routes/test_m5_input_limits.py`：各入口超限、边界值、旧陈述、存量草稿送审及 MCP schema；`frontend/tests/m5-input-limits.spec.ts`：字数、提示和阻止预览 |
+| 1.2 恢复在职的上级 | 已交付，S2 NERE-613 历史 PR #269。管理助手恢复在职时提示直属上级未设置；取最近已结束的汇报线，原上级在职且无循环才允许恢复。网页员工详情通过原调岗预览确认，不自动恢复 | `backend/tests/api/routes/test_m5_rehire_manager.py`：多人提示、材料带上级、上级离职、循环、Transfer 审计、普通员工/经理拒绝及跨企业；`frontend/tests/m5-rehire-manager.spec.ts` |
+| 1.3 旧初稿先核对 | 已交付，S3 NERE-614 历史 PR #268。未看最新预览返回 409，网页打开预览，助手返回新卡，核对后再送审；不静默对齐、不覆盖正式值。审查修复 NERE-630 历史 PR #274 将提示时间按企业时区显示，去掉内部工具名 | `backend/tests/api/routes/test_m5_stale_draft_confirm.py`：直接提交、过期预览、MCP 和助手确认；`frontend/tests/m5-stale-draft-confirm.spec.ts`；`backend/tests/api/routes/test_m5_stale_draft_time.py`：两企业时区及结构化时间保持 ISO |
+| 1.4 部门能力重试 | 已交付，S4 NERE-615 历史 PR #266。失败记录 `capability_failed_at`，按部门冷却 24 小时后再调用模型，成功清除失败时间；不再每小时重复失败调用 | `backend/tests/domains/test_m5_department_defaults_retry.py`：冷却、24 小时边界、部门隔离、成功重算、迁移往返 |
+| 1.5 撤回证据标题与流式错误 | 已交付，S5 NERE-616 历史 PR #264。建议不展示已撤回证据标题；流式失败显示按异常类型映射的中文原因，不回传上游原文或凭据 | `backend/tests/api/routes/test_m5_proposal_titles_stream_errors.py`：有效/撤回证据、安全错误和模型失败；`frontend/tests/m5-stream-errors.spec.ts`：建议与错误显示 |
+| 1.6 企业时区 | 已交付，S6 NERE-617 历史 PR #271。默认 `Asia/Shanghai`，管理员设置 IANA 时区；直接修改通知、无时区工作记录和待办按企业时区处理，三条指定 shortcut 已去除。待办每小时检查、企业当地 09:00 发出 | `backend/tests/api/routes/test_m5_org_timezone.py`：设置权限与审计、通知、材料预览、时间偏移、当地日期/小时和迁移往返；NERE-629 历史 PR #272 的 `backend/tests/test_m5_worker_periodic_isolation.py` 隔离手动 worker 测试的定时任务 |
 
 ## 第 2 阶段：新功能 2.1～2.4
 
 | 条目 | 结论与 PR | 自动测试文件及覆盖内容 |
 | --- | --- | --- |
-| 2.1 按能力找人 | 已交付，S7 NERE-618 [#263](https://github.com/ft1148137/employee-profile-platform/pull/263)、S8 NERE-619 [#270](https://github.com/ft1148137/employee-profile-platform/pull/270)。网页、员工和经理助手（网页/飞书）、MCP 共用服务；仅管理员或管辖经理可查。支持能力、最低等级、状态、证据日期、部门对应能力及企业启用的三项档案字段；结果可打开画像，不含证据正文 | `backend/tests/api/routes/test_m5_people_search.py`：范围、筛选、分页、字段白名单、首次发布人和有效证据；`backend/tests/api/routes/test_m5_people_search_tools.py`：助手、飞书网关、MCP、身份篡改及真实 Pi 配合合成模型；`frontend/tests/m5-find-people.spec.ts` |
-| 2.2 覆盖率 | 已交付，S9 NERE-620 [#265](https://github.com/ft1148137/employee-profile-platform/pull/265)。管理员「员工」和经理「我的团队」上方共用覆盖率组件，显示未知、已发布、存在争议、待本人过目、待审批及积压。展开后每部门行只计本部门在职员工，点击过滤下方名单；上方合计保持全部可见范围。网页管理助手提供同口径统计；Jira 失败仅管理员可见 | `backend/tests/api/routes/test_m5_coverage.py`：状态与百分比、空部门、经理/管理员范围、跨企业、管理助手同口径、积压及最近同步；`frontend/tests/m5-coverage.spec.ts`：角色范围和部门过滤 |
-| 2.3 已发布画像导出 | 已交付，S10 NERE-621 [#273](https://github.com/ft1148137/employee-profile-platform/pull/273)。找人页与登录接口下载 CSV/JSON，导出全部可见在职员工的已发布判断，不随页面筛选或分页变化；无陈述、证据标题、原文、explanation 或受限正文。每次成功写 `profile.exported` 审计；字段协议见 [导出说明](profile-export.md) | `backend/tests/api/routes/test_m5_profile_export.py`：范围与拒绝、字段白名单、有效证据、首次批准人/时间、审计、105 条以上、空结果、BOM 及公式防护；`frontend/tests/m5-profile-export.spec.ts`：下载与页面过滤无关 |
-| 2.4 Worker 监控 | 已交付，S11 NERE-622 [#275](https://github.com/ft1148137/employee-profile-platform/pull/275)。worker 定时写单行心跳；健康检查先执行 Procrastinate 检查再判心跳，超过阈值失败，启动宽限 120 秒；网页状态卡及管理员网页/飞书提醒，同次停顿只提醒一次。NERE-631 [#276](https://github.com/ft1148137/employee-profile-platform/pull/276) 修正收件箱时间为企业当地时间 | `backend/tests/domains/test_m5_worker_heartbeat.py`：心跳、超时/恢复、健康命令、状态卡、跨企业提醒及去重、IM 投递、迁移往返、安全错误；`backend/tests/domains/test_m5_worker_alert_time.py`：北京/东京显示与去重 |
+| 2.1 按能力找人 | 已交付，S7 NERE-618 历史 PR #263、S8 NERE-619 历史 PR #270。网页、员工和经理助手（网页/飞书）、MCP 共用服务；仅管理员或管辖经理可查。支持能力、最低等级、状态、证据日期、部门对应能力及企业启用的三项档案字段；结果可打开画像，不含证据正文 | `backend/tests/api/routes/test_m5_people_search.py`：范围、筛选、分页、字段白名单、首次发布人和有效证据；`backend/tests/api/routes/test_m5_people_search_tools.py`：助手、飞书网关、MCP、身份篡改及真实 Pi 配合合成模型；`frontend/tests/m5-find-people.spec.ts` |
+| 2.2 覆盖率 | 已交付，S9 NERE-620 历史 PR #265。管理员「员工」和经理「我的团队」上方共用覆盖率组件，显示未知、已发布、存在争议、待本人过目、待审批及积压。展开后每部门行只计本部门在职员工，点击过滤下方名单；上方合计保持全部可见范围。网页管理助手提供同口径统计；Jira 失败仅管理员可见 | `backend/tests/api/routes/test_m5_coverage.py`：状态与百分比、空部门、经理/管理员范围、跨企业、管理助手同口径、积压及最近同步；`frontend/tests/m5-coverage.spec.ts`：角色范围和部门过滤 |
+| 2.3 已发布画像导出 | 已交付，S10 NERE-621 历史 PR #273。找人页与登录接口下载 CSV/JSON，导出全部可见在职员工的已发布判断，不随页面筛选或分页变化；无陈述、证据标题、原文、explanation 或受限正文。每次成功写 `profile.exported` 审计；字段协议见 [导出说明](profile-export.md) | `backend/tests/api/routes/test_m5_profile_export.py`：范围与拒绝、字段白名单、有效证据、首次批准人/时间、审计、105 条以上、空结果、BOM 及公式防护；`frontend/tests/m5-profile-export.spec.ts`：下载与页面过滤无关 |
+| 2.4 Worker 监控 | 已交付，S11 NERE-622 历史 PR #275。worker 定时写单行心跳；健康检查先执行 Procrastinate 检查再判心跳，超过阈值失败，启动宽限 120 秒；网页状态卡及管理员网页/飞书提醒，同次停顿只提醒一次。NERE-631 历史 PR #276 修正收件箱时间为企业当地时间 | `backend/tests/domains/test_m5_worker_heartbeat.py`：心跳、超时/恢复、健康命令、状态卡、跨企业提醒及去重、IM 投递、迁移往返、安全错误；`backend/tests/domains/test_m5_worker_alert_time.py`：北京/东京显示与去重 |
 
 ### 读取权限：逐入口自动测试覆盖
 
@@ -72,9 +72,9 @@ S4 → S6 → S11 依次引入 `b615001dc001 → b617001dc001 → b622001dc001`�
 
 | 子任务 | 结论、PR 与验证边界 |
 | --- | --- |
-| S12 NERE-623 插件指南 | 已交付 [#262](https://github.com/ft1148137/employee-profile-platform/pull/262)。[扩展指南](extending.md) 核对三类扩展，新增 [sample_csv Connector](../examples/connectors/sample_csv/README.md) 和合成 CSV；复用既有校验、转换、入库，不登记生产数据源。`backend/tests/connectors/test_m5_sample_connector.py` 验证重复同步、更正只追加、企业隔离与未关联账号。结果评论记录连接器/ingest/扩展点 51 passed、3 个既有真实 Jira 测试 skipped；读取命令输出正确 JSON。IM Event 清单遗漏 attachment/attachment_error、IM 节仍写本地全量测试要求作为指南遗留，未在本 PR 扩大修改 |
-| S13 NERE-624 外部 MCP | 已交付 [#277](https://github.com/ft1148137/employee-profile-platform/pull/277)，命令和逐步结果见 [外部 MCP 指南](mcp-clients.md)。宿主机独立 MCP Inspector 0.21.0（CLI 0.21.2）连接真实 HTTP 后端 `929b149`，nere624 数据库 15624、后端 18624，使用合成企业及本人个人令牌；未用 TestClient 代替实测、未调用模型。员工读画像/证据/词典→草稿→预览→提交→撤回→新建再提→回答问题全部成功，提交记录来源 mcp/client inspector，回答只追加 restricted 自述，正式画像未改。经理读待审/详情及找人成功；`test_mcp.py`、`test_manager_mcp.py` 18 项通过。未重验各厂商 OAuth 界面、模型自动选工具或经理提交审批决定；测试令牌已吊销，环境已清理 |
-| S14 NERE-625 角色与运维文档 | 已交付 [#278](https://github.com/ft1148137/employee-profile-platform/pull/278)，管理员、员工、经理指南、部署、运维及功能表已对齐 S1～S11；合入 S13 后补上外部 MCP 索引。结果评论记录 193 个相对文件链接有效、lint/类型/build/preflight 通过；合成响应页面核对只证明文案入口，不冒充真实数据库、模型或飞书联调。未恢复根 README，无依赖变更 |
+| S12 NERE-623 插件指南 | 已交付 历史 PR #262。[扩展指南](extending.md) 核对三类扩展，新增 [sample_csv Connector](../examples/connectors/sample_csv/README.md) 和合成 CSV；复用既有校验、转换、入库，不登记生产数据源。`backend/tests/connectors/test_m5_sample_connector.py` 验证重复同步、更正只追加、企业隔离与未关联账号。结果评论记录连接器/ingest/扩展点 51 passed、3 个既有真实 Jira 测试 skipped；读取命令输出正确 JSON。IM Event 清单遗漏 attachment/attachment_error、IM 节仍写本地全量测试要求作为指南遗留，未在本 PR 扩大修改 |
+| S13 NERE-624 外部 MCP | 已交付 历史 PR #277，命令和逐步结果见 [外部 MCP 指南](mcp-clients.md)。宿主机独立 MCP Inspector 0.21.0（CLI 0.21.2）连接真实 HTTP 后端 `929b149`，nere624 数据库 15624、后端 18624，使用合成企业及本人个人令牌；未用 TestClient 代替实测、未调用模型。员工读画像/证据/词典→草稿→预览→提交→撤回→新建再提→回答问题全部成功，提交记录来源 mcp/client inspector，回答只追加 restricted 自述，正式画像未改。经理读待审/详情及找人成功；`test_mcp.py`、`test_manager_mcp.py` 18 项通过。未重验各厂商 OAuth 界面、模型自动选工具或经理提交审批决定；测试令牌已吊销，环境已清理 |
+| S14 NERE-625 角色与运维文档 | 已交付 历史 PR #278，管理员、员工、经理指南、部署、运维及功能表已对齐 S1～S11；合入 S13 后补上外部 MCP 索引。结果评论记录 193 个相对文件链接有效、lint/类型/build/preflight 通过；合成响应页面核对只证明文案入口，不冒充真实数据库、模型或飞书联调。未恢复根 README，无依赖变更 |
 
 ## nere497 回归：S15、S16
 

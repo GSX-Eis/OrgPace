@@ -55,9 +55,9 @@ M2 两个用例保留 37 个 Task、73 个 WorkEvent、12 人请求、Cloud 分�
 
 ## 来源与后续
 
-- [PR #132](https://github.com/ft1148137/employee-profile-platform/pull/132)、[PR #136](https://github.com/ft1148137/employee-profile-platform/pull/136)。
-- [PR #138 backend](https://github.com/ft1148137/employee-profile-platform/actions/runs/42634643660)、[Playwright](https://github.com/ft1148137/employee-profile-platform/actions/runs/42634643773)、[Compose / 安装](https://github.com/ft1148137/employee-profile-platform/actions/runs/42634643706)。
-- [PR #140 backend](https://github.com/ft1148137/employee-profile-platform/actions/runs/42642759723)、[Playwright](https://github.com/ft1148137/employee-profile-platform/actions/runs/42642759802)、[Compose / 安装](https://github.com/ft1148137/employee-profile-platform/actions/runs/42642759774)。
+- 历史 PR #132、历史 PR #136。
+- 历史 PR #138 backend（run 42634643660）、Playwright（run 42634643773）、Compose / 安装（run 42634643706）。
+- 历史 PR #140 backend（run 42642759723）、Playwright（run 42642759802）、Compose / 安装（run 42642759774）。
 - [Playwright 官方 CI 安装步骤](https://playwright.dev/docs/ci-intro)、[pytest-xdist 分组语义](https://pytest-xdist.readthedocs.io/en/stable/distribution.html)。
 
 NERE-277 结果评论补充本 PR 各 job、主要步骤、整轮耗时和剩余瓶颈。覆盖率仍要求 90%，XLSX 性能仍要求 2 秒；重试、flaky 门禁、三片汇总和生产安装验证保持原样。

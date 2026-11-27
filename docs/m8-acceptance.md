@@ -6,19 +6,19 @@
 
 ## 依据与交付
 
-下列 PR 均已合并，核对时每个 PR 的 14 项 checks 均为 `SUCCESS`。表中链接直达相应后端或网页 CI；不是本任务本地运行结果。
+下列 PR 均已合并，核对时每个 PR 的 14 项 checks 均为 `SUCCESS`。表中记录相应历史后端或网页 CI run ID；不是本任务本地运行结果。
 
 | 子 issue | 交付与 PR | CI 证据 |
 | --- | --- | --- |
-| NERE-736 S1 | [#330](https://github.com/ft1148137/employee-profile-platform/pull/330)：离职固定错误码与随机密码文案检查 | [后端](https://github.com/ft1148137/employee-profile-platform/actions/runs/43890271379)、[网页](https://github.com/ft1148137/employee-profile-platform/actions/runs/43890271359) |
-| NERE-737 S2 | [#331](https://github.com/ft1148137/employee-profile-platform/pull/331)、[#332](https://github.com/ft1148137/employee-profile-platform/pull/332)：中文标签、当前权限内姓名及方案直达链接 | [后端](https://github.com/ft1148137/employee-profile-platform/actions/runs/43895953502)、[网页](https://github.com/ft1148137/employee-profile-platform/actions/runs/43895953048) |
-| NERE-738 S3 | [#333](https://github.com/ft1148137/employee-profile-platform/pull/333)：快捷修改、同快照重新校验与差异 | [后端](https://github.com/ft1148137/employee-profile-platform/actions/runs/43901250048)、[网页](https://github.com/ft1148137/employee-profile-platform/actions/runs/43901250100) |
-| NERE-739 S4 | [#334](https://github.com/ft1148137/employee-profile-platform/pull/334)：协调工具、决策循环、提案确认卡及 ADR-0047 | [后端](https://github.com/ft1148137/employee-profile-platform/actions/runs/43903646813) |
-| NERE-745 阶段修复 | [#335](https://github.com/ft1148137/employee-profile-platform/pull/335)：降低投入的确认角色、分阶段改期去重 | [后端](https://github.com/ft1148137/employee-profile-platform/actions/runs/43905152304) |
-| NERE-740 S5 | [#336](https://github.com/ft1148137/employee-profile-platform/pull/336)：需求理解卡、方案卡、按角色显示和手工入口 | [后端](https://github.com/ft1148137/employee-profile-platform/actions/runs/43915918475)、[网页](https://github.com/ft1148137/employee-profile-platform/actions/runs/43915918501) |
-| NERE-746 F1 | [#337](https://github.com/ft1148137/employee-profile-platform/pull/337)：角色／部门范围收窄后的历史回复与 Pi 状态保护 | [后端](https://github.com/ft1148137/employee-profile-platform/actions/runs/43923802142) |
-| NERE-741 S6 | [#338](https://github.com/ft1148137/employee-profile-platform/pull/338)：34 案例双模式评测、真实结果与未知调用计数修订 | [后端](https://github.com/ft1148137/employee-profile-platform/actions/runs/44095876730)；[真实模型报告](m8-coordination-eval.md) |
-| NERE-750 契约修复 | [#339](https://github.com/ft1148137/employee-profile-platform/pull/339)：模型可见参数契约、合成样本与失败分类 | [后端](https://github.com/ft1148137/employee-profile-platform/actions/runs/44100252004)；[独立验证](m8-coordination-eval.md#nere-750-独立验证2026-11-17) |
+| NERE-736 S1 | 历史 PR #330：离职固定错误码与随机密码文案检查 | 后端 CI（run 43890271379）、网页 CI（run 43890271359） |
+| NERE-737 S2 | 历史 PR #331、历史 PR #332：中文标签、当前权限内姓名及方案直达链接 | 后端 CI（run 43895953502）、网页 CI（run 43895953048） |
+| NERE-738 S3 | 历史 PR #333：快捷修改、同快照重新校验与差异 | 后端 CI（run 43901250048）、网页 CI（run 43901250100） |
+| NERE-739 S4 | 历史 PR #334：协调工具、决策循环、提案确认卡及 ADR-0047 | 后端 CI（run 43903646813） |
+| NERE-745 阶段修复 | 历史 PR #335：降低投入的确认角色、分阶段改期去重 | 后端 CI（run 43905152304） |
+| NERE-740 S5 | 历史 PR #336：需求理解卡、方案卡、按角色显示和手工入口 | 后端 CI（run 43915918475）、网页 CI（run 43915918501） |
+| NERE-746 F1 | 历史 PR #337：角色／部门范围收窄后的历史回复与 Pi 状态保护 | 后端 CI（run 43923802142） |
+| NERE-741 S6 | 历史 PR #338：34 案例双模式评测、真实结果与未知调用计数修订 | 后端 CI（run 44095876730）；[真实模型报告](m8-coordination-eval.md) |
+| NERE-750 契约修复 | 历史 PR #339：模型可见参数契约、合成样本与失败分类 | 后端 CI（run 44100252004）；[独立验证](m8-coordination-eval.md#nere-750-独立验证2026-11-17) |
 
 ## 父 issue 五条验收
 

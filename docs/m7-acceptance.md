@@ -6,16 +6,16 @@
 
 | 子 issue | 交付与 PR |
 | --- | --- |
-| NERE-691 S1 | [#310](https://github.com/ft1148137/employee-profile-platform/pull/310)：[ADR-0046](adr/0046-agent-planning-capacity.md)，明确 Agent / Planning / Capacity 的职责、写入与隐私边界 |
-| NERE-692 S2 | [#311](https://github.com/ft1148137/employee-profile-platform/pull/311)：E32 小部门答复正文负荷词校验 |
-| NERE-693 S3a | [#312](https://github.com/ft1148137/employee-profile-platform/pull/312)：周容量、旧值迁移、按周查看及经理确认 |
-| NERE-694 S3b | [#314](https://github.com/ft1148137/employee-profile-platform/pull/314)：按周申请修正、不可用日期 |
-| NERE-695 S4 与 NERE-705 修复 | [#313](https://github.com/ft1148137/employee-profile-platform/pull/313)、[#315](https://github.com/ft1148137/employee-profile-platform/pull/315)：分配写入校验、并发、过去周处理 |
-| NERE-701 S4b | [#319](https://github.com/ft1148137/employee-profile-platform/pull/319)：E29(4) 离职员工分配取消 |
-| NERE-696 S5a、NERE-697 S5b | [#317](https://github.com/ft1148137/employee-profile-platform/pull/317)、[#318](https://github.com/ft1148137/employee-profile-platform/pull/318)：Planning 对象、快照、校验、方案模拟 |
-| NERE-698 S6 | [#320](https://github.com/ft1148137/employee-profile-platform/pull/320)：评测集与[基线](m7-planning-baseline.md) |
-| NERE-699 文档更正 | [#321](https://github.com/ft1148137/employee-profile-platform/pull/321)：验收命令和负荷措辞更正 |
-| NERE-714 范围修复 | [#322](https://github.com/ft1148137/employee-profile-platform/pull/322)：Planning 历史快照按当前员工范围保护 |
+| NERE-691 S1 | 历史 PR #310：[ADR-0046](adr/0046-agent-planning-capacity.md)，明确 Agent / Planning / Capacity 的职责、写入与隐私边界 |
+| NERE-692 S2 | 历史 PR #311：E32 小部门答复正文负荷词校验 |
+| NERE-693 S3a | 历史 PR #312：周容量、旧值迁移、按周查看及经理确认 |
+| NERE-694 S3b | 历史 PR #314：按周申请修正、不可用日期 |
+| NERE-695 S4 与 NERE-705 修复 | 历史 PR #313、历史 PR #315：分配写入校验、并发、过去周处理 |
+| NERE-701 S4b | 历史 PR #319：E29(4) 离职员工分配取消 |
+| NERE-696 S5a、NERE-697 S5b | 历史 PR #317、历史 PR #318：Planning 对象、快照、校验、方案模拟 |
+| NERE-698 S6 | 历史 PR #320：评测集与[基线](m7-planning-baseline.md) |
+| NERE-699 文档更正 | 历史 PR #321：验收命令和负荷措辞更正 |
+| NERE-714 范围修复 | 历史 PR #322：Planning 历史快照按当前员工范围保护 |
 
 上述 M7 交付已合并至核对基线；#321、#322 是后续合并的更正与范围修复。本任务只更新验收和使用文档，不修改代码或测试。以下命令在 `backend/` 执行，事先设置 `COMPOSE_PROJECT_NAME=nere699`、`POSTGRES_PORT=15699`、`API_PORT=18699`，且 `DATABASE_URL` 指向 `localhost:15699/app`。测试均使用 `--no-cov`，全量覆盖率交给 CI。
 

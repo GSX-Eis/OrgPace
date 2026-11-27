@@ -1,44 +1,44 @@
 # M9 验收记录
 
-阶段审查基线为 `master 236b68fed78ad969bba73e6fc2b71e3a41b1c778`（2026-11-18，北京时间），包含 C5 / PR #367。父 issue 为 [NERE-639](mention://issue/01a1de41-e0de-76f4-a626-40c9e9b7ec68)，记录任务为 NERE-787。[阶段审查基线检查](https://github.com/ft1148137/employee-profile-platform/commit/236b68fed78ad969bba73e6fc2b71e3a41b1c778/checks)
+阶段审查基线为 `master 236b68fed78ad969bba73e6fc2b71e3a41b1c778`（2026-11-18，北京时间），包含 C5 / PR #367。父 issue 为 [NERE-639](mention://issue/01a1de41-e0de-76f4-a626-40c9e9b7ec68)，记录任务为 NERE-787。阶段审查基线检查（commit 236b68fe）
 
-已有自动化用例的结果见下表。Reviewer 在阶段审查基线发现四项业务缺口与初始画像 Playwright 失败；补证代码基线为 `master 3aea6591a13a6b036f44f58de886e4d138c972ef`（2026-11-18，北京时间），包含全部四项阶段修复（NERE-794～796、NERE-798）。[补证基线检查](https://github.com/ft1148137/employee-profile-platform/commit/3aea6591a13a6b036f44f58de886e4d138c972ef/checks) 四个业务回归及补证基线的五项 master 工作流（含后端三分片与 Playwright 三分片）均已全部通过。真实模型兜底后达标，原推荐仍有未达标案例。发布准备的证据覆盖源码许可和自签 HTTPS，制品再分发核验、公网证书实测和公开发布仍待处理。M9.1 人工回归见文末。
+已有自动化用例的结果见下表。Reviewer 在阶段审查基线发现四项业务缺口与初始画像 Playwright 失败；补证代码基线为 `master 3aea6591a13a6b036f44f58de886e4d138c972ef`（2026-11-18，北京时间），包含全部四项阶段修复（NERE-794～796、NERE-798）。补证基线检查（commit 3aea6591） 四个业务回归及补证基线的五项 master 工作流（含后端三分片与 Playwright 三分片）均已全部通过。真实模型兜底后达标，原推荐仍有未达标案例。发布准备的证据覆盖源码许可和自签 HTTPS，制品再分发核验、公网证书实测和公开发布仍待处理。M9.1 人工回归见文末。
 
 ## 依据与交付
 
 第 2 阶段核对前的 14 个前置子 issue 均为 done，16 个关联 PR 均已合并，必需检查通过；阶段审查后补齐的 4 个修复子 issue（NERE-794、NERE-795、NERE-796、NERE-798）也均已 done 且 PR 合并通过。#352、#353、#356、#359 的 Playwright 分片按路径规则跳过，汇总门禁成功。功能测试采用各 PR 与最新 master CI 结果，真实模型与 HTTPS 实测沿用原报告。本轮只核对文档、源码和检查记录，未在本地复跑 pytest、Playwright、Docker、真实飞书或真实模型。
 
-审查基线 `236b68fe` 的合并后 Playwright 在 Chromium shard 2 的初始画像流程失败（由 NERE-796 跟踪）。文档 PR #368 合并提交 `3cbec709` 的 Playwright 汇总通过（浏览器分片按文档路径跳过）、Compose 通过，Backend 分片 3 失败。随后 PR #370（`83522f79`）在验收表补标待修例外；PR #371（`538c7828`）合并后的 master 运行因新提交合入被取消；PR #372（`2e1fc34f`）的 master Playwright 三分片全部实跑通过，同提交 Backend 分片 3 因测试查询未限定需求且无序失败（由 NERE-798 跟踪）。PR #373 合并至 `3aea6591` 后，master 五项 push 工作流全部通过。[236b68fe 失败运行](https://github.com/ft1148137/employee-profile-platform/actions/runs/44240652893) · [3cbec709 汇总](https://github.com/ft1148137/employee-profile-platform/actions/runs/44242736634) · [3cbec709 Backend](https://github.com/ft1148137/employee-profile-platform/actions/runs/44242736679) · [3aea6591 后端](https://github.com/ft1148137/employee-profile-platform/actions/runs/44251122258) · [3aea6591 网页](https://github.com/ft1148137/employee-profile-platform/actions/runs/44251122184) · [3aea6591 Compose](https://github.com/ft1148137/employee-profile-platform/actions/runs/44251122213) · [3aea6591 Pi](https://github.com/ft1148137/employee-profile-platform/actions/runs/44251122143) · [3aea6591 Zizmor](https://github.com/ft1148137/employee-profile-platform/actions/runs/44251122250)
+审查基线 `236b68fe` 的合并后 Playwright 在 Chromium shard 2 的初始画像流程失败（由 NERE-796 跟踪）。文档 PR #368 合并提交 `3cbec709` 的 Playwright 汇总通过（浏览器分片按文档路径跳过）、Compose 通过，Backend 分片 3 失败。随后 PR #370（`83522f79`）在验收表补标待修例外；PR #371（`538c7828`）合并后的 master 运行因新提交合入被取消；PR #372（`2e1fc34f`）的 master Playwright 三分片全部实跑通过，同提交 Backend 分片 3 因测试查询未限定需求且无序失败（由 NERE-798 跟踪）。PR #373 合并至 `3aea6591` 后，master 五项 push 工作流全部通过。236b68fe 失败运行（run 44240652893） · 3cbec709 汇总（run 44242736634） · 3cbec709 Backend（run 44242736679） · 3aea6591 后端（run 44251122258） · 3aea6591 网页（run 44251122184） · 3aea6591 Compose（run 44251122213） · 3aea6591 Pi（run 44251122143） · 3aea6591 Zizmor（run 44251122250）
 
 | 子 issue | 交付与 PR | CI 证据 |
 | --- | --- | --- |
-| NERE-775 S1 | [#355](https://github.com/ft1148137/employee-profile-platform/pull/355) 校验器规则兜底和原方案链接 | [后端](https://github.com/ft1148137/employee-profile-platform/actions/runs/44196244618)、[网页](https://github.com/ft1148137/employee-profile-platform/actions/runs/44196244704) |
-| NERE-776 E1 | [#359](https://github.com/ft1148137/employee-profile-platform/pull/359) 真实模型双模式评测报告 | [后端](https://github.com/ft1148137/employee-profile-platform/actions/runs/44203345664)、[预检](https://github.com/ft1148137/employee-profile-platform/actions/runs/44203345739) |
-| NERE-777 S2 | [#354](https://github.com/ft1148137/employee-profile-platform/pull/354) 接力锁定与方案页共用夹具 | [后端](https://github.com/ft1148137/employee-profile-platform/actions/runs/44193456747)、[网页](https://github.com/ft1148137/employee-profile-platform/actions/runs/44193456751) |
-| NERE-778 S3 | [#360](https://github.com/ft1148137/employee-profile-platform/pull/360) 工具读取范围与 A 方正文提示 | [后端](https://github.com/ft1148137/employee-profile-platform/actions/runs/44204060504) |
-| NERE-779 S4 | [#361](https://github.com/ft1148137/employee-profile-platform/pull/361) 飞书发送超时与 worker 并发断言 | [后端](https://github.com/ft1148137/employee-profile-platform/actions/runs/44207039572) |
-| NERE-780 R1 | [#352](https://github.com/ft1148137/employee-profile-platform/pull/352) 许可证、贡献指南和发布草稿 | [预检](https://github.com/ft1148137/employee-profile-platform/actions/runs/44191657452) |
-| NERE-781 R2 | [#353](https://github.com/ft1148137/employee-profile-platform/pull/353)、[#356](https://github.com/ft1148137/employee-profile-platform/pull/356) 自签 HTTPS 实测、项目隔离和 HTTP-01 补交 | [#353 安装](https://github.com/ft1148137/employee-profile-platform/actions/runs/44191197547)、[#356 安装](https://github.com/ft1148137/employee-profile-platform/actions/runs/44194490182) |
-| NERE-782 C1 | [#357](https://github.com/ft1148137/employee-profile-platform/pull/357) 方案提议、预占、原子承诺和迁移 | [后端](https://github.com/ft1148137/employee-profile-platform/actions/runs/44196995270) |
-| NERE-783 C2 | [#358](https://github.com/ft1148137/employee-profile-platform/pull/358) 网页方案协商和冲突提示 | [后端](https://github.com/ft1148137/employee-profile-platform/actions/runs/44202651955)、[网页](https://github.com/ft1148137/employee-profile-platform/actions/runs/44202652258) |
-| NERE-784 C3 | [#363](https://github.com/ft1148137/employee-profile-platform/pull/363) 助手及飞书确认卡、MCP 承诺保护 | [后端](https://github.com/ft1148137/employee-profile-platform/actions/runs/44211268436) |
-| NERE-785 C4 | [#366](https://github.com/ft1148137/employee-profile-platform/pull/366) 借调审批和匿名分配 | [后端](https://github.com/ft1148137/employee-profile-platform/actions/runs/44234087933)、[网页](https://github.com/ft1148137/employee-profile-platform/actions/runs/44234087895) |
-| NERE-786 C5 | [#367](https://github.com/ft1148137/employee-profile-platform/pull/367) 已生效安排的正式变更 | [后端](https://github.com/ft1148137/employee-profile-platform/actions/runs/44239173978)、[网页](https://github.com/ft1148137/employee-profile-platform/actions/runs/44239173900) |
-| NERE-788 隐私修复 | [#364](https://github.com/ft1148137/employee-profile-platform/pull/364)、[#365](https://github.com/ft1148137/employee-profile-platform/pull/365) 自由文本与升级前会话保护 | [#364 后端](https://github.com/ft1148137/employee-profile-platform/actions/runs/44214095349)、[#365 后端](https://github.com/ft1148137/employee-profile-platform/actions/runs/44217580596) |
-| NERE-789 接力修复 | [#362](https://github.com/ft1148137/employee-profile-platform/pull/362) 全程参与者与接力共存 | [后端](https://github.com/ft1148137/employee-profile-platform/actions/runs/44211869389) |
-| NERE-794 提议轮次和审批修复 | [#372](https://github.com/ft1148137/employee-profile-platform/pull/372) 普通答复轮次、审批来源和借调跨方拒绝，合并提交 `2e1fc34f` | [后端重跑](https://github.com/ft1148137/employee-profile-platform/actions/runs/44244499661/attempts/2)、[网页](https://github.com/ft1148137/employee-profile-platform/actions/runs/44244499627) |
-| NERE-795 开始日期修复 | [#369](https://github.com/ft1148137/employee-profile-platform/pull/369) 已承诺段的开始日期走正式变更，合并提交 `65acbc0f` | [后端](https://github.com/ft1148137/employee-profile-platform/actions/runs/44242388416)、[网页](https://github.com/ft1148137/employee-profile-platform/actions/runs/44242388420) |
-| NERE-796 初始画像浏览器回归 | [#371](https://github.com/ft1148137/employee-profile-platform/pull/371) 假模型按工具分流与重试数据隔离，合并提交 `538c7828` | [后端](https://github.com/ft1148137/employee-profile-platform/actions/runs/44244046880)、[网页重跑](https://github.com/ft1148137/employee-profile-platform/actions/runs/44244047067/attempts/2) |
-| NERE-798 MCP 事件来源测试修复 | [#373](https://github.com/ft1148137/employee-profile-platform/pull/373) 限定需求与排序并独立断言 MCP 来源，合并提交 `3aea6591` | [后端](https://github.com/ft1148137/employee-profile-platform/actions/runs/44249884159)、[网页](https://github.com/ft1148137/employee-profile-platform/actions/runs/44249884225) |
-| NERE-799 降级历史保护（E41／D-024） | [#375](https://github.com/ft1148137/employee-profile-platform/pull/375) `c782001bc001` `downgrade()` 并发锁与全库协商／审批历史阻断，合并提交 `e5c38c38` | [后端](https://github.com/ft1148137/employee-profile-platform/actions/runs/44260062786)、[网页](https://github.com/ft1148137/employee-profile-platform/actions/runs/44260062844)，及本地独立测试库 9 项迁移与降级用例通过（详见下文） |
+| NERE-775 S1 | 历史 PR #355 校验器规则兜底和原方案链接 | 后端 CI（run 44196244618）、网页 CI（run 44196244704） |
+| NERE-776 E1 | 历史 PR #359 真实模型双模式评测报告 | 后端 CI（run 44203345664）、预检 CI（run 44203345739） |
+| NERE-777 S2 | 历史 PR #354 接力锁定与方案页共用夹具 | 后端 CI（run 44193456747）、网页 CI（run 44193456751） |
+| NERE-778 S3 | 历史 PR #360 工具读取范围与 A 方正文提示 | 后端 CI（run 44204060504） |
+| NERE-779 S4 | 历史 PR #361 飞书发送超时与 worker 并发断言 | 后端 CI（run 44207039572） |
+| NERE-780 R1 | 历史 PR #352 许可证、贡献指南和发布草稿 | 预检 CI（run 44191657452） |
+| NERE-781 R2 | 历史 PR #353、历史 PR #356 自签 HTTPS 实测、项目隔离和 HTTP-01 补交 | #353 安装 CI（run 44191197547）、#356 安装 CI（run 44194490182） |
+| NERE-782 C1 | 历史 PR #357 方案提议、预占、原子承诺和迁移 | 后端 CI（run 44196995270） |
+| NERE-783 C2 | 历史 PR #358 网页方案协商和冲突提示 | 后端 CI（run 44202651955）、网页 CI（run 44202652258） |
+| NERE-784 C3 | 历史 PR #363 助手及飞书确认卡、MCP 承诺保护 | 后端 CI（run 44211268436） |
+| NERE-785 C4 | 历史 PR #366 借调审批和匿名分配 | 后端 CI（run 44234087933）、网页 CI（run 44234087895） |
+| NERE-786 C5 | 历史 PR #367 已生效安排的正式变更 | 后端 CI（run 44239173978）、网页 CI（run 44239173900） |
+| NERE-788 隐私修复 | 历史 PR #364、历史 PR #365 自由文本与升级前会话保护 | #364 后端 CI（run 44214095349）、#365 后端 CI（run 44217580596） |
+| NERE-789 接力修复 | 历史 PR #362 全程参与者与接力共存 | 后端 CI（run 44211869389） |
+| NERE-794 提议轮次和审批修复 | 历史 PR #372 普通答复轮次、审批来源和借调跨方拒绝，合并提交 `2e1fc34f` | 后端重跑 CI（run 44244499661，attempt 2）、网页 CI（run 44244499627） |
+| NERE-795 开始日期修复 | 历史 PR #369 已承诺段的开始日期走正式变更，合并提交 `65acbc0f` | 后端 CI（run 44242388416）、网页 CI（run 44242388420） |
+| NERE-796 初始画像浏览器回归 | 历史 PR #371 假模型按工具分流与重试数据隔离，合并提交 `538c7828` | 后端 CI（run 44244046880）、网页重跑 CI（run 44244047067，attempt 2） |
+| NERE-798 MCP 事件来源测试修复 | 历史 PR #373 限定需求与排序并独立断言 MCP 来源，合并提交 `3aea6591` | 后端 CI（run 44249884159）、网页 CI（run 44249884225） |
+| NERE-799 降级历史保护（E41／D-024） | 历史 PR #375 `c782001bc001` `downgrade()` 并发锁与全库协商／审批历史阻断，合并提交 `e5c38c38` | 后端 CI（run 44260062786）、网页 CI（run 44260062844），及本地独立测试库 9 项迁移与降级用例通过（详见下文） |
 
 ### 初始画像与主干 CI 补证
 
-NERE-796 复现了部门能力默认值调用 `submit_department_capabilities` 被旧假模型当作画像起草处理、访问不存在的 `records`，以及原重试复用首轮已被占用邮箱而收到 422。#371 按工具名区分部门能力默认值和画像起草，保留原合成邮箱完成 Jira 自动关联，再用每次运行专用邮箱签发账号。修复 PR 的 Chromium shard 2 报告与后续主干实跑中，[initial-profiles.spec.ts](../frontend/tests/initial-profiles.spec.ts) 的「the fake model accepts department defaults without drafting records」与「employee reviews initial profile and updates on desktop and mobile」均实跑通过。[PR Playwright 运行](https://github.com/ft1148137/employee-profile-platform/actions/runs/44244047067/attempts/2)
+NERE-796 复现了部门能力默认值调用 `submit_department_capabilities` 被旧假模型当作画像起草处理、访问不存在的 `records`，以及原重试复用首轮已被占用邮箱而收到 422。#371 按工具名区分部门能力默认值和画像起草，保留原合成邮箱完成 Jira 自动关联，再用每次运行专用邮箱签发账号。修复 PR 的 Chromium shard 2 报告与后续主干实跑中，[initial-profiles.spec.ts](../frontend/tests/initial-profiles.spec.ts) 的「the fake model accepts department defaults without drafting records」与「employee reviews initial profile and updates on desktop and mobile」均实跑通过。PR Playwright 运行（run 44244047067，attempt 2）
 
-#371 合并提交 `538c7828` 的 master 运行因新提交合入被取消。[取消的主干 Playwright](https://github.com/ft1148137/employee-profile-platform/actions/runs/44246037538) 随后提交 `2e1fc34f` 的 master Playwright 三个分片全部实跑并通过，同提交 `Test Backend` 分片 3 因 `test_mcp_can_release_pending_proposal_without_accepting[follow_up]` 读到先前的 `web` 事件而失败（无 `ORDER BY` 且未限定需求，由 NERE-798 跟踪）。[2e1fc34f 主干 Playwright](https://github.com/ft1148137/employee-profile-platform/actions/runs/44246496911) · [2e1fc34f 主干后端失败](https://github.com/ft1148137/employee-profile-platform/actions/runs/44246496816)
+#371 合并提交 `538c7828` 的 master 运行因新提交合入被取消。取消的主干 Playwright（run 44246037538） 随后提交 `2e1fc34f` 的 master Playwright 三个分片全部实跑并通过，同提交 `Test Backend` 分片 3 因 `test_mcp_can_release_pending_proposal_without_accepting[follow_up]` 读到先前的 `web` 事件而失败（无 `ORDER BY` 且未限定需求，由 NERE-798 跟踪）。2e1fc34f 主干 Playwright（run 44246496911） · 2e1fc34f 主干后端失败（run 44246496816）
 
-#373 在 [test_m9_proposal.py](../backend/tests/api/routes/test_m9_proposal.py) 为测试辅助查询补齐需求过滤与确定性排序，并在 [test_m9_proposal_entries.py](../backend/tests/api/routes/test_m9_proposal_entries.py) 保留先前 `web` 的 `REPLIED` 事件后按操作类型独立断言 `via == "mcp"`（覆盖 `follow_up` 与 `withdraw`）。合并到补证基线 `3aea6591` 后，master 五项 push 工作流全部通过（`Test Backend` 三分片与汇总、`Playwright Tests` 三分片与汇总、`Test Docker Compose`、`Test Pi research sample`、`Zizmor`）。[3aea6591 主干后端](https://github.com/ft1148137/employee-profile-platform/actions/runs/44251122258) · [3aea6591 主干 Playwright](https://github.com/ft1148137/employee-profile-platform/actions/runs/44251122184)
+#373 在 [test_m9_proposal.py](../backend/tests/api/routes/test_m9_proposal.py) 为测试辅助查询补齐需求过滤与确定性排序，并在 [test_m9_proposal_entries.py](../backend/tests/api/routes/test_m9_proposal_entries.py) 保留先前 `web` 的 `REPLIED` 事件后按操作类型独立断言 `via == "mcp"`（覆盖 `follow_up` 与 `withdraw`）。合并到补证基线 `3aea6591` 后，master 五项 push 工作流全部通过（`Test Backend` 三分片与汇总、`Playwright Tests` 三分片与汇总、`Test Docker Compose`、`Test Pi research sample`、`Zizmor`）。3aea6591 主干后端（run 44251122258） · 3aea6591 主干 Playwright（run 44251122184）
 
 ## 父 issue 验收逐条对照
 
