@@ -644,6 +644,7 @@ def test_change_simulation_rejects_overbooking(client: TestClient, case: tuple) 
     assert "over_capacity" in {finding["code"] for finding in option["findings"]}
 
 
+@pytest.mark.slow
 def test_change_commitment_notifies_only_employees_with_segment_changes(
     client: TestClient, case: tuple, db: Session
 ) -> None:

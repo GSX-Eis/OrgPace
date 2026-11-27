@@ -70,6 +70,11 @@ def sending(db: Session, demo: tuple) -> Generator[tuple]:
         pool.dispose()
 
 
+@pytest.mark.unit
+def test_feishu_send_timeout_default_is_ten_seconds() -> None:
+    assert actions.FEISHU_SEND_TIMEOUT_SECONDS == 10.0
+
+
 @pytest.mark.parametrize("outcome", ["success", "error", "timeout"])
 def test_send_releases_connection_and_pending_role_change(
     sending: tuple,
@@ -77,6 +82,7 @@ def test_send_releases_connection_and_pending_role_change(
     monkeypatch: pytest.MonkeyPatch,
     outcome: str,
 ) -> None:
+    assert actions.FEISHU_SEND_TIMEOUT_SECONDS == 10.0
     monkeypatch.setattr(actions, "FEISHU_SEND_TIMEOUT_SECONDS", 0.4)
     p, reply, incoming, pool, grant_id, admin_id = sending
     writer_started = ThreadEvent()

@@ -357,13 +357,9 @@ def test_health_command_and_overview(
         db.add(WorkerHeartbeat(beat_at=now - timedelta(seconds=seconds)))
         db.commit()
     monkeypatch.setattr(overview, "utc_now", lambda: now)
-    result = subprocess.run(
-        [sys.executable, "-m", "app.worker.health"],
-        capture_output=True,
-        text=True,
-    )
+    monkeypatch.setattr(health, "utc_now", lambda: now)
     healthy = seconds is not None and seconds <= 300
-    assert result.returncode == (0 if healthy else 1), result.stderr
+    assert health.main() == (0 if healthy else 1)
     member = tenants[0][0]
     headers = {
         "Authorization": f"Bearer {create_access_token(member.user_id, timedelta(minutes=5))}"

@@ -138,83 +138,85 @@ def readonly_hierarchy(db: Session) -> Generator[tuple]:
         yield data
 
 
+@pytest.mark.parametrize(
+    "manager,org_index,visible",
+    [(0, 0, {0, 1, 2}), (1, 0, {1, 2}), (2, 0, {3}), (3, 1, {0, 1, 2})],
+    ids=["org0-root", "org0-mid", "org0-other", "org1-root"],
+)
 def test_manager_hierarchy_read_scope(
-    readonly_hierarchy: tuple, client: TestClient
+    readonly_hierarchy: tuple,
+    client: TestClient,
+    manager: int,
+    org_index: int,
+    visible: set[int],
 ) -> None:
     orgs, departments, employees, users, evidence = readonly_hierarchy
-    for manager, org_index, visible in (
-        (0, 0, {0, 1, 2}),
-        (1, 0, {1, 2}),
-        (2, 0, {3}),
-        (3, 1, {0, 1, 2}),
+    auth = headers(users[manager])
+    url = f"/api/v1/orgs/{orgs[org_index].id}"
+    memberships = client.get("/api/v1/me/memberships", headers=auth).json()
+    assert set(memberships[0]["managed_department_ids"]) == {
+        str(departments[org_index][i].id) for i in visible
+    }
+    for params in (
+        {},
+        {"q": "合成员工"},
+        {"q": "合成员工2"},
+        *(
+            {"department_id": str(dept.id), "q": "合成员工"}
+            for dept in departments[org_index]
+        ),
     ):
-        auth = headers(users[manager])
-        url = f"/api/v1/orgs/{orgs[org_index].id}"
-        memberships = client.get("/api/v1/me/memberships", headers=auth).json()
-        assert set(memberships[0]["managed_department_ids"]) == {
-            str(departments[org_index][i].id) for i in visible
-        }
-        for params in (
-            {},
-            {"q": "合成员工"},
-            {"q": "合成员工2"},
-            *(
-                {"department_id": str(dept.id), "q": "合成员工"}
-                for dept in departments[org_index]
-            ),
-        ):
-            expected = {
-                str(e.id)
-                for i, e in enumerate(employees[org_index])
-                if i in visible
-                and (
-                    "department_id" not in params
-                    or str(e.department_id) == params["department_id"]
-                )
-                and ("q" not in params or params["q"] in e.display_name)
-            }
-            response = client.get(f"{url}/employees", params=params, headers=auth)
-            assert response.status_code == 200
-            data = response.json()
-            assert data["count"] == len(expected)
-            assert {e["id"] for e in data["data"]} == expected
-        for tenant_index, staff in enumerate(employees):
-            for index, employee in enumerate(staff):
-                expected_status = (
-                    200 if tenant_index == org_index and index in visible else 404
-                )
-                for suffix in ("", "/profile", "/profile-versions", "/evidence"):
-                    response = client.get(
-                        f"{url}/employees/{employee.id}{suffix}", headers=auth
-                    )
-                    assert response.status_code == expected_status
-                    if expected_status == 200 and index == 2:
-                        if not suffix:
-                            assert (
-                                response.json()["progress"]["fill_status"]
-                                == "not_started"
-                            )
-                            assert response.json()["latest_published"]["revision"] == 1
-                        if suffix == "/evidence":
-                            assert response.json()["count"] == 3
-                            assert all(
-                                not row["redacted"] for row in response.json()["data"]
-                            )
-            expected_status = 200 if tenant_index == org_index and 2 in visible else 404
-            assert (
-                client.get(
-                    f"{url}/employees/{staff[2].id}/profile-versions/1", headers=auth
-                ).status_code
-                == expected_status
+        expected = {
+            str(e.id)
+            for i, e in enumerate(employees[org_index])
+            if i in visible
+            and (
+                "department_id" not in params
+                or str(e.department_id) == params["department_id"]
             )
-            for record in evidence[tenant_index]:
-                response = client.get(f"{url}/evidence/{record.id}", headers=auth)
+            and ("q" not in params or params["q"] in e.display_name)
+        }
+        response = client.get(f"{url}/employees", params=params, headers=auth)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["count"] == len(expected)
+        assert {e["id"] for e in data["data"]} == expected
+    for tenant_index, staff in enumerate(employees):
+        for index, employee in enumerate(staff):
+            expected_status = (
+                200 if tenant_index == org_index and index in visible else 404
+            )
+            for suffix in ("", "/profile", "/profile-versions", "/evidence"):
+                response = client.get(
+                    f"{url}/employees/{employee.id}{suffix}", headers=auth
+                )
                 assert response.status_code == expected_status
-                if expected_status == 200:
-                    assert response.json()["content"] == {"text": "合成正文"}
-                    assert response.json()["redacted"] is False
-        foreign_url = f"/api/v1/orgs/{orgs[1 - org_index].id}/employees"
-        assert client.get(foreign_url, headers=auth).status_code == 404
+                if expected_status == 200 and index == 2:
+                    if not suffix:
+                        assert (
+                            response.json()["progress"]["fill_status"] == "not_started"
+                        )
+                        assert response.json()["latest_published"]["revision"] == 1
+                    if suffix == "/evidence":
+                        assert response.json()["count"] == 3
+                        assert all(
+                            not row["redacted"] for row in response.json()["data"]
+                        )
+        expected_status = 200 if tenant_index == org_index and 2 in visible else 404
+        assert (
+            client.get(
+                f"{url}/employees/{staff[2].id}/profile-versions/1", headers=auth
+            ).status_code
+            == expected_status
+        )
+        for record in evidence[tenant_index]:
+            response = client.get(f"{url}/evidence/{record.id}", headers=auth)
+            assert response.status_code == expected_status
+            if expected_status == 200:
+                assert response.json()["content"] == {"text": "合成正文"}
+                assert response.json()["redacted"] is False
+    foreign_url = f"/api/v1/orgs/{orgs[1 - org_index].id}/employees"
+    assert client.get(foreign_url, headers=auth).status_code == 404
 
 
 def test_scope_changes_on_next_request(

@@ -84,7 +84,7 @@ def test_deadline_keeps_attachment_available_next_turn(
     assert row.lease_until is None
 
 
-@pytest.mark.parametrize("kind", ["bot", "admin"])
+@pytest.mark.parametrize("kind", [pytest.param("bot", marks=pytest.mark.slow), "admin"])
 def test_read_attachment_scope_expiry_and_notices(
     demo: tuple, db: Session, kind: attachments.SessionKind
 ) -> None:
@@ -121,9 +121,9 @@ def test_read_attachment_scope_expiry_and_notices(
     ):
         assert "error" in json.dumps(read(principal, session, text.id))
         db.rollback()
-    employee = principal_for(db, p.org_id)
-    employee_session = store.create_session(db, employee)
     if kind == "admin":
+        employee = principal_for(db, p.org_id)
+        employee_session = store.create_session(db, employee)
         assert "error" in tools.call(
             db,
             employee,

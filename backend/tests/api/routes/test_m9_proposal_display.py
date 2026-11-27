@@ -290,6 +290,7 @@ def _add_department_employee(
     return employee
 
 
+@pytest.mark.slow
 def test_anonymous_change_aligns_numbers_and_marks_replacement(
     case: tuple, client: TestClient, db: Session
 ) -> None:
