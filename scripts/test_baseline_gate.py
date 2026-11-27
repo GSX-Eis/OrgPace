@@ -385,6 +385,18 @@ def pytest_configure(config: Any) -> None:
         configure_evidence(config, collect, results)
 
 
+def _strip_loadgroup_suffix(nodeid: str) -> str:
+    """Remove pytest-xdist --dist=loadgroup's trailing ``@<group>`` suffix."""
+    file_part, sep, item_part = nodeid.partition("::")
+    if not sep:
+        return nodeid
+    search_start = item_part.rfind("]") + 1
+    at_idx = item_part.find("@", search_start)
+    if at_idx == -1:
+        return nodeid
+    return f"{file_part}::{item_part[:at_idx]}"
+
+
 def configure_evidence(config: Any, collect: str | None, results: str | None) -> None:
     from pytest import UsageError, hookimpl
 
@@ -411,6 +423,8 @@ def configure_evidence(config: Any, collect: str | None, results: str | None) ->
         config.option.numprocesses = 0
         config.option.dist = "no"
 
+    strip_loadgroup = getattr(config.option, "dist", None) == "loadgroup"
+
     class Evidence:
         def __init__(self) -> None:
             self.invalid = False
@@ -426,8 +440,13 @@ def configure_evidence(config: Any, collect: str | None, results: str | None) ->
             self.invalid |= error is not None
 
         def pytest_runtest_logreport(self, report: Any) -> None:
+            nodeid = (
+                _strip_loadgroup_suffix(report.nodeid)
+                if strip_loadgroup
+                else report.nodeid
+            )
             if report.when == "teardown":
-                self.finished.add(report.nodeid)
+                self.finished.add(nodeid)
             if report.failed:
                 outcome = "failed" if report.when == "call" else "error"
             elif report.skipped:
@@ -436,7 +455,7 @@ def configure_evidence(config: Any, collect: str | None, results: str | None) ->
                 outcome = "xpassed" if hasattr(report, "wasxfail") else "passed"
             else:
                 return
-            merge_outcome(self.outcomes, report.nodeid, outcome)
+            merge_outcome(self.outcomes, nodeid, outcome)
 
         def pytest_sessionfinish(self, session: Any, exitstatus: int) -> None:
             if self.invalid or exitstatus not in {0, 1, 5}:

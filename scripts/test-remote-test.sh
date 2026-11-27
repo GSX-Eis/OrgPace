@@ -404,6 +404,7 @@ expect_failure 'mock start reached' env COMPOSE_PROJECT_NAME=nere123-review CLOU
 
 # IAP is mandatory, ControlMaster reuse and SSH keepalive/timeout hardening must remain enabled.
 grep -q -- '--tunnel-through-iap' "$runner"
+grep -q -- 'env CLOUD_TEST_QUEUE_SLOTS=' "$runner"
 grep -q -- '-oControlMaster=auto' "$runner"
 grep -q -- '-oControlPersist=10m' "$runner"
 grep -q -- '-oControlPath=' "$runner"

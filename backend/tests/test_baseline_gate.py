@@ -147,6 +147,23 @@ def test_evidence_parsers_and_priority_merge() -> None:
     assert outcomes == {OLD: "error"}
 
 
+def test_strip_loadgroup_suffix_preserves_parametrized_at_signs() -> None:
+    assert (
+        gate._strip_loadgroup_suffix("tests/acceptance/test_m2.py::test_case@model")
+        == "tests/acceptance/test_m2.py::test_case"
+    )
+    assert (
+        gate._strip_loadgroup_suffix(
+            "tests/acceptance/test_m2.py::test_login[user@example.com]@model"
+        )
+        == "tests/acceptance/test_m2.py::test_login[user@example.com]"
+    )
+    assert (
+        gate._strip_loadgroup_suffix("tests/test_auth.py::test_login[user@example.com]")
+        == "tests/test_auth.py::test_login[user@example.com]"
+    )
+
+
 def test_cli_init_verify_multi_shard_and_run_end_to_end(tmp_path: Path) -> None:
     baseline_path = tmp_path / "baseline_failures.json"
     init_res = subprocess.run(
