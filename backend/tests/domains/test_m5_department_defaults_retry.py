@@ -8,6 +8,7 @@ from sqlmodel import Session, select
 
 from app.authz.principal import Principal
 from app.core.secrets import SecretUnavailable
+from app.domains.audit.models import AuditEvent
 from app.domains.base import utc_now
 from app.domains.capability import department_defaults as d
 from app.domains.capability.service import activate_template, read_editor, save_version
@@ -62,12 +63,16 @@ def test_failure_cools_down_then_retries_and_clears(
     failed_call = config if isinstance(failure, SecretUnavailable) else generate
     failed_call.side_effect = failure
     d.fill_department_defaults(p)
+    db.refresh(department)
+    failed_at = department.capability_failed_at
+    assert failed_at is not None
+    assert failed_at >= utc_now() - timedelta(minutes=1)
+    assert department.capability_source is None
+
     failed_call.side_effect = None
     d.fill_department_defaults(p)
-    assert failed_call.call_count == 1
     db.refresh(department)
-    assert department.capability_failed_at is not None
-    assert department.capability_failed_at >= utc_now() - timedelta(minutes=1)
+    assert department.capability_failed_at == failed_at
     assert department.capability_source is None
 
     department.capability_failed_at = utc_now() - timedelta(hours=25)
@@ -75,7 +80,6 @@ def test_failure_cools_down_then_retries_and_clears(
     db.commit()
     d.fill_department_defaults(p)
     db.refresh(department)
-    assert failed_call.call_count == 2
     assert department.capability_source == "pi"
     assert department.capability_failed_at is None
 
@@ -83,11 +87,14 @@ def test_failure_cools_down_then_retries_and_clears(
 def test_cooldown_is_per_department_and_success_can_be_recalculated(
     retry_defaults: tuple, db: Session
 ) -> None:
-    p, department, config, generate = retry_defaults
+    p, department, _, generate = retry_defaults
     generate.side_effect = ModelUnavailable()
     d.fill_department_defaults(p)
     db.refresh(department)
     failed_at = department.capability_failed_at
+    assert failed_at is not None
+    assert department.capability_source is None
+
     other = Department(org_id=p.org_id, name="新部门")
     db.add(other)
     db.commit()
@@ -95,34 +102,52 @@ def test_cooldown_is_per_department_and_success_can_be_recalculated(
     d.fill_department_defaults(p)
     db.refresh(other)
     db.refresh(department)
-    assert config.call_count == generate.call_count == 2
     assert other.capability_source == "pi"
     assert other.capability_failed_at is None
+    assert other.capability_schema_version_id is not None
     assert department.capability_failed_at == failed_at
+    assert department.capability_source is None
 
-    save_version(db, p, read_editor(db, p).definitions)
+    new_schema = save_version(db, p, read_editor(db, p).definitions)
     db.commit()
     d.fill_department_defaults(p)
-    assert config.call_count == generate.call_count == 3
+    db.refresh(other)
+    db.refresh(department)
+    assert other.capability_source == "pi"
+    assert other.capability_schema_version_id == new_schema.id
+    assert department.capability_failed_at == failed_at
+    assert department.capability_source is None
+    audits = db.exec(
+        select(AuditEvent).where(
+            AuditEvent.org_id == p.org_id,
+            AuditEvent.action == "department.capabilities_generated",
+            AuditEvent.target_id == str(other.id),
+        )
+    ).all()
+    assert len(audits) == 2
 
 
 def test_cooldown_expires_at_24_hours(
     retry_defaults: tuple, db: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    p, department, config, generate = retry_defaults
+    p, department, _, _ = retry_defaults
     now = utc_now()
     monkeypatch.setattr(d, "utc_now", lambda: now)
-    department.capability_failed_at = now - timedelta(hours=24) + timedelta(seconds=1)
+    cooldown_at = now - timedelta(hours=24) + timedelta(seconds=1)
+    department.capability_failed_at = cooldown_at
     db.add(department)
     db.commit()
     d.fill_department_defaults(p)
-    assert not config.called and not generate.called
+    db.refresh(department)
+    assert department.capability_source is None
+    assert department.capability_failed_at == cooldown_at
+
     department.capability_failed_at = now - timedelta(hours=24)
     db.add(department)
     db.commit()
     d.fill_department_defaults(p)
     db.refresh(department)
-    assert generate.call_count == 1
+    assert department.capability_source == "pi"
     assert department.capability_failed_at is None
 
 

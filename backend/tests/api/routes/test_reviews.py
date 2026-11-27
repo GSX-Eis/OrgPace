@@ -11,6 +11,7 @@ from sqlmodel import Session, select
 
 from app.authz.deps import get_org_principal
 from app.authz.principal import Principal
+from app.core.config import settings
 from app.core.db import engine
 from app.domains.base import utc_now
 from app.domains.capability.schemas import DictionaryDefinition
@@ -42,7 +43,7 @@ from app.domains.org.models import (
 from app.domains.profile.models import ClaimEvidence, EvidenceRelation, ProfileVersion
 from app.domains.review import service
 from app.domains.review.publish import current_claims, publish
-from app.domains.review.routing import reviewers_for
+from app.domains.review.routing import review_assignment, reviewers_for
 from app.domains.review.schemas import DecisionInput
 from app.domains.work.models import Task, WorkEvent
 from app.models import User
@@ -1190,3 +1191,73 @@ def test_request_timeline_withdrawal_and_admin_account_name(
         next(e for e in events if e["action"] == "decided")["reviewer"]
         == db.get(User, admin.user_id).full_name
     )
+
+
+# Merged from test_m47_review_reason.py (NERE-581).
+@pytest.mark.parametrize(
+    "route", ["admin", "direct", "department", "parent", "delegate"]
+)
+def test_review_assignment_reason(
+    demo: tuple, db: Session, client: TestClient, route: str
+) -> None:
+    url, employees, auth = demo
+    subject = employees["E01" if route == "admin" else "E02"]
+    if route == "direct":
+        db.add(
+            ReportingLine(
+                org_id=subject.org_id,
+                employee_id=subject.id,
+                manager_employee_id=employees["E01"].id,
+            )
+        )
+    if route == "parent":
+        child = Department(
+            org_id=subject.org_id,
+            name="合成下级部门",
+            parent_department_id=subject.department_id,
+        )
+        db.add(child)
+        db.flush()
+        subject.department_id = child.id
+        db.add(subject)
+    if route == "delegate":
+        from tests.api.routes.test_review_delegations import setup_delegation
+
+        setup_delegation(db, demo)
+    db.commit()
+    expected_emails = (
+        ["admin@demo.example.com", settings.FIRST_SUPERUSER]
+        if route == "admin"
+        else ["manager.platform@demo.example.com"]
+    )
+    expected_reviewers = sorted(
+        db.exec(select(User.id).where(User.email.in_(expected_emails))).all()
+    )
+    _, request = pending(
+        db, demo, role="manager.platform" if route == "admin" else "employee.platform"
+    )
+    response = client.get(
+        f"{url}/reviews/{request.id}",
+        headers=auth["admin" if route in ("admin", "delegate") else "manager"],
+    )
+    assert response.status_code == 200, response.text
+    department_name = db.exec(
+        select(Department.name).where(
+            Department.org_id == subject.org_id,
+            Department.id == employees["E01"].department_id,
+        )
+    ).one()
+    assert (
+        response.json()["assignment_reason"]
+        == {
+            "admin": "申请人所在部门和上级部门都没有部门经理，由企业管理员审批",
+            "direct": "申请人的直属上级，并且是该部门的部门经理",
+            "department": "申请人所在部门的部门经理",
+            "parent": f"申请人上级部门 {department_name} 的部门经理",
+            "delegate": None,
+        }[route]
+    )
+    if route == "delegate":
+        assert response.json()["acting_for_name"]
+    assert review_assignment(db, subject.org_id, subject.id)[0] == expected_reviewers
+    assert reviewers_for(db, subject.org_id, subject.id) == expected_reviewers

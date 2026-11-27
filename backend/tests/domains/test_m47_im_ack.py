@@ -111,16 +111,11 @@ def test_reminder_once_and_never_after_completion(
     async def run() -> None:
         started, ticking, elapsed, reminded = (asyncio.Event() for _ in range(4))
         loop = asyncio.get_running_loop()
-        cancelled = []
 
         async def sleep(seconds: float) -> None:
             assert seconds == 30
             ticking.set()
-            try:
-                await elapsed.wait()
-            except asyncio.CancelledError:
-                cancelled.append(True)
-                raise
+            await elapsed.wait()
 
         async def send(_chat: str, text: str) -> None:
             sent.append(text)
@@ -158,8 +153,11 @@ def test_reminder_once_and_never_after_completion(
             if outcome == "unexpected":
                 with pytest.raises(RuntimeError, match="synthetic failure"):
                     await task
+                assert sent == ([ACK, WAIT] if slow else [ACK])
             else:
                 await task
+                expected_prefix = [ACK, WAIT] if slow else [ACK]
+                assert sent[:-1] == expected_prefix
                 assert sent[-1] not in (ACK, WAIT)
             completed = sent.copy()
             elapsed.set()
@@ -167,7 +165,6 @@ def test_reminder_once_and_never_after_completion(
             await original_sleep(0)
             assert sent == completed
             assert sent.count(WAIT) == int(slow)
-            assert cancelled == ([] if slow else [True])
         finally:
             release.set()
             if not task.done():

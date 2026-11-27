@@ -1,8 +1,8 @@
 import asyncio
 import json
-from unittest.mock import AsyncMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
+import httpx
 import pytest
 from sqlmodel import Session, select
 
@@ -15,6 +15,43 @@ from app.domains.im.adapters.feishu import Feishu
 from app.domains.im.models import ImAction
 from app.domains.im.schemas import Platform
 from tests.domains.test_im_gateway import principal
+
+FEISHU_MESSAGE_URL = (
+    "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id"
+)
+type SentRequest = tuple[str, str, str | None, dict]
+
+
+async def _feishu_adapter(org_id: UUID, captured: list[SentRequest]) -> Feishu:
+    def capture(request: httpx.Request) -> httpx.Response:
+        if "/auth/" in request.url.path:
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "tenant_access_token": "synthetic-token",
+                    "expire": 7200,
+                },
+            )
+        captured.append(
+            (
+                request.method,
+                str(request.url),
+                request.headers.get("authorization"),
+                json.loads(request.content),
+            )
+        )
+        return httpx.Response(
+            200, json={"code": 0, "data": {"message_id": "synthetic-message"}}
+        )
+
+    adapter = Feishu(org_id, {"app_id": "synthetic", "app_secret": "synthetic"})
+    await adapter.client.aclose()
+    adapter.client = httpx.AsyncClient(
+        base_url="https://open.feishu.cn/open-apis/",
+        transport=httpx.MockTransport(capture),
+    )
+    return adapter
 
 
 @pytest.mark.parametrize(
@@ -44,11 +81,10 @@ def test_plan_link_through_delivery(
         # A previously visible employee is no longer in the current scope.
         response._scope["visible_employee_ids"].append(str(uuid4()))
     db.rollback()
-    request = AsyncMock(return_value={"data": {"message_id": "synthetic-message"}})
-    monkeypatch.setattr(Feishu, "_request", request)
+    captured: list[SentRequest] = []
 
     async def send() -> None:
-        adapter = Feishu(p.org_id, {})
+        adapter = await _feishu_adapter(p.org_id, captured)
         try:
             await actions.deliver(
                 db,
@@ -62,9 +98,9 @@ def test_plan_link_through_delivery(
             await adapter.close()
 
     asyncio.run(send())
-    request.assert_awaited_once()
-    method, path, body = request.call_args.args
-    assert method == "POST" and path == "im/v1/messages?receive_id_type=chat_id"
+    assert len(captured) == 1
+    method, url, auth, body = captured[0]
+    assert (method, url, auth) == ("POST", FEISHU_MESSAGE_URL, "Bearer synthetic-token")
     assert body["receive_id"] == "chat" and body["msg_type"] == "interactive"
     elements = json.loads(body["content"])["elements"]
     if scope_changed:
@@ -134,9 +170,8 @@ def test_three_argument_renderer_compatibility(
     ["确认卡", "长" * 3001, "\x01" * 2900],
     ids=["callbacks", "long-text", "large-json"],
 )
-def test_callback_and_size_limits(monkeypatch: pytest.MonkeyPatch, text: str) -> None:
-    request = AsyncMock(return_value={"data": {"message_id": "synthetic-message"}})
-    monkeypatch.setattr(Feishu, "_request", request)
+def test_callback_and_size_limits(text: str) -> None:
+    captured: list[SentRequest] = []
     buttons = [
         ("确认", "confirm"),
         ("取消", "cancel"),
@@ -145,7 +180,7 @@ def test_callback_and_size_limits(monkeypatch: pytest.MonkeyPatch, text: str) ->
     ]
 
     async def send() -> None:
-        adapter = Feishu(uuid4(), {})
+        adapter = await _feishu_adapter(uuid4(), captured)
         try:
             await adapter.render(
                 "chat",
@@ -157,7 +192,10 @@ def test_callback_and_size_limits(monkeypatch: pytest.MonkeyPatch, text: str) ->
             await adapter.close()
 
     asyncio.run(send())
-    content = request.call_args.args[2]["content"]
+    assert len(captured) == 1
+    method, url, auth, body = captured[0]
+    assert (method, url, auth) == ("POST", FEISHU_MESSAGE_URL, "Bearer synthetic-token")
+    content = body["content"]
     elements = json.loads(content)["elements"]
     assert len(content.encode()) <= 10 * 1024
     if text == "确认卡":
@@ -210,11 +248,10 @@ def test_feishu_fallback_plan_and_capacity_cards_keep_both_clickable_links(
         ],
         plan=plan_card,
     )
-    request = AsyncMock(return_value={"data": {"message_id": "synthetic-message"}})
-    monkeypatch.setattr(Feishu, "_request", request)
+    captured: list[SentRequest] = []
 
     async def send() -> None:
-        adapter = Feishu(p.org_id, {})
+        adapter = await _feishu_adapter(p.org_id, captured)
         try:
             await actions.deliver(
                 db,
@@ -230,10 +267,10 @@ def test_feishu_fallback_plan_and_capacity_cards_keep_both_clickable_links(
             await adapter.close()
 
     asyncio.run(send())
-    assert request.await_count == 2
-    first_elements = json.loads(request.call_args_list[0].args[2]["content"])[
-        "elements"
-    ]
+    assert [(m, u, a) for m, u, a, _ in captured] == [
+        ("POST", FEISHU_MESSAGE_URL, "Bearer synthetic-token")
+    ] * 2
+    first_elements = json.loads(captured[0][3]["content"])["elements"]
     assert first_elements[1] == {
         "tag": "action",
         "actions": [
@@ -249,9 +286,7 @@ def test_feishu_fallback_plan_and_capacity_cards_keep_both_clickable_links(
             },
         ],
     }
-    second_elements = json.loads(request.call_args_list[1].args[2]["content"])[
-        "elements"
-    ]
+    second_elements = json.loads(captured[1][3]["content"])["elements"]
     assert [btn["text"]["content"] for btn in second_elements[1]["actions"]] == [
         "确认",
         "取消",
