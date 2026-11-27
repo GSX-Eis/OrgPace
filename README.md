@@ -15,6 +15,10 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/GSX-Eis/OrgPace/releases"><img src="https://img.shields.io/github/v/release/GSX-Eis/OrgPace?label=Release&amp;color=2563EB" alt="Release" /></a>
+  <a href="https://github.com/GSX-Eis/OrgPace/actions/workflows/test-backend.yml"><img src="https://img.shields.io/github/actions/workflow/status/GSX-Eis/OrgPace/test-backend.yml?branch=master&amp;label=CI" alt="CI Status" /></a>
+  <a href="https://github.com/GSX-Eis/OrgPace/actions/workflows/test-docker-compose.yml"><img src="https://img.shields.io/github/actions/workflow/status/GSX-Eis/OrgPace/test-docker-compose.yml?branch=master&amp;label=Deploy%20Check" alt="Deploy Check Status" /></a>
+  <a href="https://github.com/GSX-Eis/OrgPace/commits/master"><img src="https://img.shields.io/github/last-commit/GSX-Eis/OrgPace/master?label=Last%20Commit" alt="Last Commit" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="Apache-2.0 License" /></a>
   <img src="https://img.shields.io/badge/Self--Hosted-Docker%20Compose-2496ED.svg" alt="Self-Hosted with Docker Compose" />
   <img src="https://img.shields.io/badge/Bilingual-EN%20%2F%20%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-0EA5E9.svg" alt="Bilingual EN and ZH" />
@@ -22,12 +26,12 @@
 
 ## Why This Exists
 
-Projects rarely stall because people aren't working hard—they stall when cross-team requests bounce around with no clear availability, key experts silently carry hidden overload, and schedules are built on guesswork in static spreadsheets. OrgPace grounds scheduling in **real capability profiles and live 70%/30% resource workload** to surface and clear bottlenecks across people and departments, keep plans realistic, and move delivery forward faster.
+Projects rarely stall because people aren't working hard—they stall when cross-team requests bounce around with no clear availability, key experts silently carry hidden overload, and schedules are built on guesswork in static spreadsheets. OrgPace grounds scheduling in **real capability profiles and live elastic workload** to surface and clear bottlenecks across people and departments, keep plans realistic, and move delivery forward faster.
 
 | Area | Traditional Approach | OrgPace |
 | :--- | :--- | :--- |
 | **Capability Foundation** | Rely on memory, self-claimed tags, or outdated HR sheets | Capability profiles drafted from Jira or CSV work records, reviewed by employees, and approved by managers |
-| **Workload &amp; Headroom** | Guess availability in Excel with 100% static assumptions | Visual weekly workload with a 70% regular quota, 30% elastic buffer, and forward availability forecasting |
+| **Workload &amp; Headroom** | Guess availability in Excel with 100% static assumptions | Visual weekly workload with built-in elastic capacity headroom and forward availability forecasting |
 | **Cross-Team Bottlenecks** | Chase people across chats or expose everyone's private calendar | Check cross-team schedule feasibility and earliest start dates without exposing personal details; managers assign privately |
 | **Executable Commitments** | Verbal promises or unverified AI suggestions | Rule-checked scheduling cards with explicit human confirmation before any commitment goes live |
 
@@ -35,7 +39,7 @@ Projects rarely stall because people aren't working hard—they stall when cross
 
 1. **Ground Schedules in Real Work Facts:** Sync Jira issues or import CSV work logs to keep capability profiles accurate—never relying on stale HR tags or guesswork.
 2. **Unblock Cross-Team Requests Early:** State project goals, required skills, and target timelines to see which teams can take the work and how soon they can start, without exposing individual calendars.
-3. **Schedule Within Real Headroom &amp; Confirm Explicitly:** Receiving managers review 70%/30% workload forecasts to avoid overloading key contributors, adjust assignments visually, and confirm commitments in the web workbench or Feishu.
+3. **Schedule Within Real Headroom &amp; Confirm Explicitly:** Receiving managers review elastic workload forecasts to protect key contributors from overload, adjust assignments visually, and confirm commitments in the web workbench or Feishu.
 4. **Feed Delivery Outcomes Back into Growth:** Once a milestone ships, factual delivery feedback flows back into the contributor's review queue to strengthen future staffing and scheduling decisions.
 
 ## Product Tour
@@ -50,7 +54,7 @@ Projects rarely stall because people aren't working hard—they stall when cross
     </td>
     <td width="50%" align="center">
       <a href="docs/assets/readme/05-capacity-workload-en.png"><img src="docs/assets/readme/05-capacity-workload-en.png" alt="Team Workload &amp; Forecasting (English)" /></a><br />
-      <sub><strong>Team Workload &amp; Headroom</strong> — Track weekly allocations, 70% regular quotas, forward forecast baselines, and policy adjustments.</sub>
+      <sub><strong>Team Workload &amp; Headroom</strong> — Track weekly allocations, elastic capacity headroom, forward forecast baselines, and policy adjustments.</sub>
     </td>
   </tr>
   <tr>
@@ -89,7 +93,7 @@ We strictly separate capabilities running today from upcoming product features.
 | Capability Area | Status | What It Delivers |
 | :--- | :---: | :--- |
 | **Capability Profiles** | ✅ **Available Now** | Jira/CSV work sync, employee self-review, and org-delegated manager approval |
-| **Workload &amp; Forecasting** | ✅ **Available Now** | Weekly availability, 70% regular + 30% elastic quota, and forward headroom forecasts |
+| **Workload &amp; Forecasting** | ✅ **Available Now** | Weekly availability, elastic workload buffers, and forward headroom forecasts |
 | **Cross-Team Scheduling** | ✅ **Available Now** | Privacy-safe feasibility checks, visual card scheduling, and human confirmation |
 | **Multi-Role Projects &amp; Growth** | ✅ **Available Now** | Phased multi-role delivery tracking and post-delivery feedback into profiles |
 | **Bilingual UI &amp; Channels** | ✅ **Available Now** | EN / 简体中文 switching, built-in assistant, and Feishu interactive cards |
@@ -103,7 +107,7 @@ We strictly separate capabilities running today from upcoming product features.
 ### ✅ Available Now
 
 - **Trusted Capability Profiles:** Automatically draft member capabilities from Jira or imported work records, finalized only after employee self-review and manager approval (with automatic org-hierarchy delegation); only traceable work facts are recorded, and unknown stays unknown.
-- **Live Workload &amp; Forward Forecasting:** Members maintain weekly availability and unavailability windows; OrgPace separates a 70% regular quota from a 30% elastic buffer and forecasts future headroom from carry-over trends and business events.
+- **Live Workload &amp; Forward Forecasting:** Members maintain weekly availability and unavailability windows; OrgPace balances regular capacity with a built-in elastic workload buffer to protect teams from chronic overload and forecasts future headroom from carry-over trends and business events.
 - **Privacy-Safe Cross-Team Feasibility &amp; Confirmed Scheduling:** Requesters state goals and timelines to see whether a target team can take on the work and the earliest start date without seeing personal details; receiving managers adjust assignments in visual cards and confirm commitments explicitly.
 - **Multi-Role Project Delivery &amp; Growth Loop:** Coordinate and track multi-role, phased projects; once work is delivered, factual outcomes feed back to enrich team members' capability profiles.
 - **Bilingual Experience &amp; Everyday Channels:** One-click English / Chinese switching with remembered preferences across the web workbench, built-in assistant, and Feishu interactive confirmation cards.
