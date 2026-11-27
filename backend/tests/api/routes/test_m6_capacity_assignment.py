@@ -34,6 +34,8 @@ from app.domains.org.models import (
     RoleGrant,
 )
 from app.models import User
+from tests.api.routes.test_m6_capacity_workload import capacity as capacity
+from tests.api.routes.test_m6_capacity_workload import week_body
 from tests.utils.org import delete_test_organization
 
 
@@ -555,3 +557,34 @@ def test_concurrent_assignment_and_commitment_writes(case: tuple) -> None:
         assert sorted(pool.map(adjust, range(2))) == [200, 409]
     result = api(f"/demands/{demand.id}", "a")
     assert result["revision"] == 2 and len(result["events"]) == 1
+
+
+# Merged from test_m6_capacity_adjust_note.py.
+def test_direct_adjustment_rejects_note(capacity: tuple, client: TestClient) -> None:
+    url, employees, auth = capacity
+    response = client.put(
+        f"{url}/capacity-settings",
+        headers=auth["admin"],
+        json={"enabled": True},
+    )
+    assert response.status_code == 200, response.text
+    adjustment_url = f"{url}/capacity/weeks"
+    response = client.put(
+        adjustment_url, headers=auth["manager"], json=week_body(employees["E02"].id, 50)
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["data"][0]["base_percent"] == 50
+
+    response = client.put(
+        adjustment_url,
+        headers=auth["manager"],
+        json={
+            **week_body(employees["E02"].id, 60),
+            "note": "Synthetic adjustment note",
+        },
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"][0]["loc"] == ["body", "note"]
+    response = client.get(f"{url}/capacity/workloads/me", headers=auth["employee"])
+    assert response.status_code == 200, response.text
+    assert response.json()["base_percent"] == 50
