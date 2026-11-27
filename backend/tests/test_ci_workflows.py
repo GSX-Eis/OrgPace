@@ -86,6 +86,7 @@ def test_required_workflows_have_no_top_level_path_filter() -> None:
         "test-docker-compose.yml",
         "test-pi.yml",
         "zizmor.yml",
+        "pre-commit.yml",
     ],
 )
 def test_push_workflows_include_master_and_dev(workflow_name: str) -> None:
@@ -95,6 +96,84 @@ def test_push_workflows_include_master_and_dev(workflow_name: str) -> None:
     branches = workflow["on"]["push"]["branches"]
     assert "master" in branches, workflow_name
     assert "dev" in branches, workflow_name
+
+
+@pytest.mark.parametrize(
+    "event,before,root,expected",
+    [
+        ("pull_request", "zero", False, "origin/dev"),
+        ("push", "first", False, "first"),
+        ("push", "zero", False, "HEAD~1"),
+        ("push", "missing", False, "HEAD~1"),
+        ("push", "zero", True, "--all-files"),
+    ],
+)
+def test_precommit_comparison_base(
+    tmp_path: Path, event: str, before: str, root: bool, expected: str
+) -> None:
+    workflow = yaml.safe_load((WORKFLOWS / "pre-commit.yml").read_text())
+    step = next(
+        s for s in workflow["jobs"]["pre-commit"]["steps"] if s.get("id") == "precommit"
+    )
+    assert step["env"] == {
+        "GITHUB_EVENT_NAME": "${{ github.event_name }}",
+        "GITHUB_EVENT_BEFORE": "${{ github.event.before }}",
+        "GITHUB_BASE_REF": "${{ github.base_ref }}",
+    }
+    assert "${{" not in step["run"]
+
+    def git(*args: str) -> str:
+        return subprocess.check_output(
+            ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", *args],
+            cwd=tmp_path,
+            text=True,
+        ).strip()
+
+    git("init", "-q")
+    git("commit", "--allow-empty", "-qm", "initial")
+    first = git("rev-parse", "HEAD")
+    if not root:
+        git("commit", "--allow-empty", "-qm", "second")
+        git("commit", "--allow-empty", "-qm", "third")
+
+    uv = tmp_path / "uv"
+    uv.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+    uv.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-e", "-c", step["run"]],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+            "GITHUB_EVENT_NAME": event,
+            "GITHUB_EVENT_BEFORE": {
+                "first": first,
+                "zero": "0" * 40,
+                "missing": "1" * 40,
+            }[before],
+            "GITHUB_BASE_REF": "dev" if event == "pull_request" else "",
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    args = (
+        ["--all-files"]
+        if expected == "--all-files"
+        else [
+            "--from-ref",
+            first if expected == "first" else expected,
+            "--to-ref",
+            "HEAD",
+        ]
+    )
+    assert result.stdout.splitlines() == [
+        "run",
+        "prek",
+        "run",
+        *args,
+        "--show-diff-on-failure",
+    ]
 
 
 def test_compose_ci_runs_https_config_tests() -> None:
@@ -126,12 +205,18 @@ def test_playwright_ci_uses_balanced_shard_selector_and_excludes_real_jira() -> 
         step for step in shard_steps if step.get("name") == "Run Playwright tests"
     )
     run_cmd = main_step["run"]
-    assert "select-playwright-shard.mjs" in run_cmd
+    assert 'select-playwright-shard.mjs "$SHARD" 3 --patterns' in run_cmd
     assert '--grep-invert "@external-mcp|@real-jira"' in run_cmd
     assert "--fail-on-flaky-tests" in run_cmd
     assert "--shard=" not in run_cmd
     assert any(
         step.get("run") == "bun test" and step.get("working-directory") == "frontend"
+        for step in shard_steps
+    )
+    assert any(
+        step.get("run") == "bun scripts/check-playwright-shards.mjs"
+        and step.get("working-directory") == "frontend"
+        and step.get("if") == "matrix.shard == 1"
         for step in shard_steps
     )
     assert any(

@@ -2,6 +2,8 @@ name: pre-commit
 
 on:
   pull_request:
+  push:
+    branches: [master, dev]
 permissions:
   contents: read
 
@@ -40,4 +42,20 @@ jobs:
         run: bun ci
       - name: Run prek - pre-commit
         id: precommit
-        run: uv run prek run --from-ref origin/${GITHUB_BASE_REF} --to-ref HEAD --show-diff-on-failure
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            base="origin/${GITHUB_BASE_REF}"
+          elif [[ "$GITHUB_EVENT_BEFORE" != "0000000000000000000000000000000000000000" ]] &&
+               git cat-file -e "${GITHUB_EVENT_BEFORE}^{commit}" 2>/dev/null; then
+            base="$GITHUB_EVENT_BEFORE"
+          elif git cat-file -e "HEAD~1^{commit}" 2>/dev/null; then
+            base="HEAD~1"
+          else
+            uv run prek run --all-files --show-diff-on-failure
+            exit
+          fi
+          uv run prek run --from-ref "$base" --to-ref HEAD --show-diff-on-failure
