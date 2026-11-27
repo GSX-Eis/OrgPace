@@ -386,8 +386,6 @@ def test_bot_and_mcp_reply_guidance(
     assert "不写任何负荷说法" in reply["description"]
 
 
-@pytest.mark.parametrize("match_count", [0, 1, 2])
-@pytest.mark.parametrize("channel", ["rest", "assistant", "mcp"])
 @pytest.mark.parametrize(
     "texts",
     [
@@ -397,6 +395,8 @@ def test_bot_and_mcp_reply_guidance(
     ],
     ids=["unrelated", "chinese-boundaries", "ascii-boundaries"],
 )
+@pytest.mark.parametrize("channel", ["rest", "assistant", "mcp"])
+@pytest.mark.parametrize("match_count", [0, 1, 2])
 def test_unrelated_confirmation_and_sentence_boundaries_are_allowed(
     case: tuple,
     db: Session,
