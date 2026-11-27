@@ -178,6 +178,7 @@ isolated(
     )
     await page.keyboard.press("Escape")
     const card = page.getByRole("article", { name: "合成能力1", exact: true })
+    await expect(card).not.toContainText("依据")
     await card.getByRole("button", { name: "合成能力1", exact: true }).click()
     const detail = page.getByRole("dialog")
     await expect(detail).toContainText("原始合成陈述")
@@ -230,6 +231,9 @@ isolated(
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth),
     ).toBe(390)
+    await expect(
+      detail.getByRole("button", { name: "直接修改", exact: true }),
+    ).toHaveCount(0)
     await detail.getByRole("button", { name: "修改", exact: true }).click()
     await page.getByRole("button", { name: "手动编辑", exact: true }).click()
     const dialog = page.getByRole("dialog")

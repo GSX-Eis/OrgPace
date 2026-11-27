@@ -146,6 +146,10 @@ test("manager confirms a review from the assistant", async ({
       })
     ).ok(),
   ).toBeTruthy()
+  const unpublished = await (
+    await request.get(`${base}/employees/${subject.id}/profile`, { headers })
+  ).json()
+  expect(unpublished.latest_published).toBeNull()
   const server = createServer(async (req, res) => {
     let raw = ""
     for await (const chunk of req) raw += chunk
@@ -233,6 +237,10 @@ test("manager confirms a review from the assistant", async ({
     await expect(
       panel.getByText("审批决定已保存", { exact: false }),
     ).toBeVisible()
+    const published = await (
+      await request.get(`${base}/employees/${subject.id}/profile`, { headers })
+    ).json()
+    expect(published.latest_published.revision).toBe(1)
     await page.goto("/reviews?type=profile")
     await expect(
       page.getByRole("heading", { name: "待审批", exact: true }),

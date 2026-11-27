@@ -26,6 +26,17 @@ export const test = base.extend<{ modelUrl: string }>({
       let raw = ""
       for await (const chunk of req) raw += chunk
       const request = JSON.parse(raw)
+      const last = request.messages.at(-1)
+      if (
+        request.tools?.some(
+          (tool: { function: { name: string } }) =>
+            tool.function.name === "get_my_requests",
+        ) &&
+        last?.role === "user" &&
+        JSON.stringify(last).includes("工作总结")
+      ) {
+        expect(raw).toContain("我独立完成订单接口设计与联调")
+      }
       const toolNames: string[] =
         request.tools?.map(
           (tool: { function: { name: string } }) => tool.function.name,
@@ -40,7 +51,6 @@ export const test = base.extend<{ modelUrl: string }>({
         res.writeHead(400).end("Unsupported fake model tool")
         return
       }
-      const last = request.messages.at(-1)
       if (chat && !admin && last?.role === "tool") {
         const result = JSON.parse(last.content)
         if (result.data) {

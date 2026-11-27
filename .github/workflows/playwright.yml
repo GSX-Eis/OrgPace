@@ -75,6 +75,9 @@ jobs:
     - run: bun ci
       working-directory: frontend
     - run: bash scripts/generate-client.sh
+    - name: Run frontend unit tests
+      run: bun test
+      working-directory: frontend
     - name: Install Chromium on the runner
       run: bunx playwright install --with-deps chromium
       working-directory: frontend
@@ -105,7 +108,10 @@ jobs:
         PLAYWRIGHT_BASE_URL: http://localhost:8000
         VITE_API_URL: http://localhost:8000
         PLAYWRIGHT_HTML_OUTPUT_DIR: blob-report
-      run: MODEL_TEST_HOST="$(hostname -I | awk '{print $1}')" bunx playwright test --shard="$SHARD/3" --grep-invert @external-mcp --fail-on-flaky-tests --trace=retain-on-failure --reporter=html
+      run: |
+        mapfile -t shard_files < <(bun scripts/select-playwright-shard.mjs "$SHARD" 3)
+        test "${#shard_files[@]}" -gt 0
+        MODEL_TEST_HOST="$(hostname -I | awk '{print $1}')" bunx playwright test "${shard_files[@]}" --grep-invert "@external-mcp|@real-jira" --fail-on-flaky-tests --trace=retain-on-failure --reporter=html
     - name: Enable external MCP for Playwright tests
       if: matrix.shard == 1 && !cancelled()
       env:

@@ -177,6 +177,13 @@ for (const [role, email, restricted] of [
         detail.getByRole("button", { name: "查看版本历史", exact: true }),
       ).toHaveCount(0)
       await detail.getByRole("button", { name: "关闭", exact: true }).click()
+      if (role === "employee") {
+        await expect(
+          page
+            .getByRole("navigation", { name: "空间导航" })
+            .getByRole("link", { name: "我的团队", exact: true }),
+        ).toHaveCount(0)
+      }
       await page.screenshot({
         path: `test-results/profile-compact-${role}.png`,
         fullPage: true,

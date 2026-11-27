@@ -12,7 +12,7 @@ test.use({
   video: "off",
 })
 
-test("M2 real Cloud: roster, manual identity, initial request and evidence", async ({
+test("M2 real Cloud: roster, manual identity, initial request and evidence @real-jira", async ({
   page,
   modelUrl,
 }) => {

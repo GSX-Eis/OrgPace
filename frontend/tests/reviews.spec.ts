@@ -287,6 +287,10 @@ for (const reviewer of ["manager", "admin", "delegate"]) {
       "该申请已处理、已撤回，或你没有审批权限",
     )
     await expect(page.getByRole("link", { name: /^待审批/ })).toHaveCount(0)
+    const unpublished = await (
+      await request.get(`${base}/employees/${subject.id}/profile`, { headers })
+    ).json()
+    expect(unpublished.latest_published).toBeNull()
     if (reviewer === "delegate") {
       await enter(reviewerToken, "/reviews")
       await page.locator(`a[href="/reviews/${draft.id}"]`).click()

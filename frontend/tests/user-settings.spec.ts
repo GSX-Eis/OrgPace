@@ -165,6 +165,7 @@ test.describe("employee settings", () => {
       for (const label of ["部门", "职位", "在职状态", "直属上级"])
         await expect(fields.getByText(label, { exact: true })).toBeVisible()
       await expect(fields.getByText("工号", { exact: true })).toBeVisible()
+      await expect(fields).toContainText("平台研发部")
       await expect(
         fields.getByText(email.startsWith("employee") ? "E02" : "E01", {
           exact: true,
@@ -176,6 +177,9 @@ test.describe("employee settings", () => {
         page.getByRole("region", { name: "个人信息" }),
       ).toContainText(email)
       await page.getByRole("link", { name: "连接与集成", exact: true }).click()
+      await expect(
+        page.getByRole("heading", { name: "Jira 账号", exact: true }),
+      ).toBeVisible()
       const identities = page.getByRole("region", { name: "本人关联账号" })
       await expect(identities).toContainText(
         email.startsWith("employee") ? "demo-jira-02" : "demo-jira-01",
@@ -184,6 +188,9 @@ test.describe("employee settings", () => {
         identities.getByRole("button", { name: /关联|解除/ }),
       ).toHaveCount(0)
       await page.getByRole("link", { name: "偏好与代理", exact: true }).click()
+      await expect(
+        page.getByRole("region", { name: "自动起草偏好", exact: true }),
+      ).toBeVisible()
       await expect(
         page.getByRole("switch", {
           name: "根据工作记录自动起草画像",

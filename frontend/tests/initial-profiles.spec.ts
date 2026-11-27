@@ -341,14 +341,6 @@ test("employee reviews initial profile and updates on desktop and mobile", async
         .fill("补充另一项合成能力")
       await editor.getByLabel("新增能力").selectOption(newCapability.key)
     }
-    await editor
-      .getByRole("textbox", { name: "能力说明", exact: true })
-      .last()
-      .fill("我补充了一段合成项目经历")
-    await editor.getByLabel("补充说明").last().fill("本人完成了合成项目的验证")
-    await expect(editor.getByRole("textbox", { name: "能力说明" })).toHaveCount(
-      initial ? 3 : 1,
-    )
     const saveDraft = editor.getByRole("button", {
       name: "保存草稿",
       exact: true,
@@ -357,6 +349,31 @@ test("employee reviews initial profile and updates on desktop and mobile", async
       name: "预览并提交",
       exact: true,
     })
+    const stmt = editor
+      .getByRole("textbox", { name: "能力说明", exact: true })
+      .last()
+    const note = editor
+      .getByRole("textbox", { name: "补充说明", exact: true })
+      .last()
+    if (width === 1440) {
+      await stmt.fill("😀".repeat(201))
+      await expect(editor.getByText("201 / 200 字")).toBeVisible()
+      await expect(editor.getByRole("alert")).toContainText(
+        `能力说明最多 200 字，第 ${initial ? 3 : 1} 条有 201 字`,
+      )
+      await expect(previewDraft).toBeDisabled()
+      await stmt.fill("😀".repeat(200))
+      await expect(previewDraft).toBeEnabled()
+      await note.fill("中".repeat(4001))
+      await expect(editor.getByText("4001 / 4000 字")).toBeVisible()
+      await expect(editor.getByRole("alert")).toContainText("说明最多 4000 字")
+      await expect(previewDraft).toBeDisabled()
+    }
+    await stmt.fill("我补充了一段合成项目经历")
+    await note.fill("本人完成了合成项目的验证")
+    await expect(editor.getByRole("textbox", { name: "能力说明" })).toHaveCount(
+      initial ? 3 : 1,
+    )
     await expect(saveDraft).toBeInViewport({ ratio: 1 })
     await expect(previewDraft).toBeInViewport({ ratio: 1 })
     await saveDraft.click()
