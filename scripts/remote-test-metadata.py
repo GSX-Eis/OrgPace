@@ -90,25 +90,51 @@ def paths(*args: str) -> list[bytes]:
     return git(*args).rstrip(b"\0").split(b"\0")
 
 
+def _normalize_base_ref(raw: str) -> str:
+    ref = raw.strip().removeprefix("refs/remotes/")
+    if not ref.startswith("origin/") or ref == "origin/":
+        raise ValueError(
+            f"PREFLIGHT_BASE_REF must be a remote branch ref (origin/<branch>), got: {raw!r}"
+        )
+    check = subprocess.run(
+        ["git", "check-ref-format", f"refs/remotes/{ref}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if check.returncode != 0:
+        raise ValueError(
+            f"PREFLIGHT_BASE_REF must be a valid remote branch ref (origin/<branch>), got: {raw!r}"
+        )
+    return ref
+
+
 def resolve_base_ref() -> str:
     explicit = os.environ.get("PREFLIGHT_BASE_REF", "").strip()
     if explicit:
-        git("rev-parse", "--verify", explicit)
-        return explicit
+        ref = _normalize_base_ref(explicit)
+        probe = subprocess.run(
+            ["git", "show-ref", "--verify", "--quiet", f"refs/remotes/{ref}"],
+            check=False,
+        )
+        if probe.returncode != 0:
+            raise ValueError(f"Base ref not found: {ref}")
+        return ref
     for candidate in ("origin/dev", "origin/master"):
-        try:
-            git("rev-parse", "--verify", candidate)
+        probe = subprocess.run(
+            ["git", "show-ref", "--verify", "--quiet", f"refs/remotes/{candidate}"],
+            check=False,
+        )
+        if probe.returncode == 0:
             return candidate
-        except subprocess.CalledProcessError:
-            continue
     raise ValueError("Could not resolve base ref (tried origin/dev and origin/master)")
 
 
 def snapshot(destination: Path, run_id: str) -> None:
-    index = destination / METADATA
-    index.mkdir()
     base_ref = resolve_base_ref()
     base = git("merge-base", base_ref, "HEAD").decode().strip()
+    index = destination / METADATA
+    index.mkdir()
     (index / "base").write_text(base + "\n")
     (index / "base-ref").write_text(base_ref + "\n")
     for name, revisions in (

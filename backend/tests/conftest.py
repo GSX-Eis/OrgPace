@@ -1,4 +1,5 @@
 import os
+import re
 from contextlib import ExitStack
 from pathlib import Path
 from uuid import uuid4
@@ -10,21 +11,66 @@ from xdist.workermanage import WorkerController
 
 DATABASES = pytest.StashKey[ExitStack]()
 SHARED_TEMPLATE = pytest.StashKey[str]()
+NO_DB_DATABASE_URL = "postgresql://no-db:no-db@127.0.0.1:1/no_db_mode"
+_UNIT_MARKER_RE = re.compile(r"(?:pytest\.)?mark\.unit\b")
 
 
 def _no_db_mode() -> bool:
     return os.environ.get("PYTEST_NO_DB", "").strip().lower() in {"1", "true", "yes"}
 
 
-def _ensure_no_db_settings_env() -> None:
-    if (Path(__file__).resolve().parents[2] / ".env").exists():
+def _enforce_no_db_env() -> None:
+    # Override even existing .env or shell DATABASE_URL so no-DB runs never touch a live DB.
+    os.environ["DATABASE_URL"] = NO_DB_DATABASE_URL
+    os.environ["FASTAPI_ENV"] = "development"
+    os.environ["PROJECT_NAME"] = "OrgPace No-DB Unit Tests"
+    os.environ["SECRET_KEY"] = "no-db-unit-test-secret"
+    os.environ["PI_SERVICE_TOKEN"] = "no-db-unit-test-token"
+    os.environ["FIRST_SUPERUSER"] = "no-db@example.com"
+    os.environ["FIRST_SUPERUSER_PASSWORD"] = "no-db-unit-test-password"
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_configure(config: pytest.Config) -> None:  # noqa: ARG001
+    if _no_db_mode():
+        _enforce_no_db_env()
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
+    if not _no_db_mode():
+        return None
+    markexpr = (getattr(config.option, "markexpr", "") or "").strip()
+    if markexpr != "unit":
+        return None
+    if collection_path.is_file() and collection_path.suffix == ".py":
+        name = collection_path.name
+        if name.startswith("test_") or name.endswith("_test.py"):
+            text = collection_path.read_text(encoding="utf-8", errors="ignore")
+            if not _UNIT_MARKER_RE.search(text):
+                return True
+    return None
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_collection_modifyitems(
+    config: pytest.Config,  # noqa: ARG001
+    items: list[pytest.Item],
+) -> None:
+    if not _no_db_mode():
         return
-    os.environ.setdefault("FASTAPI_ENV", "development")
-    os.environ.setdefault("PROJECT_NAME", "OrgPace Unit Tests")
-    os.environ.setdefault("SECRET_KEY", "unit-test-secret")
-    os.environ.setdefault(
-        "DATABASE_URL", "postgresql://postgres:unit-test@localhost:5432/app"
-    )
+    if not items:
+        raise pytest.UsageError(
+            "PYTEST_NO_DB=1 selected 0 tests; run with @pytest.mark.unit tests (e.g. -m unit)."
+        )
+    non_unit = [
+        item.nodeid for item in items if item.get_closest_marker("unit") is None
+    ]
+    if non_unit:
+        sample = ", ".join(non_unit[:5])
+        raise pytest.UsageError(
+            f"PYTEST_NO_DB=1 forbids running non-unit tests without an isolated database ({len(non_unit)} selected, e.g. {sample})."
+        )
 
 
 def _database_url() -> URL:
@@ -61,7 +107,7 @@ def pytest_configure_node(node: WorkerController) -> None:
 @pytest.hookimpl(trylast=True)
 def pytest_sessionstart(session: pytest.Session) -> None:
     if _no_db_mode():
-        _ensure_no_db_settings_env()
+        _enforce_no_db_env()
         return
     # pytest-cov starts worker coverage in sessionstart, before application imports.
     config = session.config

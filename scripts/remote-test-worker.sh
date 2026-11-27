@@ -135,6 +135,16 @@ if [[ $mode == pytest && -n $slot_cap ]]; then
   fi
 fi
 
+normalize_base_ref() {
+  local raw=$1
+  raw=${raw#refs/remotes/}
+  if [[ $raw != origin/* || $raw == origin/ ]] || ! git check-ref-format "refs/remotes/$raw" >/dev/null 2>&1; then
+    echo "PREFLIGHT_BASE_REF 仅支持远端分支引用（origin/<branch>），当前为: $1" >&2
+    exit 2
+  fi
+  printf '%s\n' "$raw"
+}
+
 if [[ $mode == preflight && -d .remote-test-snapshot ]]; then
   meta=.remote-test-snapshot
   base=$(cat "$meta/base")
@@ -142,22 +152,21 @@ if [[ $mode == preflight && -d .remote-test-snapshot ]]; then
   if [[ -z $base_ref && -f $meta/base-ref ]]; then
     base_ref=$(cat "$meta/base-ref")
   fi
+  if [[ -n $base_ref ]]; then
+    base_ref=$(normalize_base_ref "$base_ref")
+  fi
   if [[ ! -d .git ]]; then
     git init -q
     git remote add origin https://github.com/GSX-Eis/OrgPace.git
     echo "/$meta/" >> .git/info/exclude
   fi
   if [[ -n $base_ref ]]; then
-    fetch_ref=${base_ref#refs/remotes/}
-    if [[ $fetch_ref == origin/* ]]; then
-      git fetch -q origin "${fetch_ref#origin/}"
-    else
-      git fetch -q origin "$fetch_ref"
-    fi
-  elif git fetch -q origin dev 2>/dev/null; then
+    base_branch=${base_ref#origin/}
+    git fetch -q origin "+refs/heads/$base_branch:refs/remotes/origin/$base_branch"
+  elif git fetch -q origin '+refs/heads/dev:refs/remotes/origin/dev' 2>/dev/null; then
     base_ref=origin/dev
   else
-    git fetch -q origin master
+    git fetch -q origin '+refs/heads/master:refs/remotes/origin/master'
     base_ref=origin/master
   fi
   export PREFLIGHT_BASE_REF=$base_ref

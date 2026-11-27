@@ -53,14 +53,27 @@ if ! $list; then
     git fetch origin
   fi
 fi
+normalize_base_ref() {
+  local raw=$1
+  raw=${raw#refs/remotes/}
+  if [[ $raw != origin/* || $raw == origin/ ]] || ! git check-ref-format "refs/remotes/$raw" >/dev/null 2>&1; then
+    echo "PREFLIGHT_BASE_REF 仅支持远端分支引用（origin/<branch>），当前为: $1" >&2
+    exit 2
+  fi
+  printf '%s\n' "$raw"
+}
+
 if [[ -n ${PREFLIGHT_BASE_REF:-} ]]; then
-  base_ref=$PREFLIGHT_BASE_REF
-elif git rev-parse --verify origin/dev >/dev/null 2>&1; then
+  base_ref=$(normalize_base_ref "$PREFLIGHT_BASE_REF")
+elif git show-ref --verify --quiet refs/remotes/origin/dev; then
   base_ref=origin/dev
-else
+elif git show-ref --verify --quiet refs/remotes/origin/master; then
   base_ref=origin/master
+else
+  echo '基线分支不存在: origin/dev 或 origin/master' >&2
+  exit 1
 fi
-if ! git rev-parse --verify "$base_ref" >/dev/null 2>&1; then
+if ! git show-ref --verify --quiet "refs/remotes/$base_ref"; then
   echo "基线分支不存在: $base_ref" >&2
   exit 1
 fi

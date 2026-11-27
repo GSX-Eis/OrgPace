@@ -290,9 +290,12 @@ bash scripts/preflight.sh --list > "$scratch/list"
 assert_absent '^tests/test_ci_workflows\.py$' "$scratch/list"
 
 : > "$PREFLIGHT_CALLS"
-PREFLIGHT_BASE_REF=origin/master bash scripts/preflight.sh > "$scratch/run"
+PREFLIGHT_BASE_REF=refs/remotes/origin/master bash scripts/preflight.sh > "$scratch/run"
 rg -q '^run prek run --from-ref origin/master --to-ref HEAD$' "$PREFLIGHT_CALLS"
 PREFLIGHT_BASE_REF=origin/master bash scripts/preflight.sh --list > "$scratch/list"
 rg -q -F -x 'tests/test_ci_workflows.py' "$scratch/list"
 expect_failure 'origin/missing' env PREFLIGHT_BASE_REF=origin/missing bash scripts/preflight.sh --list
+for bad_ref in master refs/heads/master HEAD~1 origin/; do
+  expect_failure 'PREFLIGHT_BASE_REF' env PREFLIGHT_BASE_REF="$bad_ref" bash scripts/preflight.sh --list
+done
 echo 'preflight self-check: passed'

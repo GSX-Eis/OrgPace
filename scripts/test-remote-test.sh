@@ -429,36 +429,65 @@ grep -q -- '--tunnel-through-iap' "$runner"
 grep -q -- 'env CLOUD_TEST_QUEUE_SLOTS=' "$runner"
 grep -q -- 'PREFLIGHT_BASE_REF=' "$runner"
 
-# Verify remote-test-worker.sh fetches the resolved base branch and forwards PREFLIGHT_BASE_REF.
-mkdir -p "$scratch/worker-run/.remote-test-snapshot"
-printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' > "$scratch/worker-run/.remote-test-snapshot/base"
-printf 'origin/dev\n' > "$scratch/worker-run/.remote-test-snapshot/base-ref"
-: > "$scratch/worker-run/.remote-test-snapshot/committed.patch"
-: > "$scratch/worker-run/.remote-test-snapshot/staged.patch"
-: > "$scratch/worker-run/.remote-test-snapshot/excluded"
-cat > "$scratch/bin/git" <<'MOCK'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$MOCK_GIT_LOG"
-if [[ $1 == init ]]; then
-  mkdir -p .git/info
-elif [[ $1 == rev-parse ]]; then
-  echo '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
-elif [[ $1 == write-tree ]]; then
-  echo '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
-fi
-exit 0
-MOCK
-chmod +x "$scratch/bin/git"
+# Verify consistent PREFLIGHT_BASE_REF contract (snapshot + metadata + remote-test-worker.sh)
+# against a real temporary bare Git remote without mocking git.
+git init --bare -q "$scratch/origin.git"
+mkdir -p "$scratch/real-seed" "$scratch/real-local" "$scratch/real-snap" "$scratch/real-snap-master" "$scratch/real-worker"
 (
-  cd "$scratch/worker-run"
-  : > "$scratch/git-dev.log"
-  expect_failure 'mock lsof reached' env MOCK_GIT_LOG="$scratch/git-dev.log" bash "$worker" fixture nere123 preflight 4
-  grep -Fq 'fetch -q origin dev' "$scratch/git-dev.log"
-  grep -Fq 'merge-base --is-ancestor aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa origin/dev' "$scratch/git-dev.log"
-  : > "$scratch/git-master.log"
-  expect_failure 'mock lsof reached' env MOCK_GIT_LOG="$scratch/git-master.log" PREFLIGHT_BASE_REF=origin/master bash "$worker" fixture nere123 preflight 4
-  grep -Fq 'fetch -q origin master' "$scratch/git-master.log"
-  grep -Fq 'merge-base --is-ancestor aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa origin/master' "$scratch/git-master.log"
+  cd "$scratch/real-seed"
+  git init -q -b master
+  git config user.name Fixture
+  git config user.email fixture@example.invalid
+  git config commit.gpgsign false
+  echo 'm0' > file.txt
+  git add file.txt
+  git commit -qm master-base
+  git branch dev
+  git checkout -q dev
+  echo 'd1' > file.txt
+  git add file.txt
+  git commit -qm dev-base
+  git remote add origin "$scratch/origin.git"
+  git push -q origin master dev
+)
+(
+  cd "$scratch/real-local"
+  git init -q
+  git config user.name Fixture
+  git config user.email fixture@example.invalid
+  git config commit.gpgsign false
+  git remote add origin "$scratch/origin.git"
+  git fetch -q origin
+  git checkout -q -b feat origin/dev
+  echo 'f1' > file.txt
+  git add file.txt
+  git commit -qm feat-commit
+  python3 "$metadata" snapshot "$scratch/real-snap" fixture-real
+  [[ $(cat "$scratch/real-snap/.remote-test-snapshot/base-ref") == origin/dev ]]
+  PREFLIGHT_BASE_REF=refs/remotes/origin/master python3 "$metadata" snapshot "$scratch/real-snap-master" fixture-master
+  [[ $(cat "$scratch/real-snap-master/.remote-test-snapshot/base-ref") == origin/master ]]
+  mkdir -p "$scratch/bad-snap"
+  for bad_ref in master refs/heads/master HEAD~1 origin/; do
+    expect_failure 'PREFLIGHT_BASE_REF' env PREFLIGHT_BASE_REF="$bad_ref" python3 "$metadata" snapshot "$scratch/bad-snap" fixture-bad
+  done
+  expect_failure 'Base ref not found' env PREFLIGHT_BASE_REF=origin/missing python3 "$metadata" snapshot "$scratch/bad-snap" fixture-missing
+)
+cp -R "$scratch/real-snap/.remote-test-snapshot" "$scratch/real-worker/"
+(
+  cd "$scratch/real-worker"
+  git init -q
+  git remote add origin "$scratch/origin.git"
+  echo "/.remote-test-snapshot/" >> .git/info/exclude
+  expect_failure 'mock lsof reached' bash "$worker" fixture nere123 preflight 4
+  git show-ref --verify --quiet refs/remotes/origin/dev
+  rm -rf .remote-test-snapshot
+  cp -R "$scratch/real-snap-master/.remote-test-snapshot" .
+  expect_failure 'mock lsof reached' env PREFLIGHT_BASE_REF=origin/master bash "$worker" fixture nere123 preflight 4
+  git show-ref --verify --quiet refs/remotes/origin/master
+  expect_failure 'mock lsof reached' env PREFLIGHT_BASE_REF=refs/remotes/origin/master bash "$worker" fixture nere123 preflight 4
+  for bad_ref in master refs/heads/master HEAD~1 origin/; do
+    expect_failure 'PREFLIGHT_BASE_REF' env PREFLIGHT_BASE_REF="$bad_ref" bash "$worker" fixture nere123 preflight 4
+  done
 )
 grep -q -- '-oControlMaster=auto' "$runner"
 grep -q -- '-oControlPersist=10m' "$runner"
