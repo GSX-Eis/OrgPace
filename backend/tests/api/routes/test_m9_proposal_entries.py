@@ -322,6 +322,7 @@ def test_mcp_expired_reject_and_withdraw_commit_expiry(
         assert replay_audits[0].target_id == "respond_demand"
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("channel", ["web", "feishu"])
 def test_human_confirms_proposal_then_acceptance(
     case: tuple,
