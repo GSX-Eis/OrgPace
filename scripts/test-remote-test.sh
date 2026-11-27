@@ -432,7 +432,7 @@ grep -q -- 'PREFLIGHT_BASE_REF=' "$runner"
 # Verify consistent PREFLIGHT_BASE_REF contract (snapshot + metadata + remote-test-worker.sh)
 # against a real temporary bare Git remote without mocking git.
 git init --bare -q "$scratch/origin.git"
-mkdir -p "$scratch/real-seed" "$scratch/real-local" "$scratch/real-snap" "$scratch/real-snap-master" "$scratch/real-worker"
+mkdir -p "$scratch/real-seed" "$scratch/real-local" "$scratch/real-snap" "$scratch/real-snap-dev" "$scratch/real-snap-master" "$scratch/real-worker"
 (
   cd "$scratch/real-seed"
   git init -q -b master
@@ -458,16 +458,19 @@ mkdir -p "$scratch/real-seed" "$scratch/real-local" "$scratch/real-snap" "$scrat
   git config commit.gpgsign false
   git remote add origin "$scratch/origin.git"
   git fetch -q origin
+  git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/dev
   git checkout -q -b feat origin/dev
   echo 'f1' > file.txt
   git add file.txt
   git commit -qm feat-commit
   python3 "$metadata" snapshot "$scratch/real-snap" fixture-real
   [[ $(cat "$scratch/real-snap/.remote-test-snapshot/base-ref") == origin/dev ]]
+  PREFLIGHT_BASE_REF=origin/dev python3 "$metadata" snapshot "$scratch/real-snap-dev" fixture-dev
+  [[ $(cat "$scratch/real-snap-dev/.remote-test-snapshot/base-ref") == origin/dev ]]
   PREFLIGHT_BASE_REF=refs/remotes/origin/master python3 "$metadata" snapshot "$scratch/real-snap-master" fixture-master
   [[ $(cat "$scratch/real-snap-master/.remote-test-snapshot/base-ref") == origin/master ]]
   mkdir -p "$scratch/bad-snap"
-  for bad_ref in master refs/heads/master HEAD~1 origin/; do
+  for bad_ref in origin/HEAD refs/remotes/origin/HEAD ' origin/dev ' 'origin/dev ' '   ' master refs/heads/master HEAD~1 origin/; do
     expect_failure 'PREFLIGHT_BASE_REF' env PREFLIGHT_BASE_REF="$bad_ref" python3 "$metadata" snapshot "$scratch/bad-snap" fixture-bad
   done
   expect_failure 'Base ref not found' env PREFLIGHT_BASE_REF=origin/missing python3 "$metadata" snapshot "$scratch/bad-snap" fixture-missing
@@ -480,14 +483,16 @@ cp -R "$scratch/real-snap/.remote-test-snapshot" "$scratch/real-worker/"
   echo "/.remote-test-snapshot/" >> .git/info/exclude
   expect_failure 'mock lsof reached' bash "$worker" fixture nere123 preflight 4
   git show-ref --verify --quiet refs/remotes/origin/dev
+  expect_failure 'mock lsof reached' env PREFLIGHT_BASE_REF=origin/dev bash "$worker" fixture nere123 preflight 4
   rm -rf .remote-test-snapshot
   cp -R "$scratch/real-snap-master/.remote-test-snapshot" .
   expect_failure 'mock lsof reached' env PREFLIGHT_BASE_REF=origin/master bash "$worker" fixture nere123 preflight 4
   git show-ref --verify --quiet refs/remotes/origin/master
   expect_failure 'mock lsof reached' env PREFLIGHT_BASE_REF=refs/remotes/origin/master bash "$worker" fixture nere123 preflight 4
-  for bad_ref in master refs/heads/master HEAD~1 origin/; do
+  for bad_ref in origin/HEAD refs/remotes/origin/HEAD ' origin/dev ' 'origin/dev ' '   ' master refs/heads/master HEAD~1 origin/; do
     expect_failure 'PREFLIGHT_BASE_REF' env PREFLIGHT_BASE_REF="$bad_ref" bash "$worker" fixture nere123 preflight 4
   done
+  expect_failure 'fatal:' env PREFLIGHT_BASE_REF=origin/missing bash "$worker" fixture nere123 preflight 4
 )
 grep -q -- '-oControlMaster=auto' "$runner"
 grep -q -- '-oControlPersist=10m' "$runner"

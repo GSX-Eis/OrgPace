@@ -138,8 +138,8 @@ fi
 normalize_base_ref() {
   local raw=$1
   raw=${raw#refs/remotes/}
-  if [[ $raw != origin/* || $raw == origin/ ]] || ! git check-ref-format "refs/remotes/$raw" >/dev/null 2>&1; then
-    echo "PREFLIGHT_BASE_REF 仅支持远端分支引用（origin/<branch>），当前为: $1" >&2
+  if [[ $raw != origin/* || $raw == origin/ || $raw == origin/HEAD ]] || ! git check-ref-format "refs/remotes/$raw" >/dev/null 2>&1; then
+    echo "PREFLIGHT_BASE_REF 仅支持真实远端分支引用（origin/<branch>），当前为: $1" >&2
     exit 2
   fi
   printf '%s\n' "$raw"

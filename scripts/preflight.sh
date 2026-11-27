@@ -56,8 +56,8 @@ fi
 normalize_base_ref() {
   local raw=$1
   raw=${raw#refs/remotes/}
-  if [[ $raw != origin/* || $raw == origin/ ]] || ! git check-ref-format "refs/remotes/$raw" >/dev/null 2>&1; then
-    echo "PREFLIGHT_BASE_REF 仅支持远端分支引用（origin/<branch>），当前为: $1" >&2
+  if [[ $raw != origin/* || $raw == origin/ || $raw == origin/HEAD ]] || ! git check-ref-format "refs/remotes/$raw" >/dev/null 2>&1; then
+    echo "PREFLIGHT_BASE_REF 仅支持真实远端分支引用（origin/<branch>），当前为: $1" >&2
     exit 2
   fi
   printf '%s\n' "$raw"
@@ -65,16 +65,16 @@ normalize_base_ref() {
 
 if [[ -n ${PREFLIGHT_BASE_REF:-} ]]; then
   base_ref=$(normalize_base_ref "$PREFLIGHT_BASE_REF")
-elif git show-ref --verify --quiet refs/remotes/origin/dev; then
+elif git show-ref --verify --quiet refs/remotes/origin/dev && ! git symbolic-ref --quiet refs/remotes/origin/dev >/dev/null 2>&1; then
   base_ref=origin/dev
-elif git show-ref --verify --quiet refs/remotes/origin/master; then
+elif git show-ref --verify --quiet refs/remotes/origin/master && ! git symbolic-ref --quiet refs/remotes/origin/master >/dev/null 2>&1; then
   base_ref=origin/master
 else
   echo '基线分支不存在: origin/dev 或 origin/master' >&2
   exit 1
 fi
-if ! git show-ref --verify --quiet "refs/remotes/$base_ref"; then
-  echo "基线分支不存在: $base_ref" >&2
+if ! git show-ref --verify --quiet "refs/remotes/$base_ref" || git symbolic-ref --quiet "refs/remotes/$base_ref" >/dev/null 2>&1; then
+  echo "基线分支不存在或为符号引用: $base_ref" >&2
   exit 1
 fi
 git diff --name-only "$base_ref"...HEAD > "$scratch/committed"

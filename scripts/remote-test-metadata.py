@@ -90,11 +90,28 @@ def paths(*args: str) -> list[bytes]:
     return git(*args).rstrip(b"\0").split(b"\0")
 
 
+def _is_real_remote_branch(ref: str) -> bool:
+    full_ref = f"refs/remotes/{ref}"
+    exists = subprocess.run(
+        ["git", "show-ref", "--verify", "--quiet", full_ref],
+        check=False,
+    )
+    if exists.returncode != 0:
+        return False
+    symref = subprocess.run(
+        ["git", "symbolic-ref", "--quiet", full_ref],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return symref.returncode != 0
+
+
 def _normalize_base_ref(raw: str) -> str:
-    ref = raw.strip().removeprefix("refs/remotes/")
-    if not ref.startswith("origin/") or ref == "origin/":
+    ref = raw.removeprefix("refs/remotes/")
+    if not ref.startswith("origin/") or ref in {"origin/", "origin/HEAD"}:
         raise ValueError(
-            f"PREFLIGHT_BASE_REF must be a remote branch ref (origin/<branch>), got: {raw!r}"
+            f"PREFLIGHT_BASE_REF must be a real remote branch ref (origin/<branch>), got: {raw!r}"
         )
     check = subprocess.run(
         ["git", "check-ref-format", f"refs/remotes/{ref}"],
@@ -110,22 +127,14 @@ def _normalize_base_ref(raw: str) -> str:
 
 
 def resolve_base_ref() -> str:
-    explicit = os.environ.get("PREFLIGHT_BASE_REF", "").strip()
+    explicit = os.environ.get("PREFLIGHT_BASE_REF", "")
     if explicit:
         ref = _normalize_base_ref(explicit)
-        probe = subprocess.run(
-            ["git", "show-ref", "--verify", "--quiet", f"refs/remotes/{ref}"],
-            check=False,
-        )
-        if probe.returncode != 0:
-            raise ValueError(f"Base ref not found: {ref}")
+        if not _is_real_remote_branch(ref):
+            raise ValueError(f"Base ref not found or is symbolic: {ref}")
         return ref
     for candidate in ("origin/dev", "origin/master"):
-        probe = subprocess.run(
-            ["git", "show-ref", "--verify", "--quiet", f"refs/remotes/{candidate}"],
-            check=False,
-        )
-        if probe.returncode == 0:
+        if _is_real_remote_branch(candidate):
             return candidate
     raise ValueError("Could not resolve base ref (tried origin/dev and origin/master)")
 

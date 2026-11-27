@@ -1,5 +1,4 @@
 import os
-import re
 from contextlib import ExitStack
 from pathlib import Path
 from uuid import uuid4
@@ -12,7 +11,15 @@ from xdist.workermanage import WorkerController
 DATABASES = pytest.StashKey[ExitStack]()
 SHARED_TEMPLATE = pytest.StashKey[str]()
 NO_DB_DATABASE_URL = "postgresql://no-db:no-db@127.0.0.1:1/no_db_mode"
-_UNIT_MARKER_RE = re.compile(r"(?:pytest\.)?mark\.unit\b")
+NO_DB_ENV_OVERRIDES: dict[str, str] = {
+    "DATABASE_URL": NO_DB_DATABASE_URL,
+    "FASTAPI_ENV": "development",
+    "PROJECT_NAME": "OrgPace No-DB Unit Tests",
+    "SECRET_KEY": "no-db-unit-test-secret",
+    "PI_SERVICE_TOKEN": "no-db-unit-test-token",
+    "FIRST_SUPERUSER": "no-db@example.com",
+    "FIRST_SUPERUSER_PASSWORD": "no-db-unit-test-password",
+}
 
 
 def _no_db_mode() -> bool:
@@ -21,35 +28,13 @@ def _no_db_mode() -> bool:
 
 def _enforce_no_db_env() -> None:
     # Override even existing .env or shell DATABASE_URL so no-DB runs never touch a live DB.
-    os.environ["DATABASE_URL"] = NO_DB_DATABASE_URL
-    os.environ["FASTAPI_ENV"] = "development"
-    os.environ["PROJECT_NAME"] = "OrgPace No-DB Unit Tests"
-    os.environ["SECRET_KEY"] = "no-db-unit-test-secret"
-    os.environ["PI_SERVICE_TOKEN"] = "no-db-unit-test-token"
-    os.environ["FIRST_SUPERUSER"] = "no-db@example.com"
-    os.environ["FIRST_SUPERUSER_PASSWORD"] = "no-db-unit-test-password"
+    os.environ.update(NO_DB_ENV_OVERRIDES)
 
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_configure(config: pytest.Config) -> None:  # noqa: ARG001
     if _no_db_mode():
         _enforce_no_db_env()
-
-
-@pytest.hookimpl(tryfirst=True)
-def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
-    if not _no_db_mode():
-        return None
-    markexpr = (getattr(config.option, "markexpr", "") or "").strip()
-    if markexpr != "unit":
-        return None
-    if collection_path.is_file() and collection_path.suffix == ".py":
-        name = collection_path.name
-        if name.startswith("test_") or name.endswith("_test.py"):
-            text = collection_path.read_text(encoding="utf-8", errors="ignore")
-            if not _UNIT_MARKER_RE.search(text):
-                return True
-    return None
 
 
 @pytest.hookimpl(trylast=True)
