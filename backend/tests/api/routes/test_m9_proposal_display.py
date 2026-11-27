@@ -1,10 +1,12 @@
 """C2 display contract regressions using C1's isolated synthetic tenant."""
 
 import json
+from collections.abc import Generator
 from datetime import timedelta
 from typing import Any
 from uuid import UUID
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
 
@@ -15,17 +17,28 @@ from app.domains.capacity.proposal import _aligned_participants, current_princip
 from app.domains.org.models import Employee, OrgMembership
 from app.domains.planning.snapshot import build, current_fingerprint
 from tests.api.routes.test_m9_proposal import (
-    case as case,
-)
-from tests.api.routes.test_m9_proposal import (
+    fresh_planning_case,
     plan,
+    planning_org_session,
     propose,
     respond,
     segments,
 )
-from tests.api.routes.test_m9_proposal import (
-    planning_setup as planning_setup,
-)
+from tests.utils.demo import DemoSeed
+
+
+@pytest.fixture(scope="module")
+def _planning_org(
+    db: Session, client: TestClient, _demo_seed: DemoSeed
+) -> Generator[dict[str, Any]]:
+    with planning_org_session(db, client, _demo_seed) as state:
+        yield state
+
+
+@pytest.fixture
+def case(db: Session, _planning_org: dict[str, Any]) -> Generator[tuple]:
+    with fresh_planning_case(db, _planning_org) as item:
+        yield item
 
 
 def test_requester_can_read_each_anonymous_segment(

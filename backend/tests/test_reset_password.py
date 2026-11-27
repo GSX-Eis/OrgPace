@@ -1,4 +1,3 @@
-import subprocess
 import sys
 from datetime import timedelta
 
@@ -97,32 +96,31 @@ def test_reset_password(
 
 
 def test_disabled_and_missing(
-    request: pytest.FixtureRequest, db: Session, caplog: pytest.LogCaptureFixture
+    request: pytest.FixtureRequest,
+    db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     user = request.getfixturevalue("tenant_data")[3][4]
     user.username = str(user.email).lower()
     user.is_active = False
     db.add(user)
     db.commit()
-    result = subprocess.run(
-        [sys.executable, "-m", "app.cli", "reset-password", user.username],
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0
-    assert result.stderr.endswith("这个账号已停用，重置密码不会启用账号\n")
-    password = result.stdout.splitlines()[1].removeprefix("新密码：")
-    assert password not in result.stderr and password not in caplog.text
+    monkeypatch.setattr(sys, "argv", ["app.cli", "reset-password", user.username])
+    assert main() == 0
+    output = capsys.readouterr()
+    assert output.err.endswith("这个账号已停用，重置密码不会启用账号\n")
+    password = output.out.splitlines()[1].removeprefix("新密码：")
+    assert password not in output.err and password not in caplog.text
     db.refresh(user)
     assert not user.is_active and verify_password(password, user.hashed_password)[0]
     missing = f"missing-{user.id}"
-    result = subprocess.run(
-        [sys.executable, "-m", "app.cli", "reset-password", missing],
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 1 and result.stdout == ""
-    assert result.stderr.endswith(f"找不到登录名 {missing}\n")
+    monkeypatch.setattr(sys, "argv", ["app.cli", "reset-password", missing])
+    assert main() == 1
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert output.err.endswith(f"找不到登录名 {missing}\n")
 
 
 def test_cli_actor_migration(migration_engine: Engine) -> None:

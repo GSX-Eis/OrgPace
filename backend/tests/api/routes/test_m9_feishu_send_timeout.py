@@ -72,8 +72,12 @@ def sending(db: Session, demo: tuple) -> Generator[tuple]:
 
 @pytest.mark.parametrize("outcome", ["success", "error", "timeout"])
 def test_send_releases_connection_and_pending_role_change(
-    sending: tuple, db: Session, outcome: str
+    sending: tuple,
+    db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
 ) -> None:
+    monkeypatch.setattr(actions, "FEISHU_SEND_TIMEOUT_SECONDS", 0.25)
     p, reply, incoming, pool, grant_id, admin_id = sending
     writer_started = ThreadEvent()
     queries: list[str] = []
@@ -117,7 +121,7 @@ def test_send_releases_connection_and_pending_role_change(
             await asyncio.sleep(0.05)
             assert not writer.done(), "personnel changes must wait until send finishes"
             if outcome == "timeout":
-                await asyncio.sleep(30)
+                await asyncio.sleep(5)
             elif outcome == "error":
                 raise ImError("network")
             return httpx.Response(200, json={"code": 0, "data": {"message_id": "sent"}})
@@ -144,7 +148,7 @@ def test_send_releases_connection_and_pending_role_change(
                             actions.deliver(
                                 session, p, incoming, "synthetic", reply, adapter
                             ),
-                            14,
+                            3,
                         )
                     assert error.value.code == (
                         "timeout" if outcome == "timeout" else "network"
@@ -156,8 +160,8 @@ def test_send_releases_connection_and_pending_role_change(
                 await asyncio.wait_for(writer, 2)
                 assert time.monotonic() - ended < 1
                 if outcome == "timeout":
-                    assert 9 <= ended - started < 13
-                    assert writer_elapsed[0] < 13
+                    assert 0.2 <= ended - started < 1.5
+                    assert writer_elapsed[0] < 1.5
         finally:
             await adapter.close()
             if writer:

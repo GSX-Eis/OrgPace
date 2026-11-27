@@ -290,7 +290,7 @@ def test_propose_rechecks_latest_snapshot_after_employee_lock(
 
 
 def test_accept_rechecks_expiry_after_waiting_for_employee(
-    case: tuple, client: TestClient, db: Session
+    case: tuple, client: TestClient, db: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from threading import Event
 
@@ -300,11 +300,14 @@ def test_accept_rechecks_expiry_after_waiting_for_employee(
     from app.domains.base import utc_now
     from app.domains.org.models import Employee
 
+    now = utc_now()
+    current = now
+    monkeypatch.setattr(proposal, "utc_now", lambda: current)
     hold_demand(db, case)
     reply = propose(client, case)
     assert reply.status_code == 200, reply.text
     row = proposal_row(db, case[3])
-    expires = utc_now() + timedelta(seconds=5)
+    expires = now + timedelta(seconds=5)
     row.hold_expires_at = expires
     db.add(row)
     db.commit()
@@ -336,7 +339,8 @@ def test_accept_rechecks_expiry_after_waiting_for_employee(
                 future = pool.submit(respond, client, case, reply.json()["revision"])
                 try:
                     assert entered.wait(timeout=10)
-                    Event().wait(max(0, (expires - utc_now()).total_seconds()) + 0.1)
+                    Event().wait(0.05)
+                    current = expires + timedelta(seconds=1)
                 finally:
                     blocker.rollback()
                 result = future.result(timeout=20)

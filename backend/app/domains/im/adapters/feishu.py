@@ -329,7 +329,7 @@ class Feishu:
             except Empty:
                 if not self.process.is_alive():
                     raise ImError("network", retryable=True)
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.02)
                 continue
             if kind == "error":
                 raise ImError(payload, retryable=payload == "network")

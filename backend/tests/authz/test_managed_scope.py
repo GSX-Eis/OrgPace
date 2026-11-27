@@ -1,5 +1,6 @@
 import uuid
 from collections.abc import Generator
+from contextlib import contextmanager
 
 import pytest
 from fastapi.testclient import TestClient
@@ -26,8 +27,8 @@ from tests.authz.test_tenant_access import headers
 from tests.utils.org import delete_test_organization
 
 
-@pytest.fixture
-def hierarchy(db: Session) -> Generator[tuple]:
+@contextmanager
+def _build_hierarchy(db: Session) -> Generator[tuple]:
     orgs = [Organization(slug=str(uuid.uuid7()), name="合成企业") for _ in range(2)]
     users = [
         User(username=str(uuid.uuid7()), hashed_password="unused") for _ in range(4)
@@ -125,8 +126,22 @@ def hierarchy(db: Session) -> Generator[tuple]:
         db.commit()
 
 
-def test_manager_hierarchy_read_scope(hierarchy: tuple, client: TestClient) -> None:
-    orgs, departments, employees, users, evidence = hierarchy
+@pytest.fixture
+def hierarchy(db: Session) -> Generator[tuple]:
+    with _build_hierarchy(db) as data:
+        yield data
+
+
+@pytest.fixture(scope="module")
+def readonly_hierarchy(db: Session) -> Generator[tuple]:
+    with _build_hierarchy(db) as data:
+        yield data
+
+
+def test_manager_hierarchy_read_scope(
+    readonly_hierarchy: tuple, client: TestClient
+) -> None:
+    orgs, departments, employees, users, evidence = readonly_hierarchy
     for manager, org_index, visible in (
         (0, 0, {0, 1, 2}),
         (1, 0, {1, 2}),
@@ -280,9 +295,9 @@ def test_no_grants_skip_query(db: Session) -> None:
 
 
 def test_nonmember_and_missing_org_are_identical(
-    hierarchy: tuple, client: TestClient
+    readonly_hierarchy: tuple, client: TestClient
 ) -> None:
-    orgs, _, _, users, _ = hierarchy
+    orgs, _, _, users, _ = readonly_hierarchy
     auth = headers(users[3])
     responses = [
         client.get(f"/api/v1/orgs/{org_id}/employees", headers=auth)

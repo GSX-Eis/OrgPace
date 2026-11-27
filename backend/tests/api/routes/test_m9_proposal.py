@@ -1,6 +1,7 @@
 """Proposal holds and atomic commitments on test-owned synthetic data."""
 
 from collections.abc import Generator
+from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -11,26 +12,35 @@ from fastapi.testclient import TestClient
 from httpx import Response
 from sqlalchemy import Engine, event
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Session, delete, select
+from sqlmodel import Session, col, delete, select, update
 
 from app.core.security import create_access_token
+from app.domains.audit.models import AuditEvent
 from app.domains.base import utc_now
 from app.domains.capacity import proposal
-from app.domains.capacity.calendar import loads
+from app.domains.capacity.calendar import loads, this_week
 from app.domains.capacity.models import (
     CapacityApproval,
     CapacityAssignment,
+    CapacityDemand,
     CapacityDemandEvent,
     CapacityExtensionRequest,
     CapacityProposal,
     CapacityProposalLine,
+    CapacitySetting,
     CapacityWeek,
+    CapacityWeekForecast,
     DemandEventKind,
 )
-from app.domains.org.models import OrgMembership, RoleGrant
-from app.domains.planning.models import PlanningOption
+from app.domains.inbox.models import InboxItem
+from app.domains.org.models import Department, Employee, OrgMembership, RoleGrant
+from app.domains.planning.models import PlanningCase, PlanningOption, PlanningSnapshot
+from app.domains.profile.models import ProfileVersion
 from app.models import User
 from tests.api.routes.test_m7_planning_validator import planning_setup as planning_setup
+from tests.fixtures import _demo
+from tests.utils.demo import DemoSeed
+from tests.utils.org import cleanup_new_users
 
 
 @pytest.fixture
@@ -52,6 +62,186 @@ def case(planning_setup: tuple, db: Session) -> Generator[tuple]:
     ):
         db.exec(delete(model).where(model.org_id == demand.org_id))
     db.commit()
+
+
+@contextmanager
+def planning_org_session(
+    db: Session, client: TestClient, demo_seed: DemoSeed
+) -> Generator[dict[str, Any]]:
+    with _demo(db, demo_seed, token_minutes=60, minimal=True) as (
+        minimal_demo,
+        _,
+        _,
+    ):
+        url, employees, auth = minimal_demo
+        org_id = employees["E01"].org_id
+        members = {
+            m.employee_id: m
+            for m in db.exec(
+                select(OrgMembership).where(OrgMembership.org_id == org_id)
+            ).all()
+        }
+        admin = members[None].user_id
+        b = members[employees["E05"].id]
+        auth["b"] = {
+            "Authorization": f"Bearer {create_access_token(b.user_id, expires_delta=timedelta(minutes=60))}"
+        }
+        requester_id = members[employees["E01"].id].user_id
+        auth["a"] = {
+            "Authorization": f"Bearer {create_access_token(requester_id, expires_delta=timedelta(minutes=60))}"
+        }
+        target = employees["E04"].department_id
+        start = this_week(db, org_id)
+        capability = client.get(f"{url}/capabilities", headers=auth["admin"]).json()[
+            "data"
+        ][0]
+        db.add_all(
+            [
+                RoleGrant(
+                    org_id=org_id,
+                    membership_id=b.id,
+                    role="dept_manager",
+                    department_id=target,
+                ),
+                CapacitySetting(org_id=org_id, enabled=True, updated_by_user_id=admin),
+            ]
+        )
+        for employee in (employees["E04"], employees["E05"]):
+            for week in (start, start + timedelta(days=7)):
+                db.add(
+                    CapacityWeek(
+                        org_id=org_id,
+                        employee_id=employee.id,
+                        week_start=week,
+                        other_percent=10,
+                        confirmed_by_user_id=admin,
+                    )
+                )
+        db.commit()
+        try:
+            yield {
+                "url": url,
+                "org_id": org_id,
+                "employees": employees,
+                "auth": auth,
+                "admin": admin,
+                "requester_id": requester_id,
+                "requesting_department_id": employees["E01"].department_id,
+                "target_department_id": target,
+                "start": start,
+                "capability": capability,
+                "base_depts": set(
+                    db.exec(
+                        select(Department.id).where(Department.org_id == org_id)
+                    ).all()
+                ),
+                "base_emps": {e.id for e in employees.values()},
+                "base_members": set(
+                    db.exec(
+                        select(OrgMembership.id).where(OrgMembership.org_id == org_id)
+                    ).all()
+                ),
+                "base_grants": set(
+                    db.exec(
+                        select(RoleGrant.id).where(RoleGrant.org_id == org_id)
+                    ).all()
+                ),
+                "base_users": set(db.exec(select(User.id)).all()),
+            }
+        finally:
+            db.rollback()
+            for model in (CapacityWeek, CapacitySetting):
+                db.exec(delete(model).where(model.org_id == org_id))
+            db.commit()
+
+
+@contextmanager
+def fresh_planning_case(
+    db: Session, state: dict[str, Any]
+) -> Generator[
+    tuple[str, dict[str, Employee], dict[str, dict[str, str]], CapacityDemand]
+]:
+    org_id = state["org_id"]
+    start = state["start"]
+    demand = CapacityDemand(
+        org_id=org_id,
+        requesting_department_id=state["requesting_department_id"],
+        requester_user_id=state["requester_id"],
+        target_department_id=state["target_department_id"],
+        capability_key=state["capability"]["key"],
+        capability_name=state["capability"]["name"],
+        headcount=1,
+        allocation_percent=50,
+        window_start=start,
+        window_end=start + timedelta(days=13),
+        description="合成需求",
+    )
+    db.add(demand)
+    db.commit()
+    try:
+        yield state["url"], state["employees"], dict(state["auth"]), demand
+    finally:
+        db.rollback()
+        for model in (
+            CapacityExtensionRequest,
+            CapacityAssignment,
+            CapacityApproval,
+            CapacityProposalLine,
+            CapacityProposal,
+            CapacityDemandEvent,
+            PlanningOption,
+            PlanningSnapshot,
+            PlanningCase,
+            CapacityWeekForecast,
+            CapacityDemand,
+            AuditEvent,
+            InboxItem,
+            ProfileVersion,
+        ):
+            db.exec(delete(model).where(model.org_id == org_id))
+        db.exec(
+            delete(CapacityWeek).where(
+                CapacityWeek.org_id == org_id,
+                (col(CapacityWeek.employee_id).not_in(state["base_emps"]))
+                | (
+                    col(CapacityWeek.week_start).not_in(
+                        (start, start + timedelta(days=7))
+                    )
+                ),
+            )
+        )
+        db.exec(
+            update(CapacityWeek)
+            .where(CapacityWeek.org_id == org_id)
+            .values(other_percent=10, confirmed_by_user_id=state["admin"])
+        )
+        db.exec(
+            delete(RoleGrant).where(
+                RoleGrant.org_id == org_id,
+                col(RoleGrant.id).not_in(state["base_grants"]),
+            )
+        )
+        db.exec(
+            delete(OrgMembership).where(
+                OrgMembership.org_id == org_id,
+                col(OrgMembership.id).not_in(state["base_members"]),
+            )
+        )
+        db.exec(
+            delete(Employee).where(
+                Employee.org_id == org_id,
+                col(Employee.id).not_in(state["base_emps"]),
+            )
+        )
+        db.exec(
+            delete(Department).where(
+                Department.org_id == org_id,
+                col(Department.id).not_in(state["base_depts"]),
+            )
+        )
+        cleanup_new_users(db, state["base_users"])
+        db.commit()
+        db.expire_all()
 
 
 def segments(

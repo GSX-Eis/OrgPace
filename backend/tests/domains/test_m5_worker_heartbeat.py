@@ -47,25 +47,45 @@ from app.worker import health, monitor, tasks
 from app.worker.app import app
 from app.worker.models import WorkerHeartbeat
 from app.worker.monitor import dispatch_worker_alerts
-from tests.utils.migrations import migrate
+from tests.utils.migrations import isolated_database, migrate
 from tests.utils.org import delete_test_organization
 
 
+@pytest.fixture(scope="module")
+def isolated_engine(migration_template: str) -> Generator[Engine]:
+    with isolated_database(
+        engine.url, f"heartbeat_test_{uuid4().hex}", template=migration_template
+    ) as isolated:
+        yield isolated
+
+
 @pytest.fixture
-def db(migration_engine: Engine, monkeypatch: pytest.MonkeyPatch) -> Generator[Session]:
+def db(isolated_engine: Engine, monkeypatch: pytest.MonkeyPatch) -> Generator[Session]:
     # Global monitoring must not scan or write the shared demo used by other tests.
-    monkeypatch.setattr(core_db, "engine", migration_engine)
-    monkeypatch.setattr(deps, "engine", migration_engine)
-    monkeypatch.setattr(tasks, "engine", migration_engine)
+    monkeypatch.setattr(core_db, "engine", isolated_engine)
+    monkeypatch.setattr(deps, "engine", isolated_engine)
+    monkeypatch.setattr(tasks, "engine", isolated_engine)
     monkeypatch.setattr(
         monitor, "PROCESS_STARTED_AT", utc_now() - health.HEARTBEAT_TIMEOUT
     )
-    monkeypatch.setattr(sys.modules[__name__], "engine", migration_engine)
+    monkeypatch.setattr(sys.modules[__name__], "engine", isolated_engine)
     monkeypatch.setenv(
-        "DATABASE_URL", migration_engine.url.render_as_string(hide_password=False)
+        "DATABASE_URL", isolated_engine.url.render_as_string(hide_password=False)
     )
-    with Session(migration_engine) as session:
-        yield session
+    with Session(isolated_engine) as session:
+        try:
+            yield session
+        finally:
+            session.rollback()
+            for table in (
+                "im_notification",
+                "inbox_item",
+                "worker_heartbeat",
+                "procrastinate_jobs",
+                "procrastinate_workers",
+            ):
+                session.execute(text(f"DELETE FROM {table}"))
+            session.commit()
 
 
 @pytest.fixture
@@ -123,13 +143,15 @@ def tenants(db: Session) -> Generator[list[list[OrgMembership]]]:
         )
         result.append(members)
     db.commit()
-    yield result
-    db.rollback()
-    for members in result:
-        delete_test_organization(db, members[0].org_id)
-    for user in users:
-        db.delete(user)
-    db.commit()
+    try:
+        yield result
+    finally:
+        db.rollback()
+        for members in result:
+            delete_test_organization(db, members[0].org_id)
+        for user in users:
+            db.delete(user)
+        db.commit()
 
 
 def test_heartbeat_task_updates_singleton(db: Session) -> None:
@@ -301,10 +323,10 @@ def test_manual_worker_does_not_run_hourly_defaults(
     )
 
     async def slow_ping() -> None:
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.01)
 
     async def slow_recovery(context: object, timestamp: int) -> None:  # noqa: ARG001
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.01)
 
     monkeypatch.setattr(tasks.ping, "func", slow_ping)
     monkeypatch.setattr(tasks.retry_stalled_jobs, "func", slow_recovery)
