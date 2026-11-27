@@ -2,9 +2,10 @@
 set -euo pipefail
 
 usage() {
-  echo 'Usage: scripts/remote-test.sh [--force] [--no-cache] {preflight|pytest [args...]|playwright [args...]|status}'
+  echo 'Usage: scripts/remote-test.sh [--force] [--no-cache] {preflight [--full] [--baseline-gate]|pytest [args...]|playwright [args...]|status}'
   echo 'Set COMPOSE_PROJECT_NAME=nere<issue-number> (optional -review suffix) for test runs.'
   echo 'Use preflight --full or PREFLIGHT_FULL_PYTEST=1 for the full selected pytest set.'
+  echo 'Use preflight --baseline-gate or PREFLIGHT_BASELINE_GATE=1 to enforce the Node ID baseline gate.'
   echo 'Use --no-cache or CLOUD_TEST_NO_CACHE=1 to bypass the local content-addressed result cache.'
 }
 
@@ -43,8 +44,22 @@ if [[ $mode != status ]]; then
 fi
 case "$mode" in
   preflight)
-    [[ $# == 0 || ( $# == 1 && $1 == --full ) ]] || die 'preflight does not take arguments other than --full'
-    if [[ ${PREFLIGHT_FULL_PYTEST:-0} == 1 ]]; then set -- --full; fi ;;
+    preflight_full=false
+    preflight_baseline_gate=false
+    for arg in "$@"; do
+      case "$arg" in
+        --full) preflight_full=true ;;
+        --baseline-gate) preflight_baseline_gate=true ;;
+        *) die 'preflight does not take arguments other than --full and --baseline-gate' ;;
+      esac
+    done
+    if [[ ${PREFLIGHT_FULL_PYTEST:-0} == 1 ]]; then preflight_full=true; fi
+    if [[ ${PREFLIGHT_BASELINE_GATE:-0} == 1 ]]; then preflight_baseline_gate=true; fi
+    preflight_args=()
+    if $preflight_full; then preflight_args+=(--full); fi
+    if $preflight_baseline_gate; then preflight_args+=(--baseline-gate); fi
+    set -- ${preflight_args[@]+"${preflight_args[@]}"}
+    ;;
   status) [[ $# == 0 ]] || die "$mode does not take arguments" ;;
 esac
 project=${COMPOSE_PROJECT_NAME:-}
@@ -128,15 +143,48 @@ if [[ $mode != status && $no_cache != true && ${CLOUD_TEST_NO_CACHE:-0} != 1 ]];
   fi
 fi
 
+resolve_queue_bin() {
+  if [[ -n ${CLOUD_TEST_QUEUE_BIN+x} ]]; then
+    if [[ -n $CLOUD_TEST_QUEUE_BIN && -x $CLOUD_TEST_QUEUE_BIN ]]; then
+      printf '%s\n' "$CLOUD_TEST_QUEUE_BIN"
+    fi
+    return 0
+  fi
+  if [[ -x $HOME/.local/bin/cloud-test-queue ]]; then
+    printf '%s\n' "$HOME/.local/bin/cloud-test-queue"
+  elif command -v cloud-test-queue >/dev/null 2>&1; then
+    command -v cloud-test-queue
+  fi
+}
+
 if [[ $mode != status && ${CLOUD_TEST_QUEUE_HELD:-0} != 1 && ${CLOUD_TEST_QUEUE_DISABLE:-0} != 1 ]]; then
   queue_timeout=${CLOUD_TEST_LOCK_TIMEOUT:-900}
+  queue_bin=$(resolve_queue_bin)
+  if [[ -n $queue_bin ]]; then
+    exec "$queue_bin" \
+      --queue "$GCP_INSTANCE" \
+      --project epp \
+      --kind "$mode" \
+      --timeout "$queue_timeout" \
+      --label "epp:$project:$mode" \
+      -- "${BASH_SOURCE[0]}" "${orig_args[@]}"
+  fi
   exec env CLOUD_TEST_QUEUE_HELD=1 python3 "$metadata" queue-run \
     "$GCP_INSTANCE" "$queue_timeout" "epp:$project:$mode" -- \
     "${BASH_SOURCE[0]}" "${orig_args[@]}"
 fi
 
+slot_cap=${CLOUD_TEST_QUEUE_SLOTS:-}
+if [[ -n $slot_cap ]]; then
+  [[ $slot_cap =~ ^[1-9][0-9]*$ ]] || die "Invalid CLOUD_TEST_QUEUE_SLOTS: $slot_cap"
+fi
+
 observe
 if [[ $mode == status ]]; then
+  queue_bin=$(resolve_queue_bin)
+  if [[ -n $queue_bin ]]; then
+    "$queue_bin" status --queue "$GCP_INSTANCE" || true
+  fi
   if [[ $vm_status == RUNNING ]]; then
     cloud_ssh --command="/usr/local/bin/auto-shutdown-idle.sh --status"
   else
@@ -233,8 +281,12 @@ EPP_RSYNC_PREFIX=$upload rsync -rpt --checksum --timeout=60 --delete --exclude='
 
 # Quote each argument for the VM shell. A tty gives the remote worker a HUP
 # on disconnect, including when the caller interrupts gcloud or SSH.
+remote_env=''
+if [[ -n $slot_cap ]]; then
+  remote_env="CLOUD_TEST_QUEUE_SLOTS=$(printf '%q' "$slot_cap") "
+fi
 args=$(printf ' %q' "$run_id" "$project" "$mode" "$workers" "$@")
-execute="cd $remote_dir && test \"\$(cat .remote-test-snapshot/id)\" = $run_id || { echo 'Snapshot changed; retry the run.' >&2; exit 75; }; exec bash scripts/remote-test-worker.sh$args"
+execute="cd $remote_dir && test \"\$(cat .remote-test-snapshot/id)\" = $run_id || { echo 'Snapshot changed; retry the run.' >&2; exit 75; }; exec ${remote_env}bash scripts/remote-test-worker.sh$args"
 set +e
 cloud_ssh --command="exec $locked bash -c $(printf '%q' "$execute")" -- -tt 2>&1 | tee "$scratch/output.log"
 code=${PIPESTATUS[0]}

@@ -942,7 +942,14 @@ def build_cache_descriptor(mode: str, args: list[str]) -> dict[str, Any]:
         )
         extra_inputs["origin_master_sha"] = origin_master
         full = "--full" in args or _truthy_env("PREFLIGHT_FULL_PYTEST")
-        normalized_flags = ["--full"] if full else []
+        baseline_gate = "--baseline-gate" in args or _truthy_env(
+            "PREFLIGHT_BASELINE_GATE"
+        )
+        normalized_flags = []
+        if full:
+            normalized_flags.append("--full")
+        if baseline_gate:
+            normalized_flags.append("--baseline-gate")
         normalized_targets: list[str] = []
     elif mode == "pytest":
         normalized_flags, normalized_targets = _normalize_pytest_args(args)
@@ -957,6 +964,11 @@ def build_cache_descriptor(mode: str, args: list[str]) -> dict[str, Any]:
             "true"
             if mode == "playwright"
             else os.environ.get("PLAYWRIGHT_FIXTURES_ENABLED", "")
+        ),
+        "PREFLIGHT_BASELINE_GATE": (
+            "1"
+            if (mode == "preflight" and "--baseline-gate" in normalized_flags)
+            else os.environ.get("PREFLIGHT_BASELINE_GATE", "")
         ),
         "PREFLIGHT_FULL_PYTEST": (
             "1"

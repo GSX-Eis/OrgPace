@@ -94,6 +94,53 @@ done
 expect_failure 'mock lsof reached' env CLOUD_TEST_NPROC=16 CLOUD_TEST_LEASE_DIR="$scratch/leases" MOCK_LEASE_STATUS=75 bash "$worker" fixture nere123 preflight 12
 grep -Fq 'pytest workers: 12（显式指定）' "$scratch/output"
 
+# Verify CLOUD_TEST_QUEUE_SLOTS strictly caps pytest workers in both preflight and pytest modes.
+expect_failure 'mock lsof reached' env CLOUD_TEST_NPROC=16 CLOUD_TEST_LEASE_DIR="$scratch/leases" MOCK_LEASE_STATUS=0 CLOUD_TEST_QUEUE_SLOTS=2 bash "$worker" fixture nere123 preflight ''
+grep -Fq 'pytest workers: 2（受分配槽位 CLOUD_TEST_QUEUE_SLOTS=2 约束）' "$scratch/output"
+expect_failure 'mock lsof reached' env CLOUD_TEST_NPROC=16 CLOUD_TEST_LEASE_DIR="$scratch/leases" MOCK_LEASE_STATUS=0 CLOUD_TEST_QUEUE_SLOTS=2 bash "$worker" fixture nere123 preflight 12
+grep -Fq 'pytest workers: 2（受分配槽位 CLOUD_TEST_QUEUE_SLOTS=2 约束，原指定 12）' "$scratch/output"
+expect_failure 'mock lsof reached' env CLOUD_TEST_NPROC=16 CLOUD_TEST_LEASE_DIR="$scratch/leases" MOCK_LEASE_STATUS=0 CLOUD_TEST_QUEUE_SLOTS=2 bash "$worker" fixture nere123 preflight 1
+grep -Fq 'pytest workers: 1（显式指定）' "$scratch/output"
+expect_failure 'mock lsof reached' env CLOUD_TEST_QUEUE_SLOTS=2 bash "$worker" fixture nere123 pytest '' tests/test_a.py -n auto --numprocesses=8 -n6 -q
+grep -Fq '远端 pytest workers 已按分配槽位收敛至 <= 2（CLOUD_TEST_QUEUE_SLOTS=2）' "$scratch/output"
+expect_failure 'mock lsof reached' env CLOUD_TEST_QUEUE_SLOTS=2 bash "$worker" fixture nere123 pytest '' tests/test_a.py -n 1 -q
+grep -Fq '远端 pytest 分配槽位: 2（CLOUD_TEST_QUEUE_SLOTS=2）' "$scratch/output"
+expect_failure 'Invalid CLOUD_TEST_QUEUE_SLOTS' env CLOUD_TEST_QUEUE_SLOTS=0 bash "$worker" fixture nere123 pytest '' tests/test_a.py
+
+# Verify remote-test.sh prefers cloud-test-queue (slots-v1) and falls back cleanly when absent.
+cat > "$scratch/bin/mock-cloud-test-queue" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ ${1:-} == status ]]; then
+  printf 'Mock queue status: %s\n' "$*"
+  exit 0
+fi
+printf '%s\n' "$*" > "$MOCK_QUEUE_ARGS_FILE"
+while [[ $# -gt 0 ]]; do
+  if [[ $1 == -- ]]; then
+    shift
+    break
+  fi
+  shift
+done
+exec env CLOUD_TEST_QUEUE_HELD=1 CLOUD_TEST_QUEUE_SLOTS=2 CLOUD_TEST_QUEUE_CAPACITY=8 "$@"
+MOCK
+chmod +x "$scratch/bin/mock-cloud-test-queue"
+queue_args_file=$scratch/mock-queue-args.txt
+expect_failure 'mock start reached' env \
+  COMPOSE_PROJECT_NAME=nere123 \
+  CLOUD_TEST_QUEUE_BIN="$scratch/bin/mock-cloud-test-queue" \
+  MOCK_QUEUE_ARGS_FILE="$queue_args_file" \
+  CLOUD_TEST_LOCK_TIMEOUT=420 \
+  "$runner" --force --no-cache pytest tests/api/test_utils.py -q
+grep -Fq -- '--queue example-instance --project epp --kind pytest --timeout 420 --label epp:nere123:pytest -- ' "$queue_args_file"
+status_out=$(CLOUD_TEST_QUEUE_BIN="$scratch/bin/mock-cloud-test-queue" "$runner" status)
+grep -Fq 'Mock queue status: status --queue example-instance' <<< "$status_out"
+expect_failure 'mock start reached' env \
+  COMPOSE_PROJECT_NAME=nere123 \
+  CLOUD_TEST_QUEUE_BIN="" \
+  "$runner" --force --no-cache preflight
+
 # Mock wall-clock time after the first hour, including when run at month rollover.
 python3 - "$metadata" "$scratch" <<'PY'
 from datetime import UTC, datetime
@@ -325,13 +372,15 @@ assert run_meta(["cache-lookup", "pytest", "--", "tests/api/test_a.py", "-m", "c
 assert run_meta(["cache-lookup", "playwright", "--", "--grep", "@external-mcp"]).returncode == 1
 assert run_meta(["cache-lookup", "pytest", "--", "tests/api/test_a.py"], env={**base_env, "CLOUD_TEST_NO_CACHE": "1"}).returncode == 1
 
-# 7. Preflight key includes origin/master SHA and PREFLIGHT_FULL_PYTEST
+# 7. Preflight key includes origin/master SHA, PREFLIGHT_FULL_PYTEST and PREFLIGHT_BASELINE_GATE
 desc_pf = Path(work) / "desc-pf.json"
 assert run_meta(["cache-prepare", str(desc_pf), "preflight", "--"]).returncode == 0
 assert run_meta(["cache-store", str(desc_pf), "nere124", "22.0", str(out_log)]).returncode == 0
 assert run_meta(["cache-lookup", "preflight", "--"]).returncode == 0
 assert run_meta(["cache-lookup", "preflight", "--", "--full"]).returncode == 1
+assert run_meta(["cache-lookup", "preflight", "--", "--baseline-gate"]).returncode == 1
 assert run_meta(["cache-lookup", "preflight", "--"], env={**base_env, "PREFLIGHT_FULL_PYTEST": "1"}).returncode == 1
+assert run_meta(["cache-lookup", "preflight", "--"], env={**base_env, "PREFLIGHT_BASELINE_GATE": "1"}).returncode == 1
 subprocess.run(["git", "add", "app.py"], cwd=repo, check=True)
 subprocess.run(["git", "commit", "-qm", "advance"], cwd=repo, check=True)
 subprocess.run(["git", "update-ref", "refs/remotes/origin/master", "HEAD"], cwd=repo, check=True)
