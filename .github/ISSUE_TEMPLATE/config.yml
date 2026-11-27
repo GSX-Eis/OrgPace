@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions & Community Discussions
+    url: https://github.com/GSX-Eis/OrgPace/discussions
+    about: Ask questions, share deployment setups, or discuss ideas with the community.
+  - name: Report a Security Vulnerability
+    url: https://github.com/GSX-Eis/OrgPace/security/advisories/new
+    about: Privately report security vulnerabilities without opening a public issue.
