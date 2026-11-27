@@ -15,6 +15,10 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/GSX-Eis/OrgPace/releases"><img src="https://img.shields.io/github/v/release/GSX-Eis/OrgPace?label=Release&amp;color=2563EB" alt="版本发布" /></a>
+  <a href="https://github.com/GSX-Eis/OrgPace/actions/workflows/test-backend.yml"><img src="https://img.shields.io/github/actions/workflow/status/GSX-Eis/OrgPace/test-backend.yml?branch=master&amp;label=CI" alt="CI 状态" /></a>
+  <a href="https://github.com/GSX-Eis/OrgPace/actions/workflows/test-docker-compose.yml"><img src="https://img.shields.io/github/actions/workflow/status/GSX-Eis/OrgPace/test-docker-compose.yml?branch=master&amp;label=Deploy%20Check" alt="部署检查状态" /></a>
+  <a href="https://github.com/GSX-Eis/OrgPace/commits/master"><img src="https://img.shields.io/github/last-commit/GSX-Eis/OrgPace/master?label=Last%20Commit" alt="最近提交" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="Apache-2.0 License" /></a>
   <img src="https://img.shields.io/badge/Self--Hosted-Docker%20Compose-2496ED.svg" alt="Docker Compose 私有化部署" />
   <img src="https://img.shields.io/badge/Bilingual-EN%20%2F%20%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-0EA5E9.svg" alt="全站中英双语" />
@@ -22,12 +26,12 @@
 
 ## 为什么做知程
 
-项目推进之所以总卡住，往往不是团队不够努力，而是跨部门要不到合适的人、关键骨干长期隐性过载、排期只能靠表格拍脑袋。**知程**以「真实能力画像 + 70%/30% 实时资源负载」为可信底座，帮你理顺人员与部门间的协同卡点，让排期真正落得下去，推进项目快速交付。
+项目推进之所以总卡住，往往不是团队不够努力，而是跨部门要不到合适的人、关键骨干长期隐性过载、排期只能靠表格拍脑袋。**知程**以「真实能力画像 + 弹性资源负载」为可信底座，帮你理顺人员与部门间的协同卡点，让排期真正落得下去，推进项目快速交付。
 
 | 场景 | 传统方式 | 知程 |
 | :--- | :--- | :--- |
 | **能力底座** | 靠印象、口头打听或过时 HR 表格 | 从 Jira 或导入的 CSV 工作记录整理能力草稿，经员工自查与经理审批后生效 |
-| **负载与余量** | 静态 Excel 假设全员 100% 可用，骨干隐性超载 | 区分 70% 常规配额与 30% 弹性缓冲空间，结合趋势与业务波动预测未来可用余量 |
+| **负载与余量** | 静态 Excel 假设全员 100% 可用，骨干隐性超载 | 内置常规与弹性负载缓冲，结合趋势与业务波动预测未来可用余量 |
 | **跨部门卡点** | 群里反复协调要人，或被迫公开个人日程隐私 | 需求方仅查看能否承接及最早启动时间，**不暴露个人明细**；资源方经理私下调整分工 |
 | **排期落地** | 靠口头拍板，或 AI 助手未经校验擅自答应 | 经过规则校验的排期卡片，必须由负责人人工点击确认后才正式生效 |
 
@@ -35,7 +39,7 @@
 
 1. **用真实工作记录夯实能力与负载底座：** 同步 Jira 或导入 CSV 工作记录生成能力草稿，由员工本人核对补充、经理审核确认，告别靠印象找人。
 2. **隐私安全地打通跨部门档期卡点：** 需求方说明业务目标、所需能力与期望时间窗，即可得知目标部门能否承接以及最早何时可以启动，不暴露对方团队个人负荷明细。
-3. **在真实余量内排期并人工确认承诺：** 目标部门经理参考 70%/30% 配额与远期预测余量，避免骨干隐性过载，在卡片界面精细调整分工并通过网页或飞书确认生效。
+3. **在真实余量内排期并人工确认承诺：** 目标部门经理参考弹性负载与远期预测余量，避免骨干隐性过载，在卡片界面精细调整分工并通过网页或飞书确认生效。
 4. **交付完成后经验自动回流：** 项目或任务完成后，经理记录事实性反馈，经员工过目确认后补充进能力档案，让后续排期与用人越用越准。
 
 ## 产品界面
@@ -50,7 +54,7 @@
     </td>
     <td width="50%" align="center">
       <a href="docs/assets/readme/05-capacity-workload-en.png"><img src="docs/assets/readme/05-capacity-workload-en.png" alt="团队负荷与预测（英文界面）" /></a><br />
-      <sub><strong>团队负荷与余量（Team Workload）</strong> — 直观查看每周投入、70% 常规配额、远期余量预测与波动策略。</sub>
+      <sub><strong>团队负荷与余量（Team Workload）</strong> — 直观查看每周投入、弹性负载余量、远期预测与波动策略。</sub>
     </td>
   </tr>
   <tr>
@@ -89,7 +93,7 @@ flowchart LR
 | 功能板块 | 状态 | 用户价值与核心能力 |
 | :--- | :---: | :--- |
 | **团队能力档案** | ✅ **现已可用** | 从 Jira/CSV 同步工作记录、员工自查补充、经理（含组织代理）审批确认 |
-| **负荷与远期预测** | ✅ **现已可用** | 周可用投入与不可用时段、70% 常规 + 30% 弹性配额及未来余量预测 |
+| **负荷与远期预测** | ✅ **现已可用** | 周可用投入与不可用时段、弹性负载缓冲及未来余量预测 |
 | **跨部门隐私排期** | ✅ **现已可用** | 需求方只看能否承接与最早启动时间，经理卡片化排期并人工确认生效 |
 | **多角色项目与回流** | ✅ **现已可用** | 支持多角色分阶段项目跟进，完工后事实反馈自动沉淀为个人能力档案 |
 | **双语与日常入口** | ✅ **现已可用** | 全站一键切换中英文，提供内置助手与飞书交互确认卡片 |
@@ -103,7 +107,7 @@ flowchart LR
 ### ✅ 现已可用（Available Now）
 
 - **可信的团队能力档案：** 自动从 Jira 或导入的工作记录中整理成员能力草稿，经员工自查与经理（支持按组织层级自动代理）审核确认后生效；只记录可追溯的工作事实，未知即未知。
-- **团队负荷透明化与远期余量预测：** 成员自主维护每周可用投入与不可用时段；知程区分常规工作配额（70%）与弹性缓冲空间（30%），并结合延续趋势与业务波动预测未来数周的真实可用余量。
+- **团队负荷透明化与远期余量预测：** 成员自主维护每周可用投入与不可用时段；知程兼顾日常配额与弹性负载缓冲，防止团队长期过载，并结合延续趋势与业务波动预测未来数周的真实可用余量。
 - **隐私友好的跨部门档期评估与可视化排期：** 跨部门发起需求时，需求方只需说明目标与时间，即可得知能否承接及最早启动时间，不暴露他部门个人明细；资源方经理可在卡片化界面精细调整分工并人工确认生效，避免 AI 或口头擅自承诺。
 - **多角色分阶段项目与实战经验回流：** 支持多角色、分阶段的复杂项目排期与执行跟进；工作完成后，实际交付成果可回流补充成员能力档案。
 - **全站中英双语与多入口协同：** 网页端一键中英切换并记住偏好，内置对话助手与飞书交互确认卡片，日常更新与审批开箱即用。
