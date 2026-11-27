@@ -1,6 +1,6 @@
 # M10 验收记录
 
-验收代码基线为 master `8554ca0b4a9292923337969ddfcb633b31c9fdee`（北京时间 2026-11-19），包含 B2 和第一阶段复核的两项修复。范围来自 [NERE-640](mention://issue/01a1de41-e621-7ec2-9080-0a3296dc63ae)，记录任务为 NERE-840。[基线提交](https://github.com/ft1148137/employee-profile-platform/commit/8554ca0b4a9292923337969ddfcb633b31c9fdee)
+验收代码基线为 master `8554ca0b4a9292923337969ddfcb633b31c9fdee`（北京时间 2026-11-19），包含 B2 和第一阶段复核的两项修复。范围来自 [NERE-640](mention://issue/01a1de41-e621-7ec2-9080-0a3296dc63ae)，记录任务为 NERE-840。基线提交 8554ca0b
 
 ## 依据与交付
 
@@ -8,16 +8,16 @@ A1～A6、B1、B2 及两项复核修复全部合并到 master，各 PR 最终检
 
 | 子 issue | 交付 | 最终 PR 检查 |
 | --- | --- | --- |
-| NERE-832 A1 | 项目聚合、多角色与排程影响 | [#383](https://github.com/ft1148137/employee-profile-platform/pull/383/checks) |
-| NERE-833 A2 | 角色必需和可选能力 | [#384](https://github.com/ft1148137/employee-profile-platform/pull/384/checks) |
-| NERE-834 A3 | 助手项目草稿和按姓名查周负荷 | [#386](https://github.com/ft1148137/employee-profile-platform/pull/386/checks) |
-| NERE-835 A4 | 拒绝原因、决策记录和 M9 带入修整 | [#385](https://github.com/ft1148137/employee-profile-platform/pull/385/checks) |
-| NERE-836 A5 | 执行跟踪、不可用影响和 IM 链接统一 | [#389](https://github.com/ft1148137/employee-profile-platform/pull/389/checks) |
-| NERE-837 A6 | 工作反馈进入画像流程 | [#390](https://github.com/ft1148137/employee-profile-platform/pull/390/checks) |
-| NERE-838 B1 | SolverPort、案例评测和承诺变更回归 | [#387](https://github.com/ft1148137/employee-profile-platform/pull/387/checks)、[#388](https://github.com/ft1148137/employee-profile-platform/pull/388/checks) |
-| NERE-839 B2 | CP-SAT 生产接入和优化候选 | [#393](https://github.com/ft1148137/employee-profile-platform/pull/393/checks) |
-| NERE-841 | 项目提交时校验现行词典 | [#391](https://github.com/ft1148137/employee-profile-platform/pull/391/checks) |
-| NERE-842 | 原部门经理可跟踪进行中借调任务 | [#392](https://github.com/ft1148137/employee-profile-platform/pull/392/checks) |
+| NERE-832 A1 | 项目聚合、多角色与排程影响 | 历史 PR #383 检查 |
+| NERE-833 A2 | 角色必需和可选能力 | 历史 PR #384 检查 |
+| NERE-834 A3 | 助手项目草稿和按姓名查周负荷 | 历史 PR #386 检查 |
+| NERE-835 A4 | 拒绝原因、决策记录和 M9 带入修整 | 历史 PR #385 检查 |
+| NERE-836 A5 | 执行跟踪、不可用影响和 IM 链接统一 | 历史 PR #389 检查 |
+| NERE-837 A6 | 工作反馈进入画像流程 | 历史 PR #390 检查 |
+| NERE-838 B1 | SolverPort、案例评测和承诺变更回归 | 历史 PR #387 检查、历史 PR #388 检查 |
+| NERE-839 B2 | CP-SAT 生产接入和优化候选 | 历史 PR #393 检查 |
+| NERE-841 | 项目提交时校验现行词典 | 历史 PR #391 检查 |
+| NERE-842 | 原部门经理可跟踪进行中借调任务 | 历史 PR #392 检查 |
 
 ## 多部门、多角色
 
@@ -49,7 +49,7 @@ A1～A6、B1、B2 及两项复核修复全部合并到 master，各 PR 最终检
 | 验收项 | 测试文件与用例 | 结果与边界 |
 | --- | --- | --- |
 | B1 离线多项目多角色评测与匿名回放（D-033） | [test_solver.py](../backend/tests/eval/planning/contention/test_solver.py) 的 `test_case_coverage`、`test_contention`、`test_export_saved_replay`、`test_export_omits_untrusted_text`、`test_extended_commitment_leaves_capacity_for_overlapping_role` | #387、#388 通过。离线评测包括 12 个多角色争夺案例和 2 个从合成企业持久化快照匿名导出的单角色回放。#388 修复了结束日期延长的承诺变更提前结束并占用重叠角色容量的问题。该次复跑沿用原 14 案的 Agent 结果，CP-SAT 严格胜出 4/12（33.3%，门槛 30%），逐案硬约束违反均为 0，中位用时 0.0748 秒（门槛 10 秒）。14 案累计各配齐 82 个角色，CP-SAT 总延期 85 个工作日，规则和 Agent 均为 185 个工作日。[逐案数据及 #388 复跑](m10-solver-eval.md) |
-| B2 生产单需求授权快照与优化候选 | [test_m10_solver.py](../backend/tests/api/routes/test_m10_solver.py) 的 `test_optimized_option_matches_b1_replay`、`test_optimized_option_uses_m9_reply_and_accept`、`test_optimized_option_failure_keeps_rule_options`；[m8-plan-page.spec.ts](../frontend/tests/m8-plan-page.spec.ts) 的「B 方经理无需模型查看方案，A 方经理看不到入口」<br><br>**#397 修复回归**。[test_replayed_commitment_blocks_late_optimization](../backend/tests/eval/planning/contention/test_solver.py#L70)、[test_optimized_option_rejects_work_after_commitment](../backend/tests/api/routes/test_m10_solver.py#L189)、[test_optimized_option_matches_b1_replay](../backend/tests/api/routes/test_m10_solver.py#L78)、[test_optimized_option_uses_m9_reply_and_accept](../backend/tests/api/routes/test_m10_solver.py#L115)、[test_optimized_option_preserves_real_handoff](../backend/tests/api/routes/test_m10_solver.py#L164) | #393 完成生产接入。生产按一个需求的授权快照生成候选，回归核对两条单角色回放和 M9 答复及接受流程。求解限时 10 秒，异常或超时后保留规则方案。生成候选时没有预占或分配。OR-Tools 9.15.6755 随后端运行环境安装。[ADR 0054](adr/0054-solver-port.md) · [依赖核验](licenses.md)<br><br>**#393 问题记录**。Reviewer 用[不可用日期匿名快照](../backend/tests/eval/planning/contention/replay-unavailability-01.json)复现了两项行为。原承诺 11 月 29 日结束的变更可生成 12 月 6 日结束的候选，实际提交仍须走 M9 延期审批。同一人从 11 月 23 日至 12 月 6 日连续投入 50% 时，候选会误拆成两段，要求分阶段确认，接受后按段生成两条分配。[NERE-843](mention://issue/01a1f07c-444f-797f-9206-2deaae6d80ed)<br><br>**#397 修复结果**。已合并至 master（`49c7a7f2`），后端和浏览器回归通过。原承诺 11 月 29 日结束时，求解器和独立复核均挡住 12 月 6 日结束的优化候选，延期继续走 M9 审批。初次答复时，同一人从 11 月 23 日至 12 月 6 日连续投入 50% 只需需求方接受新日期，接受后生成一条连续分配。真实人员交接和经理显式选择分阶段交付仍须需求方确认分阶段。[#397 CI](https://github.com/ft1148137/employee-profile-platform/pull/397/checks) |
+| B2 生产单需求授权快照与优化候选 | [test_m10_solver.py](../backend/tests/api/routes/test_m10_solver.py) 的 `test_optimized_option_matches_b1_replay`、`test_optimized_option_uses_m9_reply_and_accept`、`test_optimized_option_failure_keeps_rule_options`；[m8-plan-page.spec.ts](../frontend/tests/m8-plan-page.spec.ts) 的「B 方经理无需模型查看方案，A 方经理看不到入口」<br><br>**#397 修复回归**。[test_replayed_commitment_blocks_late_optimization](../backend/tests/eval/planning/contention/test_solver.py#L70)、[test_optimized_option_rejects_work_after_commitment](../backend/tests/api/routes/test_m10_solver.py#L189)、[test_optimized_option_matches_b1_replay](../backend/tests/api/routes/test_m10_solver.py#L78)、[test_optimized_option_uses_m9_reply_and_accept](../backend/tests/api/routes/test_m10_solver.py#L115)、[test_optimized_option_preserves_real_handoff](../backend/tests/api/routes/test_m10_solver.py#L164) | #393 完成生产接入。生产按一个需求的授权快照生成候选，回归核对两条单角色回放和 M9 答复及接受流程。求解限时 10 秒，异常或超时后保留规则方案。生成候选时没有预占或分配。OR-Tools 9.15.6755 随后端运行环境安装。[ADR 0054](adr/0054-solver-port.md) · [依赖核验](licenses.md)<br><br>**#393 问题记录**。Reviewer 用[不可用日期匿名快照](../backend/tests/eval/planning/contention/replay-unavailability-01.json)复现了两项行为。原承诺 11 月 29 日结束的变更可生成 12 月 6 日结束的候选，实际提交仍须走 M9 延期审批。同一人从 11 月 23 日至 12 月 6 日连续投入 50% 时，候选会误拆成两段，要求分阶段确认，接受后按段生成两条分配。[NERE-843](mention://issue/01a1f07c-444f-797f-9206-2deaae6d80ed)<br><br>**#397 修复结果**。已合并至 master（`49c7a7f2`），后端和浏览器回归通过。原承诺 11 月 29 日结束时，求解器和独立复核均挡住 12 月 6 日结束的优化候选，延期继续走 M9 审批。初次答复时，同一人从 11 月 23 日至 12 月 6 日连续投入 50% 只需需求方接受新日期，接受后生成一条连续分配。真实人员交接和经理显式选择分阶段交付仍须需求方确认分阶段。历史 PR #397 CI |
 | 迁移与数据保全 | [test_m10_project_migration.py](../backend/tests/test_m10_project_migration.py) 的 `test_m10_migration_roundtrip`、`test_m10_downgrade_preserves_new_data`、`test_m10_downgrade_waits_for_in_flight_reason`；[test_m10_tracking_migration.py](../backend/tests/test_m10_tracking_migration.py) 的 `test_tracking_migration_roundtrip`；[test_m10_feedback.py](../backend/tests/api/routes/test_m10_feedback.py) 的 `test_feedback_migration`；[test_m10_solver_migration.py](../backend/tests/test_m10_solver_migration.py) 的 `test_optimized_kind_roundtrip` | #383、#389、#390、#393 通过。迁移依次为项目、跟踪、反馈、优化方案，基线唯一 head 为 `c839001bc001`。兼容数据可升降级往返；存在项目／原因、任务关联、反馈请求或优化方案等相应新数据时阻止降级并保留记录。 |
 
 ## M9／M9.2 带入事项

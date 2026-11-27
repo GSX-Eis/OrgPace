@@ -20,7 +20,7 @@ S15 已修复姓名泄露，但长期环境复测留在 M6.1；不能把修复�
 | [NERE-650](mention://issue/01a1de5d-eeff-74e1-bef1-75c9348cf36a)，测试工程师 13:06、13:12 | S12 冒烟逐项结果、截图、隐私不通过及 NERE-657；以下 S12 节按这两条汇总 |
 | NERE-650，技术规划 13:06 确认、14:16 核对及 14:17 更正 | 从严采用「A 方不能看到 B 部门任何人的姓名」；S12 done 表示结果齐备，不表示各项均通过；#298 合并后的 master CI 当时尚未全部完成 |
 | [NERE-658](mention://issue/01a1df4d-c5bd-7a03-be78-321125c1190c)，13:30、13:38 结果 | S15 服务层统一隐名、自动测试、PR #297 的 14/14 检查通过并合并；nere497 未复测 |
-| [NERE-649](mention://issue/01a1de5d-e1d6-7f3f-a6ac-9159a196c425)，[#295](https://github.com/ft1148137/employee-profile-platform/pull/295)、[#298](https://github.com/ft1148137/employee-profile-platform/pull/298) | 管理员、员工、经理及 MCP 指南；后续更正答复人姓名口径 |
+| [NERE-649](mention://issue/01a1de5d-e1d6-7f3f-a6ac-9159a196c425)，历史 PR #295、历史 PR #298 | 管理员、员工、经理及 MCP 指南；后续更正答复人姓名口径 |
 
 S12 的两条测试评论 ID 分别为 `01a1df50-b490-7985-b986-ebad1465f6e8`、
 `01a1df56-8708-70a0-b6fe-ca4c4840fdc7`，截图压缩包 `evidence-short.zip` 附在前者。
@@ -30,18 +30,18 @@ S12 的两条测试评论 ID 分别为 `01a1df50-b490-7985-b986-ebad1465f6e8`、
 
 | 条目 | 结论与 PR | 自动测试 |
 | --- | --- | --- |
-| S1 NERE-632：CSV 中文表头和状态 | 已交付，[#281](https://github.com/ft1148137/employee-profile-platform/pull/281)。八列依次为工号、能力、等级、判断状态、证据数、最近证据时间、批准人、批准时间；状态为已确认、暂定、存在争议，空等级为未定级；时间按企业时区，JSON 保留英文字段与状态 | [test_m6_profile_export_csv.py](../backend/tests/api/routes/test_m6_profile_export_csv.py)：三种状态、BOM、中文、引号、公式注入防护、时区及 JSON 不变；[m5-profile-export.spec.ts](../frontend/tests/m5-profile-export.spec.ts)：网页导出 |
-| S2 NERE-633：覆盖率含下级 | 已交付，[#282](https://github.com/ft1148137/employee-profile-platform/pull/282)。部门行增加「含下级部门」合计；原本部门数和上方全范围合计不变；只统计当前 Principal 范围内在职员工，没有下级时不显示合计 | [test_m6_coverage_descendants.py](../backend/tests/api/routes/test_m6_coverage_descendants.py)：区域、子部门、空部门和店长隔离；[m6-coverage-descendants.spec.ts](../frontend/tests/m6-coverage-descendants.spec.ts)：合计展示和部门过滤 |
+| S1 NERE-632：CSV 中文表头和状态 | 已交付，历史 PR #281。八列依次为工号、能力、等级、判断状态、证据数、最近证据时间、批准人、批准时间；状态为已确认、暂定、存在争议，空等级为未定级；时间按企业时区，JSON 保留英文字段与状态 | [test_m6_profile_export_csv.py](../backend/tests/api/routes/test_m6_profile_export_csv.py)：三种状态、BOM、中文、引号、公式注入防护、时区及 JSON 不变；[m5-profile-export.spec.ts](../frontend/tests/m5-profile-export.spec.ts)：网页导出 |
+| S2 NERE-633：覆盖率含下级 | 已交付，历史 PR #282。部门行增加「含下级部门」合计；原本部门数和上方全范围合计不变；只统计当前 Principal 范围内在职员工，没有下级时不显示合计 | [test_m6_coverage_descendants.py](../backend/tests/api/routes/test_m6_coverage_descendants.py)：区域、子部门、空部门和店长隔离；[m6-coverage-descendants.spec.ts](../frontend/tests/m6-coverage-descendants.spec.ts)：合计展示和部门过滤 |
 
 ## 父 issue 的五条验收标准
 
 | 标准 | 结论与实现 PR | 自动测试文件与断言 |
 | --- | --- | --- |
-| 1. A 方问参考、提需求，B 方 AI 起草并修改确认，A 方收到答复和依据；全程不泄露个人信息 | 功能已交付：S5a/S5b [#285](https://github.com/ft1148137/employee-profile-platform/pull/285)、[#286](https://github.com/ft1148137/employee-profile-platform/pull/286)，S7 [#288](https://github.com/ft1148137/employee-profile-platform/pull/288)，S9a/S9b [#292](https://github.com/ft1148137/employee-profile-platform/pull/292)、[#294](https://github.com/ft1148137/employee-profile-platform/pull/294)。隐私冒烟曾失败，S15 [#297](https://github.com/ft1148137/employee-profile-platform/pull/297) 已修，M6.1 待复测 | [test_m6_capacity_demand.py](../backend/tests/api/routes/test_m6_capacity_demand.py)、[test_m6_capacity_reply.py](../backend/tests/api/routes/test_m6_capacity_reply.py)：汇总、提交、依据快照、答复/接受/追问和通知；[test_m6_capacity_assistant.py](../backend/tests/api/routes/test_m6_capacity_assistant.py)、[test_m6_capacity_assistant_reply.py](../backend/tests/api/routes/test_m6_capacity_assistant_reply.py)：起草不落业务数据、修改后旧卡失效、本人确认才发送；[test_m6_capacity_responder_privacy.py](../backend/tests/api/routes/test_m6_capacity_responder_privacy.py)：A 方各读取入口及接受返回值均不含答复人姓名 |
-| 2. Jira 参考值、经理直接调整、员工申请同意或退回 | 已交付：S3 [#283](https://github.com/ft1148137/employee-profile-platform/pull/283)、S4 [#284](https://github.com/ft1148137/employee-profile-platform/pull/284)、S9b #294。经理不能直接改自己，企业管理员身份本身不授予调整权限 | [test_m6_capacity_workload.py](../backend/tests/api/routes/test_m6_capacity_workload.py)：参考件数、空值、分配比例、审批路由/代理、重复决定、通知及画像不变；[m6-capacity-workload.spec.ts](../frontend/tests/m6-capacity-workload.spec.ts)：申请、退回、同意、直接调整及范围 |
-| 3. 员工延期同意或退回、经理改期；推迟承诺须确认并通知 A 方 | 已交付：S6a/S6b [#287](https://github.com/ft1148137/employee-profile-platform/pull/287)、[#289](https://github.com/ft1148137/employee-profile-platform/pull/289)，S8a/S8 [#291](https://github.com/ft1148137/employee-profile-platform/pull/291)、[#293](https://github.com/ft1148137/employee-profile-platform/pull/293)。承诺更新、事件和通知在同一事务完成 | [test_m6_capacity_assignment.py](../backend/tests/api/routes/test_m6_capacity_assignment.py)、[test_m6_capacity_extension.py](../backend/tests/api/routes/test_m6_capacity_extension.py)：权限、审批/退回、并发及事务回滚；[test_m6_capacity_assignment_web.py](../backend/tests/api/routes/test_m6_capacity_assignment_web.py)：新日期和对外说明必填、说明禁带个人信息、A 方通知；[m6-capacity-assignment.spec.ts](../frontend/tests/m6-capacity-assignment.spec.ts)：分配、延期、经理改期与 A 方新日期 |
+| 1. A 方问参考、提需求，B 方 AI 起草并修改确认，A 方收到答复和依据；全程不泄露个人信息 | 功能已交付：S5a/S5b 历史 PR #285、历史 PR #286，S7 历史 PR #288，S9a/S9b 历史 PR #292、历史 PR #294。隐私冒烟曾失败，S15 历史 PR #297 已修，M6.1 待复测 | [test_m6_capacity_demand.py](../backend/tests/api/routes/test_m6_capacity_demand.py)、[test_m6_capacity_reply.py](../backend/tests/api/routes/test_m6_capacity_reply.py)：汇总、提交、依据快照、答复/接受/追问和通知；[test_m6_capacity_assistant.py](../backend/tests/api/routes/test_m6_capacity_assistant.py)、[test_m6_capacity_assistant_reply.py](../backend/tests/api/routes/test_m6_capacity_assistant_reply.py)：起草不落业务数据、修改后旧卡失效、本人确认才发送；[test_m6_capacity_responder_privacy.py](../backend/tests/api/routes/test_m6_capacity_responder_privacy.py)：A 方各读取入口及接受返回值均不含答复人姓名 |
+| 2. Jira 参考值、经理直接调整、员工申请同意或退回 | 已交付：S3 历史 PR #283、S4 历史 PR #284、S9b #294。经理不能直接改自己，企业管理员身份本身不授予调整权限 | [test_m6_capacity_workload.py](../backend/tests/api/routes/test_m6_capacity_workload.py)：参考件数、空值、分配比例、审批路由/代理、重复决定、通知及画像不变；[m6-capacity-workload.spec.ts](../frontend/tests/m6-capacity-workload.spec.ts)：申请、退回、同意、直接调整及范围 |
+| 3. 员工延期同意或退回、经理改期；推迟承诺须确认并通知 A 方 | 已交付：S6a/S6b 历史 PR #287、历史 PR #289，S8a/S8 历史 PR #291、历史 PR #293。承诺更新、事件和通知在同一事务完成 | [test_m6_capacity_assignment.py](../backend/tests/api/routes/test_m6_capacity_assignment.py)、[test_m6_capacity_extension.py](../backend/tests/api/routes/test_m6_capacity_extension.py)：权限、审批/退回、并发及事务回滚；[test_m6_capacity_assignment_web.py](../backend/tests/api/routes/test_m6_capacity_assignment_web.py)：新日期和对外说明必填、说明禁带个人信息、A 方通知；[m6-capacity-assignment.spec.ts](../frontend/tests/m6-capacity-assignment.spec.ts)：分配、延期、经理改期与 A 方新日期 |
 | 4. 关闭模块不影响画像；关闭模型可用表单走通 | 后端隔离与表单已交付：#283、#284、#288、#293。关闭模块的菜单刷新和助手引导仍部分不通过（NERE-657）；不能记成全部通过 | [test_m6_capacity_architecture.py](../backend/tests/test_m6_capacity_architecture.py)：依赖隔离；[test_m6_capacity_workload.py](../backend/tests/api/routes/test_m6_capacity_workload.py)：默认关闭、关闭后拒绝业务调用；上述三个网页 spec 在新企业未配置模型时分别走通负荷、需求、分配与延期；全量 CI 依据见下一节 |
-| 5. 网页、网页助手、飞书、MCP 四入口越权测试通过 | 已有自动测试通过记录：#283～#294、#297；S10 MCP 为 [#290](https://github.com/ft1148137/employee-profile-platform/pull/290)。实际冒烟只抽查部分身份和入口，不等同完整人员回归 | 下表列明每入口覆盖及个人信息断言；MCP 为 [test_m6_capacity_mcp.py](../backend/tests/api/routes/test_m6_capacity_mcp.py)，网页助手/飞书为上述两个 assistant 测试文件，答复人隐名另由 S15 回归覆盖 |
+| 5. 网页、网页助手、飞书、MCP 四入口越权测试通过 | 已有自动测试通过记录：#283～#294、#297；S10 MCP 为 历史 PR #290。实际冒烟只抽查部分身份和入口，不等同完整人员回归 | 下表列明每入口覆盖及个人信息断言；MCP 为 [test_m6_capacity_mcp.py](../backend/tests/api/routes/test_m6_capacity_mcp.py)，网页助手/飞书为上述两个 assistant 测试文件，答复人隐名另由 S15 回归覆盖 |
 
 ## 四入口权限与 A 方隐私断言
 
@@ -56,7 +56,7 @@ S12 的两条测试评论 ID 分别为 `01a1df50-b490-7985-b986-ebad1465f6e8`、
 助手写操作必须由本人点击确认卡；MCP 直接调用写工具，工具说明要求用户明确同意，并记录客户端来源，不能据此声称平台验证了外部客户端的确认 UI。
 负荷/延期审批、分配及直接改日期只在网页开放，不在助手和 MCP 增设入口。
 负荷调整代理沿用既有审批路由；延期代理还须在 B 部门范围内或可代表 B 方。
-#291 修复了范围外代理可读 B 方延期上下文的问题，S14 [#296](https://github.com/ft1148137/employee-profile-platform/pull/296) 保留该限制并补测。
+#291 修复了范围外代理可读 B 方延期上下文的问题，S14 历史 PR #296 保留该限制并补测。
 
 ## 模块边界、关闭与无模型路径
 
@@ -78,15 +78,15 @@ demand/reply/workload/MCP 测试比较操作前后的画像或证据，证明本
 
 | 验证 | 通过依据与边界 |
 | --- | --- |
-| 默认关闭下既有画像全量回归 | master `8b20522`（#297 合并提交）的 [Test Backend run 43720000658](https://github.com/ft1148137/employee-profile-platform/actions/runs/43720000658) 已 success：三个分片和 `test-backend` 汇总均通过，合并 coverage 仍要求 90%。工作流跑完整 `backend/tests`，企业默认无设置行即关闭；容量专项测试按需开启，不是强制全部测试始终关闭模块 |
+| 默认关闭下既有画像全量回归 | master `8b20522`（#297 合并提交）的 Test Backend run 43720000658 已 success：三个分片和 `test-backend` 汇总均通过，合并 coverage 仍要求 90%。工作流跑完整 `backend/tests`，企业默认无设置行即关闭；容量专项测试按需开启，不是强制全部测试始终关闭模块 |
 | 关闭后入口及工具不可用 | workload 测试验证无设置行默认关闭、关闭后业务接口 404；assistant/MCP 测试验证工具隐藏及旧调用拒绝；`m6-capacity-workload.spec.ts` 重新打开页面后菜单消失、找人和员工详情仍可打开。S12 另外实测画像、找人、覆盖率和 CSV，已有页面实时更新仍见 NERE-657 |
 | 无模型的表单流程 | [m6-capacity-demand.spec.ts](../frontend/tests/m6-capacity-demand.spec.ts) 在新企业未配置模型时问参考、提交、经理答复、追问、接受和撤回；[m6-capacity-assignment.spec.ts](../frontend/tests/m6-capacity-assignment.spec.ts) 覆盖分配、延期同意/退回、推迟承诺通知、经理改期和关闭分配；[m6-capacity-workload.spec.ts](../frontend/tests/m6-capacity-workload.spec.ts) 覆盖负荷申请、审批及直接调整。三者合起来覆盖无模型全流程，不是一条测试包办全部步骤 |
-| 网页自动测试 CI | 同一 master `8b20522` 的 [Playwright run 43720000624](https://github.com/ft1148137/employee-profile-platform/actions/runs/43720000624) 已 success；用于核对包括 S15 隐名断言的网页流程 |
+| 网页自动测试 CI | 同一 master `8b20522` 的 Playwright run 43720000624 已 success；用于核对包括 S15 隐名断言的网页流程 |
 
 核对基线 `22bf64b` 是指南更正 #298 的合并提交。
 技术规划 14:17 更正评论记录其 Test Backend、Test Docker Compose 当时仍在运行；
-本次编写时核实 [Compose run 43723256461](https://github.com/ft1148137/employee-profile-platform/actions/runs/43723256461) 已 success，
-[Backend run 43723256399](https://github.com/ft1148137/employee-profile-platform/actions/runs/43723256399) 随后也已 completed / success。
+本次编写时核实 Compose run 43723256461 已 success，
+Backend run 43723256399 随后也已 completed / success。
 上表保留包含 S15 修复的 `8b20522` 全量通过记录，基线 `22bf64b` 的这两项 master 检查也已通过；不将 PR 检查冒充 master 检查。
 
 ## S12：nere497 冒烟
@@ -119,7 +119,7 @@ S12 没有 PR。技术规划在 14:16 核对后将其标为 done，理由是结�
 旧规划待决策第 3 条允许这一项，与父 issue 和 S12 的隐私验收冲突；
 技术规划在 13:03～13:06 明确从严验收，作废旧默认，建 S15 NERE-658。
 
-修复为 [#297](https://github.com/ft1148137/employee-profile-platform/pull/297)，
+修复为 历史 PR #297，
 13:37 合并到 master `8b20522204497d6d423242c8e210d1f8f9bdc128`。
 需求服务 `demands_public()` 依据当前 Principal 判断：仅代表目标部门的查看者可得 `responder_name`，
 A 方员工和经理均为空。网页、助手、MCP 共用该投影，去掉助手的重复过滤；
@@ -132,7 +132,7 @@ S15 结果记录先复现失败再修复，容量模块 101 项、本地相关 P
 将 A 方姓名断言按新标准改为 null，同时保留分页、顺序、查询次数及隔离断言；
 `m6-capacity-demand.spec.ts` 新增替代文案和全页不含答复经理姓名的断言。
 
-经理指南在 #297 同步，S11 后续 [#298](https://github.com/ft1148137/employee-profile-platform/pull/298)
+经理指南在 #297 同步，S11 后续 历史 PR #298
 更正员工/经理指南中遗留的「对方可见答复人姓名」表述。
 S15 没有升级或操作 nere497，因此 S12 的姓名不通过仍按原始结果保留；复测安排在 M6.1。
 
