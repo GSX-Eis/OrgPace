@@ -215,6 +215,18 @@ if grep -R -E 'sensitive fixture|staged secret' "$scratch/tree"; then exit 1; fi
 grep -q '^+committed$' "$scratch/tree/.remote-test-snapshot/committed.patch"
 grep -q '^+staged$' "$scratch/tree/.remote-test-snapshot/staged.patch"
 grep -q '^+example staged$' "$scratch/tree/.remote-test-snapshot/staged.patch"
+[[ $(cat "$scratch/tree/.remote-test-snapshot/base-ref") == origin/master ]]
+
+# Prefer origin/dev when present, and honor explicit PREFLIGHT_BASE_REF overrides.
+git update-ref refs/remotes/origin/dev HEAD
+mkdir "$scratch/tree-dev" "$scratch/tree-override"
+python3 "$metadata" snapshot "$scratch/tree-dev" fixture-dev
+[[ $(cat "$scratch/tree-dev/.remote-test-snapshot/base-ref") == origin/dev ]]
+[[ ! -s "$scratch/tree-dev/.remote-test-snapshot/committed.patch" ]]
+PREFLIGHT_BASE_REF=origin/master python3 "$metadata" snapshot "$scratch/tree-override" fixture-override
+[[ $(cat "$scratch/tree-override/.remote-test-snapshot/base-ref") == origin/master ]]
+grep -q '^+committed$' "$scratch/tree-override/.remote-test-snapshot/committed.patch"
+
 mkdir "$scratch/another"
 ln -s "$scratch/usage.jsonl" outside
 expect_failure 'Cannot sync symlink' python3 "$metadata" snapshot "$scratch/another" fixture
@@ -372,9 +384,10 @@ assert run_meta(["cache-lookup", "pytest", "--", "tests/api/test_a.py", "-m", "c
 assert run_meta(["cache-lookup", "playwright", "--", "--grep", "@external-mcp"]).returncode == 1
 assert run_meta(["cache-lookup", "pytest", "--", "tests/api/test_a.py"], env={**base_env, "CLOUD_TEST_NO_CACHE": "1"}).returncode == 1
 
-# 7. Preflight key includes origin/master SHA, PREFLIGHT_FULL_PYTEST and PREFLIGHT_BASELINE_GATE
+# 7. Preflight key includes resolved base ref/SHA (origin/dev default, origin/master fallback/override), PREFLIGHT_FULL_PYTEST and PREFLIGHT_BASELINE_GATE
 desc_pf = Path(work) / "desc-pf.json"
 assert run_meta(["cache-prepare", str(desc_pf), "preflight", "--"]).returncode == 0
+assert json.loads(desc_pf.read_text())["extra_inputs"]["base_ref"] == "origin/master"
 assert run_meta(["cache-store", str(desc_pf), "nere124", "22.0", str(out_log)]).returncode == 0
 assert run_meta(["cache-lookup", "preflight", "--"]).returncode == 0
 assert run_meta(["cache-lookup", "preflight", "--", "--full"]).returncode == 1
@@ -385,6 +398,15 @@ subprocess.run(["git", "add", "app.py"], cwd=repo, check=True)
 subprocess.run(["git", "commit", "-qm", "advance"], cwd=repo, check=True)
 subprocess.run(["git", "update-ref", "refs/remotes/origin/master", "HEAD"], cwd=repo, check=True)
 assert run_meta(["cache-lookup", "preflight", "--"]).returncode == 1
+
+# When origin/dev exists, it becomes the default base_ref and isolates from explicit origin/master overrides.
+subprocess.run(["git", "update-ref", "refs/remotes/origin/dev", "HEAD"], cwd=repo, check=True)
+desc_dev = Path(work) / "desc-pf-dev.json"
+assert run_meta(["cache-prepare", str(desc_dev), "preflight", "--"]).returncode == 0
+assert json.loads(desc_dev.read_text())["extra_inputs"]["base_ref"] == "origin/dev"
+assert run_meta(["cache-store", str(desc_dev), "nere124", "21.0", str(out_log)]).returncode == 0
+assert run_meta(["cache-lookup", "preflight", "--"]).returncode == 0
+assert run_meta(["cache-lookup", "preflight", "--"], env={**base_env, "PREFLIGHT_BASE_REF": "origin/master"}).returncode == 1
 
 # 8. TTL expiry misses
 assert run_meta(["cache-lookup", "pytest", "--", "tests/api/test_a.py"], env={**base_env, "CLOUD_TEST_CACHE_TTL_HOURS": "0"}).returncode == 1
@@ -405,6 +427,73 @@ expect_failure 'mock start reached' env COMPOSE_PROJECT_NAME=nere123-review CLOU
 # IAP is mandatory, ControlMaster reuse and SSH keepalive/timeout hardening must remain enabled.
 grep -q -- '--tunnel-through-iap' "$runner"
 grep -q -- 'env CLOUD_TEST_QUEUE_SLOTS=' "$runner"
+grep -q -- 'PREFLIGHT_BASE_REF=' "$runner"
+
+# Verify consistent PREFLIGHT_BASE_REF contract (snapshot + metadata + remote-test-worker.sh)
+# against a real temporary bare Git remote without mocking git.
+git init --bare -q "$scratch/origin.git"
+mkdir -p "$scratch/real-seed" "$scratch/real-local" "$scratch/real-snap" "$scratch/real-snap-dev" "$scratch/real-snap-master" "$scratch/real-worker"
+(
+  cd "$scratch/real-seed"
+  git init -q -b master
+  git config user.name Fixture
+  git config user.email fixture@example.invalid
+  git config commit.gpgsign false
+  echo 'm0' > file.txt
+  git add file.txt
+  git commit -qm master-base
+  git branch dev
+  git checkout -q dev
+  echo 'd1' > file.txt
+  git add file.txt
+  git commit -qm dev-base
+  git remote add origin "$scratch/origin.git"
+  git push -q origin master dev
+)
+(
+  cd "$scratch/real-local"
+  git init -q
+  git config user.name Fixture
+  git config user.email fixture@example.invalid
+  git config commit.gpgsign false
+  git remote add origin "$scratch/origin.git"
+  git fetch -q origin
+  git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/dev
+  git checkout -q -b feat origin/dev
+  echo 'f1' > file.txt
+  git add file.txt
+  git commit -qm feat-commit
+  python3 "$metadata" snapshot "$scratch/real-snap" fixture-real
+  [[ $(cat "$scratch/real-snap/.remote-test-snapshot/base-ref") == origin/dev ]]
+  PREFLIGHT_BASE_REF=origin/dev python3 "$metadata" snapshot "$scratch/real-snap-dev" fixture-dev
+  [[ $(cat "$scratch/real-snap-dev/.remote-test-snapshot/base-ref") == origin/dev ]]
+  PREFLIGHT_BASE_REF=refs/remotes/origin/master python3 "$metadata" snapshot "$scratch/real-snap-master" fixture-master
+  [[ $(cat "$scratch/real-snap-master/.remote-test-snapshot/base-ref") == origin/master ]]
+  mkdir -p "$scratch/bad-snap"
+  for bad_ref in origin/HEAD refs/remotes/origin/HEAD ' origin/dev ' 'origin/dev ' '   ' master refs/heads/master HEAD~1 origin/; do
+    expect_failure 'PREFLIGHT_BASE_REF' env PREFLIGHT_BASE_REF="$bad_ref" python3 "$metadata" snapshot "$scratch/bad-snap" fixture-bad
+  done
+  expect_failure 'Base ref not found' env PREFLIGHT_BASE_REF=origin/missing python3 "$metadata" snapshot "$scratch/bad-snap" fixture-missing
+)
+cp -R "$scratch/real-snap/.remote-test-snapshot" "$scratch/real-worker/"
+(
+  cd "$scratch/real-worker"
+  git init -q
+  git remote add origin "$scratch/origin.git"
+  echo "/.remote-test-snapshot/" >> .git/info/exclude
+  expect_failure 'mock lsof reached' bash "$worker" fixture nere123 preflight 4
+  git show-ref --verify --quiet refs/remotes/origin/dev
+  expect_failure 'mock lsof reached' env PREFLIGHT_BASE_REF=origin/dev bash "$worker" fixture nere123 preflight 4
+  rm -rf .remote-test-snapshot
+  cp -R "$scratch/real-snap-master/.remote-test-snapshot" .
+  expect_failure 'mock lsof reached' env PREFLIGHT_BASE_REF=origin/master bash "$worker" fixture nere123 preflight 4
+  git show-ref --verify --quiet refs/remotes/origin/master
+  expect_failure 'mock lsof reached' env PREFLIGHT_BASE_REF=refs/remotes/origin/master bash "$worker" fixture nere123 preflight 4
+  for bad_ref in origin/HEAD refs/remotes/origin/HEAD ' origin/dev ' 'origin/dev ' '   ' master refs/heads/master HEAD~1 origin/; do
+    expect_failure 'PREFLIGHT_BASE_REF' env PREFLIGHT_BASE_REF="$bad_ref" bash "$worker" fixture nere123 preflight 4
+  done
+  expect_failure 'fatal:' env PREFLIGHT_BASE_REF=origin/missing bash "$worker" fixture nere123 preflight 4
+)
 grep -q -- '-oControlMaster=auto' "$runner"
 grep -q -- '-oControlPersist=10m' "$runner"
 grep -q -- '-oControlPath=' "$runner"

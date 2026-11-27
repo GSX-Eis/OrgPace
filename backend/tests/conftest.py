@@ -10,6 +10,52 @@ from xdist.workermanage import WorkerController
 
 DATABASES = pytest.StashKey[ExitStack]()
 SHARED_TEMPLATE = pytest.StashKey[str]()
+NO_DB_DATABASE_URL = "postgresql://no-db:no-db@127.0.0.1:1/no_db_mode"
+NO_DB_ENV_OVERRIDES: dict[str, str] = {
+    "DATABASE_URL": NO_DB_DATABASE_URL,
+    "FASTAPI_ENV": "development",
+    "PROJECT_NAME": "OrgPace No-DB Unit Tests",
+    "SECRET_KEY": "no-db-unit-test-secret",
+    "PI_SERVICE_TOKEN": "no-db-unit-test-token",
+    "FIRST_SUPERUSER": "no-db@example.com",
+    "FIRST_SUPERUSER_PASSWORD": "no-db-unit-test-password",
+}
+
+
+def _no_db_mode() -> bool:
+    return os.environ.get("PYTEST_NO_DB", "").strip().lower() in {"1", "true", "yes"}
+
+
+def _enforce_no_db_env() -> None:
+    # Override even existing .env or shell DATABASE_URL so no-DB runs never touch a live DB.
+    os.environ.update(NO_DB_ENV_OVERRIDES)
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_configure(config: pytest.Config) -> None:  # noqa: ARG001
+    if _no_db_mode():
+        _enforce_no_db_env()
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_collection_modifyitems(
+    config: pytest.Config,  # noqa: ARG001
+    items: list[pytest.Item],
+) -> None:
+    if not _no_db_mode():
+        return
+    if not items:
+        raise pytest.UsageError(
+            "PYTEST_NO_DB=1 selected 0 tests; run with @pytest.mark.unit tests (e.g. -m unit)."
+        )
+    non_unit = [
+        item.nodeid for item in items if item.get_closest_marker("unit") is None
+    ]
+    if non_unit:
+        sample = ", ".join(non_unit[:5])
+        raise pytest.UsageError(
+            f"PYTEST_NO_DB=1 forbids running non-unit tests without an isolated database ({len(non_unit)} selected, e.g. {sample})."
+        )
 
 
 def _database_url() -> URL:
@@ -31,6 +77,8 @@ def _create_template(stack: ExitStack, url: URL) -> str:
 
 @pytest.hookimpl(optionalhook=True)
 def pytest_configure_node(node: WorkerController) -> None:
+    if _no_db_mode():
+        return
     config = node.config
     template = config.stash.get(SHARED_TEMPLATE, None)
     if template is None:
@@ -43,6 +91,9 @@ def pytest_configure_node(node: WorkerController) -> None:
 
 @pytest.hookimpl(trylast=True)
 def pytest_sessionstart(session: pytest.Session) -> None:
+    if _no_db_mode():
+        _enforce_no_db_env()
+        return
     # pytest-cov starts worker coverage in sessionstart, before application imports.
     config = session.config
     if config.getoption("numprocesses", default=0) and not hasattr(

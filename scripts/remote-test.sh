@@ -285,6 +285,13 @@ remote_env=''
 if [[ -n $slot_cap ]]; then
   remote_env="env CLOUD_TEST_QUEUE_SLOTS=$(printf '%q' "$slot_cap") "
 fi
+if [[ -n ${PREFLIGHT_BASE_REF:-} ]]; then
+  if [[ -n $remote_env ]]; then
+    remote_env+="PREFLIGHT_BASE_REF=$(printf '%q' "$PREFLIGHT_BASE_REF") "
+  else
+    remote_env="env PREFLIGHT_BASE_REF=$(printf '%q' "$PREFLIGHT_BASE_REF") "
+  fi
+fi
 args=$(printf ' %q' "$run_id" "$project" "$mode" "$workers" "$@")
 execute="cd $remote_dir && test \"\$(cat .remote-test-snapshot/id)\" = $run_id || { echo 'Snapshot changed; retry the run.' >&2; exit 75; }; exec ${remote_env}bash scripts/remote-test-worker.sh$args"
 set +e

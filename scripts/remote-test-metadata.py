@@ -90,11 +90,62 @@ def paths(*args: str) -> list[bytes]:
     return git(*args).rstrip(b"\0").split(b"\0")
 
 
+def _is_real_remote_branch(ref: str) -> bool:
+    full_ref = f"refs/remotes/{ref}"
+    exists = subprocess.run(
+        ["git", "show-ref", "--verify", "--quiet", full_ref],
+        check=False,
+    )
+    if exists.returncode != 0:
+        return False
+    symref = subprocess.run(
+        ["git", "symbolic-ref", "--quiet", full_ref],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return symref.returncode != 0
+
+
+def _normalize_base_ref(raw: str) -> str:
+    ref = raw.removeprefix("refs/remotes/")
+    if not ref.startswith("origin/") or ref in {"origin/", "origin/HEAD"}:
+        raise ValueError(
+            f"PREFLIGHT_BASE_REF must be a real remote branch ref (origin/<branch>), got: {raw!r}"
+        )
+    check = subprocess.run(
+        ["git", "check-ref-format", f"refs/remotes/{ref}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if check.returncode != 0:
+        raise ValueError(
+            f"PREFLIGHT_BASE_REF must be a valid remote branch ref (origin/<branch>), got: {raw!r}"
+        )
+    return ref
+
+
+def resolve_base_ref() -> str:
+    explicit = os.environ.get("PREFLIGHT_BASE_REF", "")
+    if explicit:
+        ref = _normalize_base_ref(explicit)
+        if not _is_real_remote_branch(ref):
+            raise ValueError(f"Base ref not found or is symbolic: {ref}")
+        return ref
+    for candidate in ("origin/dev", "origin/master"):
+        if _is_real_remote_branch(candidate):
+            return candidate
+    raise ValueError("Could not resolve base ref (tried origin/dev and origin/master)")
+
+
 def snapshot(destination: Path, run_id: str) -> None:
+    base_ref = resolve_base_ref()
+    base = git("merge-base", base_ref, "HEAD").decode().strip()
     index = destination / METADATA
     index.mkdir()
-    base = git("merge-base", "origin/master", "HEAD").decode().strip()
     (index / "base").write_text(base + "\n")
+    (index / "base-ref").write_text(base_ref + "\n")
     for name, revisions in (
         ("committed", (base, "HEAD")),
         ("staged", ("--cached", "HEAD")),
@@ -937,10 +988,10 @@ def build_cache_descriptor(mode: str, args: list[str]) -> dict[str, Any]:
     tree_sha = compute_tree_sha()
     extra_inputs: dict[str, str] = {}
     if mode == "preflight":
-        origin_master = (
-            git("rev-parse", "--verify", "origin/master").decode("ascii").strip()
-        )
-        extra_inputs["origin_master_sha"] = origin_master
+        base_ref = resolve_base_ref()
+        base_sha = git("rev-parse", "--verify", base_ref).decode("ascii").strip()
+        extra_inputs["base_ref"] = base_ref
+        extra_inputs["base_sha"] = base_sha
         full = "--full" in args or _truthy_env("PREFLIGHT_FULL_PYTEST")
         baseline_gate = "--baseline-gate" in args or _truthy_env(
             "PREFLIGHT_BASELINE_GATE"
@@ -1058,7 +1109,9 @@ def _print_cache_hit(
     )
     print(f"  tree_sha={entry.get('tree_sha')}")
     extra = entry.get("extra_inputs") or {}
-    if extra.get("origin_master_sha"):
+    if extra.get("base_sha"):
+        print(f"  base_ref={extra.get('base_ref', '')} base_sha={extra['base_sha']}")
+    elif extra.get("origin_master_sha"):
         print(f"  origin_master_sha={extra['origin_master_sha']}")
     print(
         f"  passed_at={entry.get('passed_at')} (age={age_s:.0f}s / ttl={ttl_h:g}h) "

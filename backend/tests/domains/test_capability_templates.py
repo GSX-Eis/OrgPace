@@ -9,6 +9,8 @@ from app.core.config import settings
 from app.domains.capability.templates import InvalidTemplate, load_catalog
 from app.seed.schema import Capability, read_file
 
+pytestmark = pytest.mark.unit
+
 
 def test_all_templates() -> None:
     directory = settings.CAPABILITY_TEMPLATES_DIR

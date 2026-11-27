@@ -1,7 +1,11 @@
 from datetime import date
 
+import pytest
+
 from app.domains.bot import schemas as s
 from app.domains.im.rendering import render
+
+pytestmark = pytest.mark.unit
 
 
 def test_feasibility_card_renders_as_text_without_withheld_load() -> None:

@@ -13,6 +13,8 @@ from typing import Any
 
 import pytest
 
+pytestmark = pytest.mark.unit
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GATE_SCRIPT = REPO_ROOT / "scripts" / "test_baseline_gate.py"
 BASELINE_FILE = REPO_ROOT / "backend" / "tests" / "baseline_failures.json"

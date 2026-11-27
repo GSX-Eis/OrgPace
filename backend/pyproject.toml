@@ -101,6 +101,9 @@ entrypoint = "app.main:app"
 faulthandler_timeout = 60
 verbosity_test_cases = 1
 markers = [
+    "unit: pure unit tests without external IO or database for local Tier 0 runs",
+    "slow: heavy or multi-round integration tests exceeding the 2s unit budget (Tier 3)",
+    "perf_gate: performance regression gates (compatible with roster_performance)",
     "roster_performance: roster parsing time limits, run serially without coverage in CI",
     "chatgpt_live: local opt-in ChatGPT subscription integration",
     "migration: tests using an isolated database cloned from the migration template",

@@ -6,6 +6,10 @@ import re
 from collections.abc import Callable
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.unit
+
 
 def test_audit_labels_cover_backend_events() -> None:
     root = Path(__file__).resolve().parents[3]
