@@ -750,6 +750,7 @@ def test_connection(
                 )
 
 
+@pytest.mark.slow
 def test_sdk_callbacks_and_process_cleanup(
     service: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:

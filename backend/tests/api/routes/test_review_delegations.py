@@ -608,6 +608,7 @@ def test_cross_tenant_delegate_has_no_review_access(
     assert can_review(db, principal, owner.employee_id) is None
 
 
+@pytest.mark.slow
 def test_delegation_migration_roundtrip(migration_engine: Engine) -> None:
     migrate(migration_engine, "downgrade", "b127001bc001")
     assert "review_delegation" not in inspect(migration_engine).get_table_names()

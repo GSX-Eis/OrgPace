@@ -1,3 +1,4 @@
+import pytest
 from sqlalchemy import Engine, inspect
 from sqlmodel import Session
 
@@ -6,6 +7,7 @@ from app.main import app
 from tests.utils.migrations import migrate
 
 
+@pytest.mark.slow
 def test_template_cleanup_migration(db: Session, migration_engine: Engine) -> None:
     engine = migration_engine
     # Release earlier tests' read locks before running schema changes.

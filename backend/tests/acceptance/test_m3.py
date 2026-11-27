@@ -79,6 +79,7 @@ def test_roster_email(tenant: object, db: Session, problem: str) -> None:
         roster_email_scenario(tenant, authenticated, db, problem)
 
 
+@pytest.mark.slow
 @pytest.mark.usefixtures("enable_external_mcp")
 def test_one_employee_all_channels(
     demo: tuple,
@@ -267,6 +268,7 @@ def test_one_employee_all_channels(
     assert len(reports) == 4 and all(e.visibility == "restricted" for e in reports)
 
 
+@pytest.mark.slow
 def test_baseline_quota_exit_cleans_only_its_jobs(
     monkeypatch: pytest.MonkeyPatch,
     pi_service: PiHarness,

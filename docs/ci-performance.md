@@ -61,3 +61,19 @@ M2 两个用例保留 37 个 Task、73 个 WorkEvent、12 人请求、Cloud 分�
 - [Playwright 官方 CI 安装步骤](https://playwright.dev/docs/ci-intro)、[pytest-xdist 分组语义](https://pytest-xdist.readthedocs.io/en/stable/distribution.html)。
 
 NERE-277 结果评论补充本 PR 各 job、主要步骤、整轮耗时和剩余瓶颈。覆盖率仍要求 90%，XLSX 性能仍要求 2 秒；重试、flaky 门禁、三片汇总和生产安装验证保持原样。
+
+## 4 级执行漏斗与 `dev` 基线（NERE-1510）
+
+为平衡白天研发反馈速度与合入 `dev` / `master` 的全量门禁可靠性，测试体系按 4 级漏斗分层治理（前一级全绿后再进入下一级）：
+
+| 层级 | 触发与目标耗时 | 核心命令与范围 |
+| --- | --- | --- |
+| **Tier 0（本机）** | 提审前本机必跑（`10–30s`） | `(cd backend && uv run bash scripts/lint.sh)`；`(cd backend && PYTEST_NO_DB=1 uv run pytest -m unit --no-cov -q)`；`(cd frontend && bunx biome check --no-errors-on-unmatched --files-ignore-unknown=true ./ && bunx tsc --noEmit && bun test && bun run build)`；`uv run prek run --from-ref origin/dev --to-ref HEAD` |
+| **Tier 1（云端选测）** | 子单送审前共享云端测试机（`1–2m`） | 设 `export COMPOSE_PROJECT_NAME=nere<编号>` 后运行 `scripts/remote-test.sh preflight` 或定向 `scripts/remote-test.sh pytest <路径...> --no-cov -x -q`。默认以 `origin/dev` 为比较基线（缺失时回退 `origin/master`，可用 `PREFLIGHT_BASE_REF` 覆盖），受 `cloud-test-queue` 分配槽位约束；支持 `--baseline-gate` 校验收集与执行一致 |
+| **Tier 2（`dev` 全量）** | 合入 `dev` 后收口与 CI 门禁（`3–6m`） | `test-backend` 基于 `backend/.test_durations` 执行 `pytest-split --splitting-algorithm=least_duration` 3 分片 + `--dist loadgroup`，汇总校验 `coverage >= 90%`、输出 `--durations=25`/`--durations=20`，并执行 `python3 scripts/test_baseline_gate.py verify --baseline backend/tests/baseline_failures.json --repo OrgPace --scope all ...` 校验零失败 Node ID 哈希棘轮；云端手动复现用 `scripts/remote-test.sh preflight --full --baseline-gate` |
+| **Tier 3（重型分层）** | 离线/夜间低峰（不挡白天） | `@pytest.mark.slow`（固有 `> 2.0s` 的模型集成、CP-SAT 评估与隔离库迁移往返）、`@pytest.mark.perf_gate` / `roster_performance`、`@real-jira` |
+
+### 硬约束与后续夜间 Autopilot 接入建议（仅文档建议，未创建）
+
+- **不从默认回归跳过 `slow`**：`slow` 仅用于 Tier 3 识别、统计分层与慢测审计，**严禁**在 `.github/workflows/test-backend.yml` 或 `backend/pyproject.toml` 中追加 `-m "not slow"`，确保 Tier 2 全量覆盖率 `>= 90%` 与回归防线零缩水。
+- **未来夜间 Autopilot 接入建议**：后续如需建设夜间巡检，建议仅在当日 `dev` 存在新提交时触发：① 跑 `pytest -m "slow or perf_gate"`（可扩展大样本评估/属性测试巡检）；② 跑 `bunx playwright test --grep "@real-jira"`（与白天 CI `--grep-invert "@external-mcp|@real-jira"` 解耦）；③ 全绿静默，失败时附最小复现命令与 `--durations=20` 自动提单。

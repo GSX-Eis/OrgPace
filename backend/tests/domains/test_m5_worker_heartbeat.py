@@ -493,6 +493,7 @@ def test_gateway_delivers_alert_and_preserves_digest_copy(
     assert adapter.send_text.await_count == calls
 
 
+@pytest.mark.slow
 def test_migration_roundtrip_and_model_registration(migration_engine: Engine) -> None:
     subprocess.run(
         [

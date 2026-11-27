@@ -296,6 +296,7 @@ def test_stalled_sync_resumes_committed_page(
     ]
 
 
+@pytest.mark.slow
 def test_jira_resume_incremental_and_migration(
     context: tuple,
     client: TestClient,

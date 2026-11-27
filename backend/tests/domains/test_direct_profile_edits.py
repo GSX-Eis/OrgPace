@@ -337,6 +337,7 @@ def test_feishu_copy_and_opt_out(demo: tuple, db: Session, notify: bool) -> None
         adapter.send_text.assert_not_awaited()
 
 
+@pytest.mark.slow
 def test_direct_migration_roundtrip(migration_engine: Engine) -> None:
     from app.core.config import settings
     from app.domains.org.models import Employee

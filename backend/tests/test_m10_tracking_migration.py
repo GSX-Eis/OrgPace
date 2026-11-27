@@ -19,6 +19,7 @@ from tests.utils.migrations import insert_historical_rows, migrate
 PREVIOUS = "c832001bc001"
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("with_a1_data", [False, True])
 def test_tracking_migration_roundtrip(
     migration_engine: Engine, with_a1_data: bool

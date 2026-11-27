@@ -366,6 +366,7 @@ def test_files_and_chinese_validation(shared_demo: tuple, client: TestClient) ->
     )
 
 
+@pytest.mark.slow
 def test_dictionary_notification_migration(migration_engine: Engine) -> None:
     migrate(migration_engine, "downgrade", "a89e001bc001")
     migrate(migration_engine, "upgrade", "a91e001bc001")

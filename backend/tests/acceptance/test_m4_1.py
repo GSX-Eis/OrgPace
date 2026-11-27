@@ -29,6 +29,7 @@ from scripts import eval_admin_assistant as runner
 from scripts.eval_admin_assistant import Run, Task, tasks
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     "task", [t for t in tasks() if t.fake_model is not None], ids=lambda t: t.id
 )

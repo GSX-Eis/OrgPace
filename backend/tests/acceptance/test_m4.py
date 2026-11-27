@@ -99,6 +99,7 @@ from tests.utils.pi import PiHarness
 pytestmark = pytest.mark.xdist_group("model")
 
 
+@pytest.mark.slow
 def test_qiguang_jira_to_second_version(
     db: Session, client: TestClient, pi_service: PiHarness
 ) -> None:
