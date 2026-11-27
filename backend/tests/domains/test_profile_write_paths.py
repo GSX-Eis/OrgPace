@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.unit
+
 APP = Path(__file__).resolve().parents[2] / "app"
 PUBLISH_CALLERS = {
     "domains/review/direct.py",

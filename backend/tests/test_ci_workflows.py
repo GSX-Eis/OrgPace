@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+pytestmark = pytest.mark.unit
+
 WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
 
 
@@ -68,8 +70,31 @@ def test_required_workflows_have_no_top_level_path_filter() -> None:
         # BaseLoader preserves GitHub's 'on' key instead of parsing it as bool.
         workflow = yaml.load(path.read_text(), Loader=yaml.BaseLoader)
         assert "pull_request" in workflow["on"], path
-        trigger = workflow["on"]["pull_request"] or {}
-        assert "paths" not in trigger and "paths-ignore" not in trigger, path
+        for event in ("pull_request", "push"):
+            if event in workflow["on"]:
+                trigger = workflow["on"][event] or {}
+                assert "paths" not in trigger and "paths-ignore" not in trigger, (
+                    f"{path} ({event})"
+                )
+
+
+@pytest.mark.parametrize(
+    "workflow_name",
+    [
+        "test-backend.yml",
+        "playwright.yml",
+        "test-docker-compose.yml",
+        "test-pi.yml",
+        "zizmor.yml",
+    ],
+)
+def test_push_workflows_include_master_and_dev(workflow_name: str) -> None:
+    workflow = yaml.load(
+        (WORKFLOWS / workflow_name).read_text(), Loader=yaml.BaseLoader
+    )
+    branches = workflow["on"]["push"]["branches"]
+    assert "master" in branches, workflow_name
+    assert "dev" in branches, workflow_name
 
 
 def test_compose_ci_runs_https_config_tests() -> None:

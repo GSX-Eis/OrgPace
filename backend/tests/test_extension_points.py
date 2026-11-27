@@ -1,10 +1,14 @@
 from typing import get_args
 
+import pytest
+
 from app.core.config import settings
 from app.domains.capability.files import parse_dictionary
 from app.domains.capability.templates import load_catalog
 from app.domains.im.gateway import ADAPTERS
 from app.domains.im.schemas import Platform
+
+pytestmark = pytest.mark.unit
 
 
 def test_im_platform_registration() -> None:

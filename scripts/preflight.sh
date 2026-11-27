@@ -53,8 +53,18 @@ if ! $list; then
     git fetch origin
   fi
 fi
-git rev-parse --verify origin/master >/dev/null
-git diff --name-only origin/master...HEAD > "$scratch/committed"
+if [[ -n ${PREFLIGHT_BASE_REF:-} ]]; then
+  base_ref=$PREFLIGHT_BASE_REF
+elif git rev-parse --verify origin/dev >/dev/null 2>&1; then
+  base_ref=origin/dev
+else
+  base_ref=origin/master
+fi
+if ! git rev-parse --verify "$base_ref" >/dev/null 2>&1; then
+  echo "基线分支不存在: $base_ref" >&2
+  exit 1
+fi
+git diff --name-only "$base_ref"...HEAD > "$scratch/committed"
 git diff --name-only > "$scratch/dirty"
 git diff --cached --name-only >> "$scratch/dirty"
 git ls-files --others --exclude-standard > "$scratch/untracked"
@@ -62,7 +72,7 @@ cat "$scratch/untracked" >> "$scratch/dirty"
 cat "$scratch/committed" "$scratch/dirty" | LC_ALL=C sort -u > "$scratch/changed"
 app_diff() {
   local context=$1 path=$2
-  git diff "$context" origin/master...HEAD -- "$path"
+  git diff "$context" "$base_ref"...HEAD -- "$path"
   git diff "$context" -- "$path"
   git diff --cached "$context" -- "$path"
 }
@@ -73,7 +83,7 @@ while IFS= read -r path; do
       git diff --no-index -U0 -- /dev/null "$path" >> "$scratch/app-diff" || [[ $? == 1 ]] ;;
   esac
 done < "$scratch/untracked"
-git diff --name-only --diff-filter=A origin/master...HEAD -- backend/app/alembic/versions > "$scratch/local-migrations"
+git diff --name-only --diff-filter=A "$base_ref"...HEAD -- backend/app/alembic/versions > "$scratch/local-migrations"
 while IFS= read -r path; do
   case "$path" in
     backend/app/alembic/versions/*.py)
@@ -82,7 +92,7 @@ while IFS= read -r path; do
       fi ;;
   esac
 done < "$scratch/dirty"
-git diff --name-only --diff-filter=A HEAD...origin/master -- backend/app/alembic/versions > "$scratch/upstream-migrations"
+git diff --name-only --diff-filter=A HEAD..."$base_ref" -- backend/app/alembic/versions > "$scratch/upstream-migrations"
 
 # All test selection rules live here. Paths are relative to backend for pytest.
 select_checks() {
@@ -276,14 +286,18 @@ if [[ $full != 1 && -s $scratch/selected ]]; then
   fi
 fi
 
+pytest_args=(--no-cov -x -q -n "${PREFLIGHT_PYTEST_WORKERS:-4}" --dist loadgroup)
+if [[ $full == 1 ]]; then
+  pytest_args+=(--durations=20)
+fi
 echo '检查计划: 同步检查 → (cd backend && uv run alembic heads) → uv run prek run → 数据库环境 → pytest'
-echo "pytest 目标（backend 下，uv run pytest --no-cov -x -q -n ${PREFLIGHT_PYTEST_WORKERS:-4} --dist loadgroup）:"
+echo "pytest 目标（backend 下，uv run pytest ${pytest_args[*]}）:"
 cat "$scratch/selected"
 if [[ -s $scratch/dirty ]]; then
   echo '工作区有未提交改动：请先提交；本次用 uv run prek run --files 检查所有现存变动文件。'
 fi
 if [[ -s $scratch/local-migrations && -s $scratch/upstream-migrations ]]; then
-  echo '迁移同步冲突：请先 git merge origin/master，再把新迁移的 down_revision 接到最新 head。'
+  echo "迁移同步冲突：请先 git merge ${base_ref}，再把新迁移的 down_revision 接到最新 head。"
   if ! $list; then exit 1; fi
 fi
 if ! $list; then
@@ -301,10 +315,10 @@ if ! $list; then
     if [[ ${#files[@]} -gt 0 ]]; then
       uv run prek run --files "${files[@]}"
     else
-      uv run prek run --from-ref origin/master --to-ref HEAD
+      uv run prek run --from-ref "$base_ref" --to-ref HEAD
     fi
   else
-    uv run prek run --from-ref origin/master --to-ref HEAD
+    uv run prek run --from-ref "$base_ref" --to-ref HEAD
   fi
   states[2]=通过
   next_step 3
@@ -341,10 +355,10 @@ PY
           --repo OrgPace \
           --scope expected \
           --pytest-cmd 'uv run pytest' \
-          -- --no-cov -x -q -n "${PREFLIGHT_PYTEST_WORKERS:-4}" --dist loadgroup "${targets[@]}"
+          -- "${pytest_args[@]}" "${targets[@]}"
       )
     else
-      (cd backend && uv run pytest --no-cov -x -q -n "${PREFLIGHT_PYTEST_WORKERS:-4}" --dist loadgroup "${targets[@]}")
+      (cd backend && uv run pytest "${pytest_args[@]}" "${targets[@]}")
     fi
     states[4]=通过
   else

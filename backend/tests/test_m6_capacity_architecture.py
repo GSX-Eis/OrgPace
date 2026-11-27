@@ -7,6 +7,8 @@ import pytest
 from sqlalchemy import Column, ForeignKey, Integer, MetaData, Table
 from sqlmodel import SQLModel
 
+pytestmark = pytest.mark.unit
+
 APP = Path(__file__).resolve().parents[1] / "app"
 ENTRYPOINTS = {
     "api/main.py",

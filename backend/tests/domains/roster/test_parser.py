@@ -31,6 +31,7 @@ def xlsx_bytes(rows: list[list[object]]) -> bytes:
     return output.getvalue()
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig", "gb18030"])
 def test_csv_encodings_aliases_and_cleaning(encoding: str) -> None:
     content = csv_bytes(
@@ -63,6 +64,7 @@ def test_csv_encodings_aliases_and_cleaning(encoding: str) -> None:
     assert result.model_dump()["has_errors"] is False
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     "content, filename, message",
     [
@@ -83,6 +85,7 @@ def test_file_and_header_errors(content: bytes, filename: str, message: str) -> 
     assert not result.rows
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     "row, column, message",
     [
@@ -111,6 +114,7 @@ def test_row_errors(row: list[object], column: str, message: str) -> None:
     assert issue.message.startswith(f"第 2 行「{column}」：{message}")
 
 
+@pytest.mark.unit
 def test_case_insensitive_duplicates_and_manager_lookup() -> None:
     result = parse_roster(
         csv_bytes(
@@ -161,6 +165,7 @@ def test_long_chains_cycles_and_performance(
         assert f"E{size - 1} → E0" in result.issues[0].message
 
 
+@pytest.mark.unit
 def test_multiple_cycles_and_feeder_chain() -> None:
     result = parse_roster(
         csv_bytes(
@@ -180,6 +185,7 @@ def test_multiple_cycles_and_feeder_chain() -> None:
     assert "D → E → D" in result.issues[1].message
 
 
+@pytest.mark.unit
 def test_row_limit_counts_people_not_blank_rows() -> None:
     rows: list[list[object]] = [list(HEADERS), []]
     rows.extend(
@@ -191,6 +197,7 @@ def test_row_limit_counts_people_not_blank_rows() -> None:
     assert "超过 5000 行" in result.issues[0].message
 
 
+@pytest.mark.unit
 def test_xlsx_numeric_codes_and_unicode() -> None:
     result = parse_roster(
         xlsx_bytes(
@@ -213,6 +220,7 @@ def test_xlsx_numeric_codes_and_unicode() -> None:
     assert all("工号是数字格式" in issue.message for issue in result.issues)
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     "rows, column",
     [
@@ -231,6 +239,7 @@ def test_formula_without_cached_value(rows: list[list[object]], column: str) -> 
     assert "公式没有计算结果" in result.issues[0].message
 
 
+@pytest.mark.unit
 def test_formula_with_cached_value() -> None:
     original = xlsx_bytes(
         [list(HEADERS), ["E1", "李宁", "研发", "=1+1", "", "one@example.com"]]
@@ -257,6 +266,7 @@ def test_formula_with_cached_value() -> None:
     assert result.rows[0].title == "2"
 
 
+@pytest.mark.unit
 def test_sample_roster() -> None:
     content = (
         Path(__file__).resolve().parents[4] / "examples/roster/sample-30.csv"

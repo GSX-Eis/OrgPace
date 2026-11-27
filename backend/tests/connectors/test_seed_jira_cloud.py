@@ -7,6 +7,8 @@ from typing import Any
 import httpx
 import pytest
 
+pytestmark = pytest.mark.unit
+
 SCRIPT = runpy.run_path(
     str(Path(__file__).resolve().parents[3] / "scripts/seed_jira_cloud.py")
 )

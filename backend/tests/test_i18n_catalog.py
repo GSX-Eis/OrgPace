@@ -5,7 +5,11 @@ import re
 import string
 from pathlib import Path
 
+import pytest
+
 from app.i18n import EN_CATALOG
+
+pytestmark = pytest.mark.unit
 
 HAN_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf]")
 FORMATTER = string.Formatter()

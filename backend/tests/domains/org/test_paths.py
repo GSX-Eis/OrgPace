@@ -1,7 +1,11 @@
 from uuid import uuid4
 
+import pytest
+
 from app.domains.org.models import Department
 from app.domains.org.paths import department_paths
+
+pytestmark = pytest.mark.unit
 
 
 def test_paths_stop_at_cycles_and_missing_parents() -> None:

@@ -90,11 +90,27 @@ def paths(*args: str) -> list[bytes]:
     return git(*args).rstrip(b"\0").split(b"\0")
 
 
+def resolve_base_ref() -> str:
+    explicit = os.environ.get("PREFLIGHT_BASE_REF", "").strip()
+    if explicit:
+        git("rev-parse", "--verify", explicit)
+        return explicit
+    for candidate in ("origin/dev", "origin/master"):
+        try:
+            git("rev-parse", "--verify", candidate)
+            return candidate
+        except subprocess.CalledProcessError:
+            continue
+    raise ValueError("Could not resolve base ref (tried origin/dev and origin/master)")
+
+
 def snapshot(destination: Path, run_id: str) -> None:
     index = destination / METADATA
     index.mkdir()
-    base = git("merge-base", "origin/master", "HEAD").decode().strip()
+    base_ref = resolve_base_ref()
+    base = git("merge-base", base_ref, "HEAD").decode().strip()
     (index / "base").write_text(base + "\n")
+    (index / "base-ref").write_text(base_ref + "\n")
     for name, revisions in (
         ("committed", (base, "HEAD")),
         ("staged", ("--cached", "HEAD")),
@@ -937,10 +953,10 @@ def build_cache_descriptor(mode: str, args: list[str]) -> dict[str, Any]:
     tree_sha = compute_tree_sha()
     extra_inputs: dict[str, str] = {}
     if mode == "preflight":
-        origin_master = (
-            git("rev-parse", "--verify", "origin/master").decode("ascii").strip()
-        )
-        extra_inputs["origin_master_sha"] = origin_master
+        base_ref = resolve_base_ref()
+        base_sha = git("rev-parse", "--verify", base_ref).decode("ascii").strip()
+        extra_inputs["base_ref"] = base_ref
+        extra_inputs["base_sha"] = base_sha
         full = "--full" in args or _truthy_env("PREFLIGHT_FULL_PYTEST")
         baseline_gate = "--baseline-gate" in args or _truthy_env(
             "PREFLIGHT_BASELINE_GATE"
@@ -1058,7 +1074,9 @@ def _print_cache_hit(
     )
     print(f"  tree_sha={entry.get('tree_sha')}")
     extra = entry.get("extra_inputs") or {}
-    if extra.get("origin_master_sha"):
+    if extra.get("base_sha"):
+        print(f"  base_ref={extra.get('base_ref', '')} base_sha={extra['base_sha']}")
+    elif extra.get("origin_master_sha"):
         print(f"  origin_master_sha={extra['origin_master_sha']}")
     print(
         f"  passed_at={entry.get('passed_at')} (age={age_s:.0f}s / ttl={ttl_h:g}h) "

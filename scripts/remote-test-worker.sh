@@ -138,14 +138,31 @@ fi
 if [[ $mode == preflight && -d .remote-test-snapshot ]]; then
   meta=.remote-test-snapshot
   base=$(cat "$meta/base")
+  base_ref=${PREFLIGHT_BASE_REF:-}
+  if [[ -z $base_ref && -f $meta/base-ref ]]; then
+    base_ref=$(cat "$meta/base-ref")
+  fi
   if [[ ! -d .git ]]; then
     git init -q
     git remote add origin https://github.com/GSX-Eis/OrgPace.git
     echo "/$meta/" >> .git/info/exclude
   fi
-  git fetch -q origin master
+  if [[ -n $base_ref ]]; then
+    fetch_ref=${base_ref#refs/remotes/}
+    if [[ $fetch_ref == origin/* ]]; then
+      git fetch -q origin "${fetch_ref#origin/}"
+    else
+      git fetch -q origin "$fetch_ref"
+    fi
+  elif git fetch -q origin dev 2>/dev/null; then
+    base_ref=origin/dev
+  else
+    git fetch -q origin master
+    base_ref=origin/master
+  fi
+  export PREFLIGHT_BASE_REF=$base_ref
   export PREFLIGHT_SKIP_FETCH=1
-  git merge-base --is-ancestor "$base" origin/master
+  git merge-base --is-ancestor "$base" "$base_ref"
   git read-tree "$base"
   if [[ -s $meta/committed.patch ]]; then git apply --cached "$meta/committed.patch"; fi
   tree=$(git write-tree)

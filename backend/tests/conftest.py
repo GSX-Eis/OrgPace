@@ -12,6 +12,21 @@ DATABASES = pytest.StashKey[ExitStack]()
 SHARED_TEMPLATE = pytest.StashKey[str]()
 
 
+def _no_db_mode() -> bool:
+    return os.environ.get("PYTEST_NO_DB", "").strip().lower() in {"1", "true", "yes"}
+
+
+def _ensure_no_db_settings_env() -> None:
+    if (Path(__file__).resolve().parents[2] / ".env").exists():
+        return
+    os.environ.setdefault("FASTAPI_ENV", "development")
+    os.environ.setdefault("PROJECT_NAME", "OrgPace Unit Tests")
+    os.environ.setdefault("SECRET_KEY", "unit-test-secret")
+    os.environ.setdefault(
+        "DATABASE_URL", "postgresql://postgres:unit-test@localhost:5432/app"
+    )
+
+
 def _database_url() -> URL:
     env = dotenv_values(Path(__file__).resolve().parents[2] / ".env")
     return make_url(os.environ.get("DATABASE_URL") or env["DATABASE_URL"]).set(
@@ -31,6 +46,8 @@ def _create_template(stack: ExitStack, url: URL) -> str:
 
 @pytest.hookimpl(optionalhook=True)
 def pytest_configure_node(node: WorkerController) -> None:
+    if _no_db_mode():
+        return
     config = node.config
     template = config.stash.get(SHARED_TEMPLATE, None)
     if template is None:
@@ -43,6 +60,9 @@ def pytest_configure_node(node: WorkerController) -> None:
 
 @pytest.hookimpl(trylast=True)
 def pytest_sessionstart(session: pytest.Session) -> None:
+    if _no_db_mode():
+        _ensure_no_db_settings_env()
+        return
     # pytest-cov starts worker coverage in sessionstart, before application imports.
     config = session.config
     if config.getoption("numprocesses", default=0) and not hasattr(

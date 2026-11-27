@@ -190,6 +190,7 @@ for override in flag env; do
     PREFLIGHT_FULL_PYTEST=1 bash scripts/preflight.sh > "$scratch/run"
   fi
   assert_absent 'pytest 分流' "$scratch/run"
+  rg -q '^run pytest .*--durations=20' "$PREFLIGHT_CALLS"
   rg -q '^run pytest .*tests/domains/test_importer\.py.*tests/eval/planning/ .*tests/sample/test_unrelated_' "$PREFLIGHT_CALLS"
   assert_absent '^run pytest .*tests/eval/planning/test_case_1\.py' "$PREFLIGHT_CALLS"
 done
@@ -270,4 +271,28 @@ expect_failure 'git merge origin/master' bash scripts/preflight.sh
 [[ ! -s $PREFLIGHT_CALLS ]]
 bash scripts/preflight.sh --list > "$scratch/list"
 rg -q '迁移同步冲突' "$scratch/list"
+
+# Prefer origin/dev when present, and honor explicit PREFLIGHT_BASE_REF overrides.
+git checkout -qb dev-base main
+mkdir -p .github
+echo 'dev-base' > .github/dev-base.yml
+git add .github/dev-base.yml
+git commit -qm dev-base
+git update-ref refs/remotes/origin/dev "$(git rev-parse dev-base)"
+git checkout -qb dev-feature dev-base
+printf 'audit(action="sample.existing")\ndev-only\n' > backend/app/domains/sample/feature.py
+git add backend/app/domains/sample/feature.py
+git commit -qm dev-feature
+: > "$PREFLIGHT_CALLS"
+bash scripts/preflight.sh > "$scratch/run"
+rg -q '^run prek run --from-ref origin/dev --to-ref HEAD$' "$PREFLIGHT_CALLS"
+bash scripts/preflight.sh --list > "$scratch/list"
+assert_absent '^tests/test_ci_workflows\.py$' "$scratch/list"
+
+: > "$PREFLIGHT_CALLS"
+PREFLIGHT_BASE_REF=origin/master bash scripts/preflight.sh > "$scratch/run"
+rg -q '^run prek run --from-ref origin/master --to-ref HEAD$' "$PREFLIGHT_CALLS"
+PREFLIGHT_BASE_REF=origin/master bash scripts/preflight.sh --list > "$scratch/list"
+rg -q -F -x 'tests/test_ci_workflows.py' "$scratch/list"
+expect_failure 'origin/missing' env PREFLIGHT_BASE_REF=origin/missing bash scripts/preflight.sh --list
 echo 'preflight self-check: passed'
