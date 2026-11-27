@@ -165,6 +165,7 @@ test.describe("employee settings", () => {
       for (const label of ["部门", "职位", "在职状态", "直属上级"])
         await expect(fields.getByText(label, { exact: true })).toBeVisible()
       await expect(fields.getByText("工号", { exact: true })).toBeVisible()
+      await expect(fields).toContainText("平台研发部")
       await expect(
         fields.getByText(email.startsWith("employee") ? "E02" : "E01", {
           exact: true,

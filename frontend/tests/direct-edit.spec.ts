@@ -178,6 +178,7 @@ isolated(
     )
     await page.keyboard.press("Escape")
     const card = page.getByRole("article", { name: "合成能力1", exact: true })
+    await expect(card).not.toContainText("依据")
     await card.getByRole("button", { name: "合成能力1", exact: true }).click()
     const detail = page.getByRole("dialog")
     await expect(detail).toContainText("原始合成陈述")

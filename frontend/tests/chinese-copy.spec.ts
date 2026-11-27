@@ -4,6 +4,7 @@ import { expectChineseCopy } from "./utils/copy"
 import { createUser } from "./utils/privateApi"
 import { randomEmail, randomPassword } from "./utils/random"
 import { importRoster } from "./utils/roster"
+import { createSourcesOrg } from "./utils/sources"
 import { logInUser } from "./utils/user"
 
 test.use({ storageState: { cookies: [], origins: [] } })
@@ -188,56 +189,33 @@ test("Chinese copy checks the requested region without relaxing translation rule
   await expect(expectChineseCopy(region)).rejects.toThrow("Untranslated")
 })
 
-test.describe("m47 data-location and unlinked-jira copy explanations", () => {
-  test("谁能看到与未匹配 Jira 账号说明文案", async ({ page, request }) => {
-    const token = await request.post("/api/v1/private/setup-tokens", {
-      data: { purpose: "new_org" },
-    })
-    expect(token.ok()).toBeTruthy()
-    const initialized = await request.post("/api/v1/setup/initialize", {
-      data: {
-        token: (await token.json()).token,
-        org_name: "合成说明文字测试企业",
-        admin_username: `copy-${crypto.randomUUID()}@example.com`,
-        admin_password: "synthetic-copy-password-2026",
-      },
-    })
-    expect(initialized.ok()).toBeTruthy()
-    const { access_token, org_id } = await initialized.json()
-    await page.goto("/login")
-    await page.evaluate(
-      ({ access_token, org_id }) => {
-        localStorage.setItem("access_token", access_token)
-        localStorage.setItem("current_org_id", org_id)
-      },
-      { access_token, org_id },
-    )
-    await importRoster(
-      page,
-      Buffer.from(
-        "工号,姓名,部门,职位,上级工号,邮箱\nCOPY1,合成员工,合成部门,员工,,copy-employee@example.com\n",
-      ),
-    )
-    const accounts = await request.get(`/api/v1/orgs/${org_id}/accounts`, {
-      headers: { Authorization: `Bearer ${access_token}` },
-    })
-    expect(accounts.ok()).toBeTruthy()
-    const employee = ((await accounts.json()).data as EmployeeAccount[]).find(
-      (entry) => entry.employee_code === "COPY1",
-    )!
-    await page.goto(`/employees/${employee.id}`)
-    await page.getByRole("button", { name: "谁能看到", exact: true }).hover()
-    await expect(page.getByRole("tooltip")).toContainText(
-      "数据保存在本企业自己部署的服务器上；存放位置、备份和保留期限请问企业管理员。",
-    )
-    await page.goto("/admin/identities")
-    const dialog = page.getByRole("dialog", { name: "未匹配 Jira 账号" })
-    await expect(
-      dialog.getByText(
-        "部分 Jira 账号可能隐藏了邮箱或使用昵称，请核对后再关联。",
-        { exact: true },
-      ),
-    ).toBeVisible()
-    await expect(dialog.getByRole("tab", { name: "未关联（0）" })).toBeVisible()
+test("m47: 谁能看到与未匹配 Jira 账号说明文案", async ({ page, request }) => {
+  await createSourcesOrg(page)
+  const csv =
+    "工号,姓名,部门,职位,上级工号,邮箱\nCOPY1,合成员工,合成部门,员工,,copy@example.com\n"
+  await importRoster(page, Buffer.from(csv))
+  const [orgId, token] = await page.evaluate(() => [
+    localStorage.getItem("current_org_id"),
+    localStorage.getItem("access_token"),
+  ])
+  const res = await request.get(`/api/v1/orgs/${orgId}/accounts`, {
+    headers: { Authorization: `Bearer ${token}` },
   })
+  expect(res.ok()).toBeTruthy()
+  const emp = ((await res.json()).data as EmployeeAccount[]).find(
+    (e) => e.employee_code === "COPY1",
+  )!
+  await page.goto(`/employees/${emp.id}`)
+  await page.getByRole("button", { name: "谁能看到", exact: true }).hover()
+  await expect(page.getByRole("tooltip")).toContainText(
+    "数据保存在本企业自己部署的服务器上；存放位置、备份和保留期限请问企业管理员。",
+  )
+  await page.goto("/admin/identities")
+  const dlg = page.getByRole("dialog", { name: "未匹配 Jira 账号" })
+  await expect(
+    dlg.getByText("部分 Jira 账号可能隐藏了邮箱或使用昵称，请核对后再关联。", {
+      exact: true,
+    }),
+  ).toBeVisible()
+  await expect(dlg.getByRole("tab", { name: "未关联（0）" })).toBeVisible()
 })

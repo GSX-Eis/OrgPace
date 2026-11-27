@@ -178,8 +178,27 @@ for (const width of [1440, 390]) {
     const previewsBefore = await panel
       .getByRole("region", { name: "变更预览" })
       .count()
-    await panel.getByLabel("发给助手的消息").fill("补充一段合成项目经历")
+    if (width === 1440) {
+      const md = Buffer.from("# 工作总结\n我独立完成订单接口设计与联调。")
+      await panel.getByLabel("选择对话附件").setInputFiles({
+        name: "工作总结.md",
+        mimeType: "text/markdown",
+        buffer: md,
+      })
+      await expect(
+        panel.getByRole("list", { name: "待发送附件" }),
+      ).toContainText("已上传")
+    }
+    const prompt =
+      width === 1440
+        ? "请根据工作总结补充一段合成项目经历"
+        : "补充一段合成项目经历"
+    await panel.getByLabel("发给助手的消息").fill(prompt)
     await panel.getByRole("button", { name: "发送", exact: true }).click()
+    if (width === 1440)
+      await expect(
+        panel.getByRole("log").getByLabel("附件：工作总结.md"),
+      ).toBeVisible()
     await expect(
       panel.getByText("本人完成了合成项目的验证", { exact: false }),
     ).toHaveCount(0)

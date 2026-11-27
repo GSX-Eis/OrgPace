@@ -75,6 +75,9 @@ jobs:
     - run: bun ci
       working-directory: frontend
     - run: bash scripts/generate-client.sh
+    - name: Run frontend unit tests
+      run: bun test
+      working-directory: frontend
     - name: Install Chromium on the runner
       run: bunx playwright install --with-deps chromium
       working-directory: frontend
