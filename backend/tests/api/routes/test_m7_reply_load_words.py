@@ -388,21 +388,23 @@ def test_bot_and_mcp_reply_guidance(
 
 @pytest.mark.parametrize("match_count", [0, 1, 2])
 @pytest.mark.parametrize("channel", ["rest", "assistant", "mcp"])
+@pytest.mark.parametrize(
+    "texts",
+    [
+        ("日期未确认", "开始时间尚未确认", "负荷情况目前都尚未确认"),
+        tuple(f"负荷{separator}日期未确认" for separator in ("。", "；", "，")),
+        tuple(f"负荷{separator}日期未确认" for separator in (",", ";", "\n")),
+    ],
+    ids=["unrelated", "chinese-boundaries", "ascii-boundaries"],
+)
 def test_unrelated_confirmation_and_sentence_boundaries_are_allowed(
     case: tuple,
     db: Session,
     client: TestClient,
     match_count: int,
     channel: str,
+    texts: tuple[str, ...],
 ) -> None:
-    for text in (
-        "日期未确认",
-        "开始时间尚未确认",
-        "负荷情况目前都尚未确认",
-        *(
-            f"负荷{separator}日期未确认"
-            for separator in ("。", "；", "，", ",", ";", "\n")
-        ),
-    ):
+    for text in texts:
         demand_id = create_demand(case, client, match_count)
         send_reply(case, db, client, channel, demand_id, text, rejected=False)

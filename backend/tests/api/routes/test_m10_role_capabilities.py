@@ -178,6 +178,7 @@ def test_extra_capability_edit_stales_snapshot_and_preserves_visibility(
     assert refreshed.json()["snapshot_id"] != result["snapshot_id"]
 
 
+@pytest.mark.slow
 def test_missing_extra_capability_survives_locale_switch_and_legacy_snapshots(
     planning_setup: tuple, db: Session, client: TestClient
 ) -> None:

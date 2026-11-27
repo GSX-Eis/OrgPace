@@ -228,6 +228,7 @@ def test_scheduled_incremental_jql(
     )
 
 
+@pytest.mark.slow
 def test_schedule_migration(migration_engine: Engine) -> None:
     migrate(migration_engine, "downgrade", "a84e001bc001")
     assert "sync_schedule" not in {

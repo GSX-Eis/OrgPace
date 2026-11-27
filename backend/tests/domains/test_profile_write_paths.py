@@ -19,16 +19,17 @@ MESSAGE = "正式画像只能由批准的请求修改，新增写入路径需要
 
 def profile_writes(source: str) -> list[tuple[str, int]]:
     tree = ast.parse(source)
-    aliases = {
-        alias.asname or alias.name: alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-        for alias in node.names
-    }
-    calls = []
+    aliases = {}
+    call_nodes = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
+        if isinstance(node, ast.ImportFrom):
+            aliases.update(
+                {alias.asname or alias.name: alias.name for alias in node.names}
+            )
+        elif isinstance(node, ast.Call):
+            call_nodes.append(node)
+    calls = []
+    for node in call_nodes:
         if isinstance(node.func, ast.Name):
             name = aliases.get(node.func.id, node.func.id)
         elif isinstance(node.func, ast.Attribute):

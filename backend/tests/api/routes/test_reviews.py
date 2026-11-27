@@ -898,6 +898,7 @@ def test_attach_preview_matches_published_jira_status(
     ) == set(evidence_ids)
 
 
+@pytest.mark.slow
 def test_review_evidence_queries_are_batched(demo: tuple, db: Session) -> None:
     subject = demo[1]["E01"]
     reviewer = actor(db, subject.org_id, "admin@demo.example.com")
