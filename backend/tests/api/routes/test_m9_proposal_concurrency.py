@@ -290,21 +290,25 @@ def test_propose_rechecks_latest_snapshot_after_employee_lock(
 
 
 def test_accept_rechecks_expiry_after_waiting_for_employee(
-    case: tuple, client: TestClient, db: Session
+    case: tuple, client: TestClient, db: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import time
     from threading import Event
 
-    from sqlalchemy import event
+    from sqlalchemy import event, text
     from sqlmodel import select
 
     from app.domains.base import utc_now
     from app.domains.org.models import Employee
 
+    now = utc_now()
+    current = now
+    monkeypatch.setattr(proposal, "utc_now", lambda: current)
     hold_demand(db, case)
     reply = propose(client, case)
     assert reply.status_code == 200, reply.text
     row = proposal_row(db, case[3])
-    expires = utc_now() + timedelta(seconds=5)
+    expires = now + timedelta(seconds=5)
     row.hold_expires_at = expires
     db.add(row)
     db.commit()
@@ -325,6 +329,7 @@ def test_accept_rechecks_expiry_after_waiting_for_employee(
             entered.set()
 
     with Session(bind) as blocker:
+        blocker_pid = blocker.execute(text("SELECT pg_backend_pid()")).scalar_one()
         blocker.exec(
             select(Employee)
             .where(Employee.org_id == org_id, Employee.id == person_id)
@@ -336,7 +341,33 @@ def test_accept_rechecks_expiry_after_waiting_for_employee(
                 future = pool.submit(respond, client, case, reply.json()["revision"])
                 try:
                     assert entered.wait(timeout=10)
-                    Event().wait(max(0, (expires - utc_now()).total_seconds()) + 0.1)
+                    deadline = time.monotonic() + 5
+                    locked = False
+                    while time.monotonic() < deadline:
+                        with bind.connect() as probe:
+                            waiting = probe.execute(
+                                text(
+                                    "SELECT count(*) FROM pg_stat_activity "
+                                    "WHERE datname = current_database() "
+                                    "AND pid <> :blocker_pid "
+                                    "AND state = 'active' "
+                                    "AND wait_event_type = 'Lock' "
+                                    "AND :blocker_pid = ANY(pg_blocking_pids(pid)) "
+                                    "AND query LIKE :emp_pattern "
+                                    "AND query LIKE :lock_pattern"
+                                ),
+                                {
+                                    "blocker_pid": blocker_pid,
+                                    "emp_pattern": "%FROM employee%",
+                                    "lock_pattern": "%FOR UPDATE%",
+                                },
+                            ).scalar_one()
+                        if waiting >= 1:
+                            locked = True
+                            break
+                        time.sleep(0.01)
+                    assert locked
+                    current = expires + timedelta(seconds=1)
                 finally:
                     blocker.rollback()
                 result = future.result(timeout=20)

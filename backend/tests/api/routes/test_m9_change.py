@@ -1,5 +1,6 @@
 """Change proposals replace committed segments in one PostgreSQL transaction."""
 
+from collections.abc import Generator
 from datetime import date, timedelta
 from typing import Any
 
@@ -25,23 +26,43 @@ from app.domains.capacity.models import (
 )
 from app.domains.inbox.models import InboxItem
 from app.domains.org.models import Employee, OrgMembership
+from app.domains.planning import service as planning_service
 from tests.api.routes.test_m9_borrow import decide
 from tests.api.routes.test_m9_borrow import offered as offered
-from tests.api.routes.test_m9_proposal import case as case
 from tests.api.routes.test_m9_proposal import (
+    fresh_planning_case,
     plan,
+    planning_org_session,
     propose,
     respond,
     rows,
     segments,
 )
-from tests.api.routes.test_m9_proposal import planning_setup as planning_setup
 from tests.api.routes.test_m9_proposal_concurrency import race
+from tests.utils.demo import DemoSeed
+
+
+@pytest.fixture(scope="module")
+def _planning_org(
+    db: Session, client: TestClient, _demo_seed: DemoSeed
+) -> Generator[dict[str, Any]]:
+    with planning_org_session(db, client, _demo_seed) as state:
+        yield state
 
 
 @pytest.fixture
-def committed(client: TestClient, case: tuple, db: Session) -> list[CapacityAssignment]:
-    reply = propose(client, case, plan(client, case, segments(case, split=True)))
+def case(db: Session, _planning_org: dict[str, Any]) -> Generator[tuple]:
+    with fresh_planning_case(db, _planning_org) as item:
+        yield item
+
+
+@pytest.fixture
+def committed(
+    client: TestClient, case: tuple, db: Session, monkeypatch: pytest.MonkeyPatch
+) -> list[CapacityAssignment]:
+    with monkeypatch.context() as mp:
+        mp.setattr(planning_service, "_optimized_option", lambda _data: None)
+        reply = propose(client, case, plan(client, case, segments(case, split=True)))
     assert reply.status_code == 200, reply.text
     if reply.json()["status"] != "accepted":
         accepted = respond(client, case, reply.json()["revision"])

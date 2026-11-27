@@ -21,6 +21,8 @@ from app.domains.im.models import ImAction
 from app.domains.inbox.service import read_question
 from app.i18n import Locale, current_locale, tr, use_locale
 
+FEISHU_SEND_TIMEOUT_SECONDS: float = 10.0
+
 
 @dataclass
 class Reply:
@@ -248,7 +250,9 @@ async def deliver(
                 ]
                 try:
                     async with asyncio.timeout(
-                        10 if event.platform == "feishu" else None
+                        FEISHU_SEND_TIMEOUT_SECONDS
+                        if event.platform == "feishu"
+                        else None
                     ):
                         if links:
                             message_id = await adapter.render(
