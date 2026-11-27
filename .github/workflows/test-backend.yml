@@ -45,15 +45,28 @@ jobs:
       - name: Migrate DB
         run: uv run bash scripts/prestart.sh
         working-directory: backend
+      - name: Collect expected pytest node IDs for baseline gate
+        env:
+          FASTAPI_ENV: development
+          PYTHONPATH: ../scripts
+          SHARD: ${{ matrix.shard }}
+        run: >-
+          uv run pytest tests/ --no-cov -q --collect-only
+          -m "not roster_performance" --splits=3 --group="$SHARD"
+          --splitting-algorithm=least_duration
+          -p test_baseline_gate --baseline-collect="baseline-expected-$SHARD.json"
+        working-directory: backend
       - name: Run tests
         env:
           FASTAPI_ENV: development
+          PYTHONPATH: ../scripts
           SHARD: ${{ matrix.shard }}
         run: >-
           uv run pytest tests/ -n auto --dist loadgroup --cov --cov-report=
           -m "not roster_performance" --splits=3 --group="$SHARD"
           --splitting-algorithm=least_duration --store-durations --clean-durations --durations=25
           --junitxml="junit-$SHARD.xml"
+          -p test_baseline_gate --baseline-results="baseline-outcomes-$SHARD.json"
         working-directory: backend
       - name: Run roster performance tests without workers or coverage
         if: matrix.shard == 1
@@ -78,6 +91,8 @@ jobs:
             backend/.coverage.*
             backend/junit-*.xml
             backend/test-durations-*.json
+            backend/baseline-expected-*.json
+            backend/baseline-outcomes-*.json
           include-hidden-files: true
           if-no-files-found: error
 
@@ -105,6 +120,14 @@ jobs:
           pattern: backend-coverage-*
           path: backend
           merge-multiple: true
+      - name: Enforce pytest Node ID baseline gate
+        run: >-
+          python3 scripts/test_baseline_gate.py verify
+          --baseline backend/tests/baseline_failures.json
+          --repo OrgPace
+          --scope all
+          --expected backend/baseline-expected-1.json backend/baseline-expected-2.json backend/baseline-expected-3.json
+          --outcomes backend/baseline-outcomes-1.json backend/baseline-outcomes-2.json backend/baseline-outcomes-3.json
       - name: Combine all three shards and enforce total coverage
         working-directory: backend
         run: |

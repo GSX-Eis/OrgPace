@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Exercise selection and failure paths without a database, Docker or remote fetch.
 set -euo pipefail
-source_script=$(cd "$(dirname "$0")" && pwd)/preflight.sh
+source_dir=$(cd "$(dirname "$0")" && pwd)
+source_script=$source_dir/preflight.sh
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 mkdir -p "$scratch/repo" "$scratch/bin"
@@ -14,6 +15,7 @@ git remote add origin .
 git config remote.origin.fetch '+refs/heads/main:refs/remotes/origin/master'
 mkdir -p scripts backend/app/domains/{sample,planning,admin_assistant} backend/app/alembic/versions backend/tests/{sample,domains,admin_assistant,api/routes,eval/planning,eval/coordination,acceptance} frontend/{src/routes,tests} .github
 cp "$source_script" scripts/preflight.sh
+cp "$source_dir/test_baseline_gate.py" scripts/test_baseline_gate.py
 touch frontend/tests/.gitkeep
 touch backend/tests/sample/test_feature.py backend/tests/domains/test_audit_labels.py backend/tests/test_ci_workflows.py backend/tests/test_sample_migration.py backend/tests/admin_assistant/test_change_set.py
 echo 'from app.domains.sample import feature' > backend/tests/domains/test_importer.py
@@ -59,7 +61,32 @@ case "$*" in
     if [[ ${PREFLIGHT_TWO_HEADS:-0} == 1 ]]; then echo 'two (head)'; fi ;;
   'run prek run'*) exit "${PREFLIGHT_PREK_EXIT:-0}" ;;
   'run python -') python3 - ;;
-  'run pytest --no-cov -x -q '*) exit "${PREFLIGHT_PYTEST_EXIT:-0}" ;;
+  'run pytest '*)
+    # Support both plain preflight pytest and test_baseline_gate.py --baseline-collect/--baseline-results.
+    collect_out=''
+    results_out=''
+    for arg in "$@"; do
+      case "$arg" in
+        --baseline-collect=*) collect_out=${arg#--baseline-collect=} ;;
+        --baseline-results=*) results_out=${arg#--baseline-results=} ;;
+      esac
+    done
+    args=("$@")
+    for ((i=0; i<${#args[@]}; i++)); do
+      if [[ ${args[i]} == --baseline-collect && $((i + 1)) -lt ${#args[@]} ]]; then
+        collect_out=${args[i + 1]}
+      elif [[ ${args[i]} == --baseline-results && $((i + 1)) -lt ${#args[@]} ]]; then
+        results_out=${args[i + 1]}
+      fi
+    done
+    if [[ -n $collect_out ]]; then
+      printf '["tests/sample/test_feature.py::test_ok"]\n' > "$collect_out"
+      exit 0
+    fi
+    if [[ -n $results_out ]]; then
+      printf '{"tests/sample/test_feature.py::test_ok":"passed"}\n' > "$results_out"
+    fi
+    exit "${PREFLIGHT_PYTEST_EXIT:-0}" ;;
   *) echo 'Unexpected uv command' >&2; exit 99 ;;
 esac
 SH
@@ -104,6 +131,17 @@ rg -q 'run pytest --no-cov -x -q -n 1 --dist loadgroup' "$PREFLIGHT_CALLS"
 : > "$PREFLIGHT_CALLS"
 PREFLIGHT_SKIP_FETCH=1 bash scripts/preflight.sh > "$scratch/run"
 rg -q '跳过重复 git fetch' "$scratch/run"
+
+python3 scripts/test_baseline_gate.py init --output backend/tests/baseline_failures.json --repo OrgPace --commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --force >/dev/null
+: > "$PREFLIGHT_CALLS"
+bash scripts/preflight.sh --baseline-gate > "$scratch/run"
+rg -q '\[baseline-gate\] PASS' "$scratch/run"
+rg -q -- '--baseline-collect' "$PREFLIGHT_CALLS"
+rg -q -- '--baseline-results' "$PREFLIGHT_CALLS"
+: > "$PREFLIGHT_CALLS"
+PREFLIGHT_BASELINE_GATE=1 bash scripts/preflight.sh > "$scratch/run"
+rg -q '\[baseline-gate\] PASS' "$scratch/run"
+rm -f backend/tests/baseline_failures.json
 
 expect_failure() {
   local expected=$1

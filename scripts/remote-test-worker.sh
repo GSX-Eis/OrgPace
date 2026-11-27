@@ -18,6 +18,12 @@ if [[ $project == *-review ]]; then
   export API_PORT=$((API_PORT + 10000))
 fi
 
+slot_cap=${CLOUD_TEST_QUEUE_SLOTS:-}
+if [[ -n $slot_cap && ! $slot_cap =~ ^[1-9][0-9]*$ ]]; then
+  echo "Invalid CLOUD_TEST_QUEUE_SLOTS: $slot_cap" >&2
+  exit 2
+fi
+
 if [[ $mode == preflight ]]; then
   if [[ -z $PREFLIGHT_PYTEST_WORKERS ]]; then
     host_cpus=${CLOUD_TEST_NPROC:-$(nproc 2>/dev/null || echo 8)}
@@ -43,9 +49,89 @@ if [[ $mode == preflight ]]; then
         exit 1
       fi
     done
-    printf '远端预检 pytest workers: %s（%s vCPU，按量化租约自动选择）\n' "$PREFLIGHT_PYTEST_WORKERS" "$host_cpus"
+    if [[ -n $slot_cap ]] && (( PREFLIGHT_PYTEST_WORKERS > slot_cap )); then
+      PREFLIGHT_PYTEST_WORKERS=$slot_cap
+      printf '远端预检 pytest workers: %s（受分配槽位 CLOUD_TEST_QUEUE_SLOTS=%s 约束）\n' \
+        "$PREFLIGHT_PYTEST_WORKERS" "$slot_cap"
+    else
+      printf '远端预检 pytest workers: %s（%s vCPU，按量化租约自动选择）\n' "$PREFLIGHT_PYTEST_WORKERS" "$host_cpus"
+    fi
+  elif [[ -n $slot_cap ]] && (( PREFLIGHT_PYTEST_WORKERS > slot_cap )); then
+    requested_workers=$PREFLIGHT_PYTEST_WORKERS
+    PREFLIGHT_PYTEST_WORKERS=$slot_cap
+    printf '远端预检 pytest workers: %s（受分配槽位 CLOUD_TEST_QUEUE_SLOTS=%s 约束，原指定 %s）\n' \
+      "$PREFLIGHT_PYTEST_WORKERS" "$slot_cap" "$requested_workers"
   else
     printf '远端预检 pytest workers: %s（显式指定）\n' "$PREFLIGHT_PYTEST_WORKERS"
+  fi
+fi
+
+clamp_pytest_workers() {
+  local cap=$1
+  shift
+  clamped_pytest_args=()
+  clamped_pytest_workers=false
+  local after_sep=false
+  local val
+  while [[ $# -gt 0 ]]; do
+    local arg=$1
+    shift
+    if $after_sep; then
+      clamped_pytest_args+=("$arg")
+      continue
+    fi
+    if [[ $arg == -- ]]; then
+      after_sep=true
+      clamped_pytest_args+=("$arg")
+      continue
+    fi
+    case "$arg" in
+      -n|--numprocesses)
+        if [[ $# -gt 0 ]]; then
+          val=$1
+          shift
+          if [[ $val == auto || $val == logical ]] || { [[ $val =~ ^[1-9][0-9]*$ ]] && (( val > cap )); }; then
+            clamped_pytest_args+=("$arg" "$cap")
+            clamped_pytest_workers=true
+          else
+            clamped_pytest_args+=("$arg" "$val")
+          fi
+        else
+          clamped_pytest_args+=("$arg")
+        fi
+        ;;
+      --numprocesses=*)
+        val=${arg#--numprocesses=}
+        if [[ $val == auto || $val == logical ]] || { [[ $val =~ ^[1-9][0-9]*$ ]] && (( val > cap )); }; then
+          clamped_pytest_args+=("--numprocesses=$cap")
+          clamped_pytest_workers=true
+        else
+          clamped_pytest_args+=("$arg")
+        fi
+        ;;
+      -n*)
+        val=${arg#-n}
+        if [[ $val == auto || $val == logical ]] || { [[ $val =~ ^[1-9][0-9]*$ ]] && (( val > cap )); }; then
+          clamped_pytest_args+=("-n$cap")
+          clamped_pytest_workers=true
+        else
+          clamped_pytest_args+=("$arg")
+        fi
+        ;;
+      *)
+        clamped_pytest_args+=("$arg")
+        ;;
+    esac
+  done
+}
+
+if [[ $mode == pytest && -n $slot_cap ]]; then
+  clamp_pytest_workers "$slot_cap" "$@"
+  set -- ${clamped_pytest_args[@]+"${clamped_pytest_args[@]}"}
+  if $clamped_pytest_workers; then
+    printf '远端 pytest workers 已按分配槽位收敛至 <= %s（CLOUD_TEST_QUEUE_SLOTS=%s）\n' "$slot_cap" "$slot_cap"
+  else
+    printf '远端 pytest 分配槽位: %s（CLOUD_TEST_QUEUE_SLOTS=%s）\n' "$slot_cap" "$slot_cap"
   fi
 fi
 

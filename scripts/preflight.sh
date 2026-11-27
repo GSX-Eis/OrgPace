@@ -4,11 +4,13 @@ set -euo pipefail
 
 list=false
 full=${PREFLIGHT_FULL_PYTEST:-0}
+baseline_gate=${PREFLIGHT_BASELINE_GATE:-0}
 for option in "$@"; do
   case "$option" in
     --list) list=true ;;
     --full) full=1 ;;
-    *) echo 'Usage: bash scripts/preflight.sh [--list] [--full]' >&2; exit 2 ;;
+    --baseline-gate) baseline_gate=1 ;;
+    *) echo 'Usage: bash scripts/preflight.sh [--list] [--full] [--baseline-gate]' >&2; exit 2 ;;
   esac
 done
 [[ -d backend && -d frontend && -d scripts ]] || {
@@ -332,9 +334,23 @@ PY
   targets=()
   while IFS= read -r path; do targets+=("$path"); done < "$scratch/selected"
   if [[ ${#targets[@]} -gt 0 ]]; then
-    (cd backend && uv run pytest --no-cov -x -q -n "${PREFLIGHT_PYTEST_WORKERS:-4}" --dist loadgroup "${targets[@]}")
+    if [[ $baseline_gate == 1 ]]; then
+      (
+        cd backend && python3 ../scripts/test_baseline_gate.py run \
+          --baseline tests/baseline_failures.json \
+          --repo OrgPace \
+          --scope expected \
+          --pytest-cmd 'uv run pytest' \
+          -- --no-cov -x -q -n "${PREFLIGHT_PYTEST_WORKERS:-4}" --dist loadgroup "${targets[@]}"
+      )
+    else
+      (cd backend && uv run pytest --no-cov -x -q -n "${PREFLIGHT_PYTEST_WORKERS:-4}" --dist loadgroup "${targets[@]}")
+    fi
     states[4]=通过
   else
+    if [[ $baseline_gate == 1 ]]; then
+      python3 scripts/test_baseline_gate.py check-file --baseline backend/tests/baseline_failures.json --repo OrgPace
+    fi
     echo 'pytest: 跳过（无受影响目标）'
   fi
 fi

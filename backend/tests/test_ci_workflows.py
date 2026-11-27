@@ -80,3 +80,15 @@ def test_compose_ci_runs_https_config_tests() -> None:
     )
     smoke = (WORKFLOWS.parents[1] / "tests" / "smoke" / "compose_smoke.sh").read_text()
     assert "python3 -m unittest deploy/test_https_config.py" in smoke
+
+
+def test_backend_ci_enforces_baseline_gate() -> None:
+    workflow = yaml.safe_load((WORKFLOWS / "test-backend.yml").read_text())
+    shard_steps = workflow["jobs"]["backend-shard"]["steps"]
+    assert any("--baseline-collect=" in step.get("run", "") for step in shard_steps)
+    assert any("--baseline-results=" in step.get("run", "") for step in shard_steps)
+    gate_steps = workflow["jobs"]["test-backend"]["steps"]
+    assert any(
+        "scripts/test_baseline_gate.py verify" in step.get("run", "")
+        for step in gate_steps
+    )
