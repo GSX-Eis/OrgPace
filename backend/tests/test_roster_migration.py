@@ -13,6 +13,7 @@ from tests.utils.migrations import migrate
 PREVIOUS = "d73e295a94f6"
 
 
+@pytest.mark.slow
 def test_roster_migration_roundtrip(migration_engine: Engine) -> None:
     migrate(migration_engine, "downgrade", PREVIOUS)
     # The new column must backfill an organization that predates this migration.

@@ -123,6 +123,7 @@ def test_disabled_and_missing(
     assert output.err.endswith(f"找不到登录名 {missing}\n")
 
 
+@pytest.mark.slow
 def test_cli_actor_migration(migration_engine: Engine) -> None:
     for action, revision in (("downgrade", "c20cd19c259b"), ("upgrade", "head")):
         migrate(migration_engine, action, revision)

@@ -24,6 +24,7 @@ from app.seed.loader import load_demo
 from app.seed.schema import SeedError, read_bundle
 
 
+@pytest.mark.slow
 def test_import(seed_path: Path) -> None:
     with Session(engine) as session:
         first = load_demo(session, seed_path)

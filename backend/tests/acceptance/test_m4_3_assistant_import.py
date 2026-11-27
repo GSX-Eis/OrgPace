@@ -43,6 +43,7 @@ class FakeFeishu:
         pass
 
 
+@pytest.mark.slow
 def test_upload_confirm_web_review_and_feishu_review(
     demo: tuple, db: Session, client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

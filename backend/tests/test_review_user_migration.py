@@ -15,6 +15,7 @@ from app.models import User
 from tests.utils.migrations import insert_historical_rows, migrate
 
 
+@pytest.mark.slow
 def test_review_user_migration_preserves_decision_identity(
     migration_engine: Engine,
 ) -> None:

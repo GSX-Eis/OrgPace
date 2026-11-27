@@ -220,6 +220,7 @@ def test_roster_preserves_preferences(
     assert employee.auto_draft_opt_out
 
 
+@pytest.mark.slow
 def test_migration_roundtrip(migration_engine: Engine) -> None:
     with Session(migration_engine) as db:
         org = Organization(slug="synthetic-migration", name="合成企业")

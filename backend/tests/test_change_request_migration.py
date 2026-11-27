@@ -15,6 +15,7 @@ from tests.utils.migrations import migrate
 PREVIOUS = "f52a917c0b32"
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("nonempty_note", [False, True])
 def test_change_request_roundtrip(
     migration_engine: Engine, nonempty_note: bool

@@ -271,6 +271,7 @@ def test_optimized_option_commits_continuous_staff_once_during_handoff(
     assert all(row.allocation_percent == 50 for row in assignments)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("replay", ["unavailability-01"], indirect=True)
 def test_optimized_option_rejects_work_after_commitment(
     client: TestClient, db: Session, replay: tuple, monkeypatch: pytest.MonkeyPatch

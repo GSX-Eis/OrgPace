@@ -42,6 +42,7 @@ from tests.utils.pi import PiHarness
 pytestmark = [
     pytest.mark.xdist_group("model"),
     pytest.mark.usefixtures("reset_login_attempts"),
+    pytest.mark.slow,
 ]
 
 ROOT = Path(__file__).resolve().parents[3]

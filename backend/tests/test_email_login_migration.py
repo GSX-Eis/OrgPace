@@ -26,6 +26,7 @@ def test_bootstrap_email_normalization(
         assert users[0].username == users[0].email == "bootstrap@example.com"
 
 
+@pytest.mark.slow
 def test_email_login_migration_roundtrip(migration_engine: Engine) -> None:
     migrate(migration_engine, "downgrade", "f61a901bc001")
     original = {

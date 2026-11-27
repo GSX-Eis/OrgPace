@@ -975,6 +975,7 @@ def test_web_and_im_fall_back_to_confirmation_card_on_stale_anaphora_or_altered_
     assert row is not None and row.status == RequestStatus.PENDING_REVIEW
 
 
+@pytest.mark.slow
 def test_single_pending_fresh_session_ambiguous_blocked_on_web_and_im(
     demo: tuple, db: Session, monkeypatch: pytest.MonkeyPatch, pi_service: PiHarness
 ) -> None:
@@ -1209,6 +1210,7 @@ def test_single_pending_fresh_session_ambiguous_blocked_on_web_and_im(
     assert row is not None and row.status == RequestStatus.PENDING_REVIEW
 
 
+@pytest.mark.slow
 def test_single_pending_explicit_or_bound_context_direct_decision_web_and_im(
     demo: tuple, db: Session, monkeypatch: pytest.MonkeyPatch, pi_service: PiHarness
 ) -> None:

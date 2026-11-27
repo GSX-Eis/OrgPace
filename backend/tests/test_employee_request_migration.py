@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from sqlalchemy import Engine, inspect, text
 from sqlmodel import Session
 
@@ -11,6 +12,7 @@ from tests.utils.migrations import migrate
 PREVIOUS = "a87e001bc001"
 
 
+@pytest.mark.slow
 def test_employee_request_roundtrip(migration_engine: Engine) -> None:
     with Session(migration_engine) as session:
         init_db(session)

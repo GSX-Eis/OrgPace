@@ -196,6 +196,7 @@ def test_optional_columns_and_length_boundaries() -> None:
     assert minimal.rows[0].detail == minimal.rows[0].actor.name == ""
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("size", [20000, 20001])
 def test_row_limit_counts_invalid_and_valid_records(size: int) -> None:
     rows: list[list[object]] = [list(COLUMNS), []]

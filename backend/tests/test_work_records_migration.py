@@ -1,6 +1,7 @@
 from pathlib import Path
 from uuid import UUID, uuid4
 
+import pytest
 from alembic.autogenerate import compare_metadata
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
@@ -210,6 +211,7 @@ def test_upgrade_from_current_c910001bc001_preserves_existing_data(
     migrate(migration_engine, "upgrade", "head")
 
 
+@pytest.mark.slow
 def test_fresh_empty_database_install_and_roundtrip(migration_engine: Engine) -> None:
     with isolated_database(
         migration_engine.url, f"fresh_install_{uuid4().hex}"

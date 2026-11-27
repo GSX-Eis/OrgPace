@@ -1,5 +1,6 @@
 from uuid import uuid4
 
+import pytest
 import sqlalchemy as sa
 from sqlalchemy import Engine
 from sqlmodel import Session
@@ -9,6 +10,7 @@ from app.models import User
 from tests.utils.migrations import insert_historical_rows, migrate
 
 
+@pytest.mark.slow
 def test_provider_migration_roundtrip(migration_engine: Engine) -> None:
     migrate(migration_engine, "downgrade", "a91e001bc001")
     cases = [

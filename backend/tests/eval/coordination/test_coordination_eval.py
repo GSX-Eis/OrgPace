@@ -620,6 +620,7 @@ def evaluate(
         _cleanup(db, org_id, existing_users)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("path", CASES, ids=[p.stem for p in CASES])
 def test_coordination_eval(path: Path, db: Session) -> None:
     raw = yaml.safe_load(path.read_text())

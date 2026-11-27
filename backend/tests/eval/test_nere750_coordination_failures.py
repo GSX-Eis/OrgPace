@@ -40,6 +40,7 @@ def test_scripted_samples(db: Session, case: str, mode: str) -> None:
             assert result["newcomer"] is True
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     ("failure", "case", "origin"),
     [

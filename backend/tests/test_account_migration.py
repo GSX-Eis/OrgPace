@@ -10,6 +10,7 @@ from app.seed.loader import load_demo
 from tests.utils.migrations import migrate
 
 
+@pytest.mark.slow
 def test_account_migration_roundtrip(migration_engine: Engine) -> None:
     with Session(migration_engine) as session:
         init_db(session)
