@@ -25,7 +25,7 @@ from tests.utils.org import delete_test_organization
 @pytest.fixture
 def retry_defaults(
     db: Session, monkeypatch: pytest.MonkeyPatch
-) -> Generator[tuple[Principal, Department, Mock, Mock]]:
+) -> Generator[tuple[Principal, Department, Mock, Mock, list[str]]]:
     org = Organization(slug="m5-retry-synthetic", name="重试测试企业")
     db.add(org)
     db.commit()
@@ -34,11 +34,14 @@ def retry_defaults(
     department = Department(org_id=p.org_id, name="测试部门")
     db.add(department)
     db.commit()
+    requests: list[str] = []
     config = Mock(return_value=object())
-    generate = Mock(return_value=[])
+    generate = Mock(
+        side_effect=lambda _c, body, _a: requests.append(body["department_name"]) or []
+    )
     monkeypatch.setattr(d, "model_config", config)
     monkeypatch.setattr(d, "generate", generate)
-    yield p, department, config, generate
+    yield p, department, config, generate, requests
     db.rollback()
     for row in db.exec(select(Department).where(Department.org_id == p.org_id)).all():
         row.capability_schema_version_id = None
@@ -59,7 +62,8 @@ def retry_defaults(
 def test_failure_cools_down_then_retries_and_clears(
     retry_defaults: tuple, db: Session, failure: Exception
 ) -> None:
-    p, department, config, generate = retry_defaults
+    p, department, config, generate, requests = retry_defaults
+    record = generate.side_effect
     failed_call = config if isinstance(failure, SecretUnavailable) else generate
     failed_call.side_effect = failure
     d.fill_department_defaults(p)
@@ -69,17 +73,20 @@ def test_failure_cools_down_then_retries_and_clears(
     assert failed_at >= utc_now() - timedelta(minutes=1)
     assert department.capability_source is None
 
-    failed_call.side_effect = None
+    # Cooldown must block both secret/config resolution and model generation.
+    config.side_effect = generate.side_effect = AssertionError("cooldown active")
     d.fill_department_defaults(p)
     db.refresh(department)
     assert department.capability_failed_at == failed_at
     assert department.capability_source is None
 
+    config.side_effect, generate.side_effect = None, record
     department.capability_failed_at = utc_now() - timedelta(hours=25)
     db.add(department)
     db.commit()
     d.fill_department_defaults(p)
     db.refresh(department)
+    assert requests == [department.name]
     assert department.capability_source == "pi"
     assert department.capability_failed_at is None
 
@@ -87,21 +94,21 @@ def test_failure_cools_down_then_retries_and_clears(
 def test_cooldown_is_per_department_and_success_can_be_recalculated(
     retry_defaults: tuple, db: Session
 ) -> None:
-    p, department, _, generate = retry_defaults
+    p, department, _, generate, requests = retry_defaults
+    record = generate.side_effect
     generate.side_effect = ModelUnavailable()
     d.fill_department_defaults(p)
     db.refresh(department)
     failed_at = department.capability_failed_at
-    assert failed_at is not None
-    assert department.capability_source is None
-
+    assert failed_at is not None and department.capability_source is None
     other = Department(org_id=p.org_id, name="新部门")
     db.add(other)
     db.commit()
-    generate.side_effect = None
+    generate.side_effect = record
     d.fill_department_defaults(p)
     db.refresh(other)
     db.refresh(department)
+    assert requests == [other.name]
     assert other.capability_source == "pi"
     assert other.capability_failed_at is None
     assert other.capability_schema_version_id is not None
@@ -113,10 +120,9 @@ def test_cooldown_is_per_department_and_success_can_be_recalculated(
     d.fill_department_defaults(p)
     db.refresh(other)
     db.refresh(department)
-    assert other.capability_source == "pi"
+    assert requests == [other.name, other.name]
     assert other.capability_schema_version_id == new_schema.id
     assert department.capability_failed_at == failed_at
-    assert department.capability_source is None
     audits = db.exec(
         select(AuditEvent).where(
             AuditEvent.org_id == p.org_id,
@@ -130,23 +136,27 @@ def test_cooldown_is_per_department_and_success_can_be_recalculated(
 def test_cooldown_expires_at_24_hours(
     retry_defaults: tuple, db: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    p, department, _, _ = retry_defaults
+    p, department, config, generate, requests = retry_defaults
+    record = generate.side_effect
     now = utc_now()
     monkeypatch.setattr(d, "utc_now", lambda: now)
     cooldown_at = now - timedelta(hours=24) + timedelta(seconds=1)
     department.capability_failed_at = cooldown_at
     db.add(department)
     db.commit()
+    config.side_effect = generate.side_effect = AssertionError("cooldown active")
     d.fill_department_defaults(p)
     db.refresh(department)
     assert department.capability_source is None
     assert department.capability_failed_at == cooldown_at
 
+    config.side_effect, generate.side_effect = None, record
     department.capability_failed_at = now - timedelta(hours=24)
     db.add(department)
     db.commit()
     d.fill_department_defaults(p)
     db.refresh(department)
+    assert requests == [department.name]
     assert department.capability_source == "pi"
     assert department.capability_failed_at is None
 

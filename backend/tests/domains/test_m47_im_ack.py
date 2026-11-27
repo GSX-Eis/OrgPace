@@ -137,6 +137,7 @@ def test_reminder_once_and_never_after_completion(
         adapter.send_text = AsyncMock(side_effect=send)
         monkeypatch.setattr(gateway.asyncio, "sleep", sleep)
         monkeypatch.setattr(pi_client, "run_turn", model)
+        baseline = asyncio.all_tasks()
         task = asyncio.create_task(
             Gateway(engine).handle(event, "synthetic-bot", "synthetic", adapter)
         )
@@ -150,19 +151,21 @@ def test_reminder_once_and_never_after_completion(
                 await original_sleep(0)
                 assert sent == [ACK, WAIT]
             release.set()
+            prefix = [ACK, WAIT] if slow else [ACK]
             if outcome == "unexpected":
                 with pytest.raises(RuntimeError, match="synthetic failure"):
                     await task
-                assert sent == ([ACK, WAIT] if slow else [ACK])
+                assert sent == prefix
             else:
                 await task
-                expected_prefix = [ACK, WAIT] if slow else [ACK]
-                assert sent[:-1] == expected_prefix
-                assert sent[-1] not in (ACK, WAIT)
+                assert sent[:-1] == prefix and sent[-1] not in (ACK, WAIT)
             completed = sent.copy()
             elapsed.set()
-            await original_sleep(0)
-            await original_sleep(0)
+            stray = asyncio.all_tasks() - baseline - {task}
+            if stray:
+                await asyncio.wait_for(
+                    asyncio.gather(*stray, return_exceptions=True), 5
+                )
             assert sent == completed
             assert sent.count(WAIT) == int(slow)
         finally:

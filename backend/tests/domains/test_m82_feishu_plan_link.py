@@ -19,6 +19,8 @@ from tests.domains.test_im_gateway import principal
 FEISHU_MESSAGE_URL = (
     "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id"
 )
+
+
 type SentRequest = tuple[str, str, str | None, dict]
 
 
@@ -99,8 +101,8 @@ def test_plan_link_through_delivery(
 
     asyncio.run(send())
     assert len(captured) == 1
-    method, url, auth, body = captured[0]
-    assert (method, url, auth) == ("POST", FEISHU_MESSAGE_URL, "Bearer synthetic-token")
+    assert captured[0][:3] == ("POST", FEISHU_MESSAGE_URL, "Bearer synthetic-token")
+    body = captured[0][3]
     assert body["receive_id"] == "chat" and body["msg_type"] == "interactive"
     elements = json.loads(body["content"])["elements"]
     if scope_changed:
@@ -193,9 +195,8 @@ def test_callback_and_size_limits(text: str) -> None:
 
     asyncio.run(send())
     assert len(captured) == 1
-    method, url, auth, body = captured[0]
-    assert (method, url, auth) == ("POST", FEISHU_MESSAGE_URL, "Bearer synthetic-token")
-    content = body["content"]
+    assert captured[0][:3] == ("POST", FEISHU_MESSAGE_URL, "Bearer synthetic-token")
+    content = captured[0][3]["content"]
     elements = json.loads(content)["elements"]
     assert len(content.encode()) <= 10 * 1024
     if text == "确认卡":
@@ -248,6 +249,7 @@ def test_feishu_fallback_plan_and_capacity_cards_keep_both_clickable_links(
         ],
         plan=plan_card,
     )
+
     captured: list[SentRequest] = []
 
     async def send() -> None:
