@@ -7,7 +7,7 @@ test.use({
   screenshot: "off",
   video: "off",
 })
-test("real Cloud connection and synchronization through the settings page", async ({
+test("real Cloud connection and synchronization through the settings page @real-jira", async ({
   page,
 }) => {
   test.skip(

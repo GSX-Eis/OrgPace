@@ -117,3 +117,21 @@ def test_backend_ci_enforces_baseline_gate() -> None:
         "scripts/test_baseline_gate.py verify" in step.get("run", "")
         for step in gate_steps
     )
+
+
+def test_playwright_ci_uses_balanced_shard_selector_and_excludes_real_jira() -> None:
+    workflow = yaml.safe_load((WORKFLOWS / "playwright.yml").read_text())
+    shard_steps = workflow["jobs"]["playwright-shard"]["steps"]
+    main_step = next(
+        step for step in shard_steps if step.get("name") == "Run Playwright tests"
+    )
+    run_cmd = main_step["run"]
+    assert "select-playwright-shard.mjs" in run_cmd
+    assert '--grep-invert "@external-mcp|@real-jira"' in run_cmd
+    assert "--fail-on-flaky-tests" in run_cmd
+    assert "--shard=" not in run_cmd
+    assert any(
+        step.get("name") == "Run external MCP Playwright tests"
+        and "--grep @external-mcp" in step.get("run", "")
+        for step in shard_steps
+    )

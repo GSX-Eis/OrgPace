@@ -176,6 +176,9 @@ test.describe("employee settings", () => {
         page.getByRole("region", { name: "个人信息" }),
       ).toContainText(email)
       await page.getByRole("link", { name: "连接与集成", exact: true }).click()
+      await expect(
+        page.getByRole("heading", { name: "Jira 账号", exact: true }),
+      ).toBeVisible()
       const identities = page.getByRole("region", { name: "本人关联账号" })
       await expect(identities).toContainText(
         email.startsWith("employee") ? "demo-jira-02" : "demo-jira-01",
@@ -184,6 +187,9 @@ test.describe("employee settings", () => {
         identities.getByRole("button", { name: /关联|解除/ }),
       ).toHaveCount(0)
       await page.getByRole("link", { name: "偏好与代理", exact: true }).click()
+      await expect(
+        page.getByRole("region", { name: "自动起草偏好", exact: true }),
+      ).toBeVisible()
       await expect(
         page.getByRole("switch", {
           name: "根据工作记录自动起草画像",

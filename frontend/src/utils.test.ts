@@ -1,6 +1,7 @@
-import { expect, test } from "@playwright/test"
+import { equal } from "node:assert/strict"
+import { test } from "node:test"
 import { AxiosError, type AxiosResponse } from "axios"
-import { handleError } from "../src/utils"
+import { handleError } from "./utils"
 
 test("API errors show Chinese validation, detail and fallback messages", () => {
   for (const [status, detail, expected] of [
@@ -25,11 +26,12 @@ test("API errors show Chinese validation, detail and fallback messages", () => {
         response,
       ),
     )
-    expect(message).toBe(expected)
+    equal(message, expected)
   }
+
   let message = ""
   handleError.call((value) => {
     message = value
   }, new AxiosError("Network Error"))
-  expect(message).toBe("无法连接服务器，请检查网络")
+  equal(message, "无法连接服务器，请检查网络")
 })

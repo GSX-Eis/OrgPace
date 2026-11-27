@@ -230,6 +230,9 @@ isolated(
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth),
     ).toBe(390)
+    await expect(
+      detail.getByRole("button", { name: "直接修改", exact: true }),
+    ).toHaveCount(0)
     await detail.getByRole("button", { name: "修改", exact: true }).click()
     await page.getByRole("button", { name: "手动编辑", exact: true }).click()
     const dialog = page.getByRole("dialog")
