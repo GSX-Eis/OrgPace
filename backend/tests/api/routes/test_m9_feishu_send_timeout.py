@@ -8,7 +8,7 @@ from threading import Event as ThreadEvent
 
 import httpx
 import pytest
-from sqlalchemy import event
+from sqlalchemy import event, text
 from sqlmodel import Session, create_engine, select
 
 from app.authz.deps import get_org_principal
@@ -77,9 +77,10 @@ def test_send_releases_connection_and_pending_role_change(
     monkeypatch: pytest.MonkeyPatch,
     outcome: str,
 ) -> None:
-    monkeypatch.setattr(actions, "FEISHU_SEND_TIMEOUT_SECONDS", 0.25)
+    monkeypatch.setattr(actions, "FEISHU_SEND_TIMEOUT_SECONDS", 0.4)
     p, reply, incoming, pool, grant_id, admin_id = sending
     writer_started = ThreadEvent()
+    writer_pid_box: list[int] = []
     queries: list[str] = []
     attempts: list[dict] = []
     writer_elapsed: list[float] = []
@@ -96,15 +97,45 @@ def test_send_releases_connection_and_pending_role_change(
     def revoke() -> None:
         started = time.monotonic()
         with Session(db.get_bind()) as writer:
+            writer_pid = writer.execute(text("SELECT pg_backend_pid()")).scalar_one()
+            writer_pid_box.append(writer_pid)
             admin = get_org_principal(p.org_id, writer.get_one(User, admin_id), writer)
             revoke_role(writer, admin, grant_id)
         writer_elapsed.append(time.monotonic() - started)
 
+    def wait_for_writer_lock(session_pid: int) -> bool:
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if writer_pid_box:
+                with db.get_bind().connect() as probe:
+                    waiting = probe.execute(
+                        text(
+                            "SELECT count(*) FROM pg_stat_activity "
+                            "WHERE datname = current_database() "
+                            "AND pid = :writer_pid "
+                            "AND state = 'active' "
+                            "AND wait_event_type = 'Lock' "
+                            "AND :session_pid = ANY(pg_blocking_pids(pid)) "
+                            "AND query LIKE :lock_pattern"
+                        ),
+                        {
+                            "writer_pid": writer_pid_box[0],
+                            "session_pid": session_pid,
+                            "lock_pattern": "%FOR UPDATE%",
+                        },
+                    ).scalar_one()
+                if waiting >= 1:
+                    return True
+            time.sleep(0.01)
+        return False
+
     async def exercise() -> None:
         writer = None
+        writer_blocked = False
+        session_pid: int | None = None
 
         async def capture(request: httpx.Request) -> httpx.Response:
-            nonlocal writer
+            nonlocal writer, writer_blocked
             if "/auth/" in request.url.path:
                 return httpx.Response(
                     200,
@@ -118,8 +149,10 @@ def test_send_releases_connection_and_pending_role_change(
             assert writer is None, "failed sends must not retry or send pending content"
             writer = asyncio.create_task(asyncio.to_thread(revoke))
             assert await asyncio.to_thread(writer_started.wait, 2)
-            await asyncio.sleep(0.05)
+            assert session_pid is not None
+            assert await asyncio.to_thread(wait_for_writer_lock, session_pid)
             assert not writer.done(), "personnel changes must wait until send finishes"
+            writer_blocked = True
             if outcome == "timeout":
                 await asyncio.sleep(5)
             elif outcome == "error":
@@ -133,9 +166,13 @@ def test_send_releases_connection_and_pending_role_change(
             transport=httpx.MockTransport(capture),
         )
         baseline = pool.pool.checkedout()
-        started = time.monotonic()
         try:
             with Session(pool) as session:
+                session_pid = session.execute(
+                    text("SELECT pg_backend_pid()")
+                ).scalar_one()
+                session.rollback()
+                started = time.monotonic()
                 # One message on success; failures must leave the second unsent.
                 if outcome == "success":
                     reply.response.messages = reply.response.messages[:1]
@@ -156,11 +193,14 @@ def test_send_releases_connection_and_pending_role_change(
                 # Check before Session.close() can mask a leaked transaction.
                 assert pool.pool.checkedout() == baseline
                 ended = time.monotonic()
+                assert writer_blocked, (
+                    "concurrent revoke_role must block on PostgreSQL lock before send finishes"
+                )
                 assert writer is not None
                 await asyncio.wait_for(writer, 2)
                 assert time.monotonic() - ended < 1
                 if outcome == "timeout":
-                    assert 0.2 <= ended - started < 1.5
+                    assert 0.3 <= ended - started < 1.5
                     assert writer_elapsed[0] < 1.5
         finally:
             await adapter.close()

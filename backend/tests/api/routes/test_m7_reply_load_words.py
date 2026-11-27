@@ -126,6 +126,9 @@ def _mcp_org(db: Session, client: TestClient, _demo_seed: DemoSeed) -> Generator
                     "description": "合成需求",
                 }
                 headers = initialize(client, token_for(db, people["E05"])[0])
+                orig_depts = {
+                    code: people[code].department_id for code in ("E04", "E06", "E07")
+                }
                 try:
                     yield {
                         "url": url,
@@ -137,6 +140,7 @@ def _mcp_org(db: Session, client: TestClient, _demo_seed: DemoSeed) -> Generator
                         "org_id": org_id,
                         "target": target,
                         "child": child,
+                        "orig_depts": orig_depts,
                         "capability": capability,
                         "schema_version_id": dictionary["schema_version"]["id"],
                         "match_count": None,
@@ -159,6 +163,10 @@ def case(_mcp_org: dict, db: Session, match_count: int) -> Generator[tuple]:
         db.exec(delete(ProfileVersion).where(ProfileVersion.org_id == org_id))
         people = _mcp_org["people"]
         capability = _mcp_org["capability"]
+        for code, orig_dept in _mcp_org["orig_depts"].items():
+            person = people[code]
+            person.department_id = orig_dept
+            db.add(person)
         for index, code in enumerate(("E04", "E06", "E07")[:match_count]):
             person = people[code]
             person.department_id = (
@@ -191,6 +199,7 @@ def case(_mcp_org: dict, db: Session, match_count: int) -> Generator[tuple]:
                 )
             )
         db.commit()
+        db.expire_all()
         _mcp_org["match_count"] = match_count
     try:
         yield (
@@ -221,21 +230,16 @@ def snapshot(db: Session, org_id: UUID) -> list:
     ]
 
 
-def create_demand(
-    case: tuple, client: TestClient, match_count: int, *, check_basis: bool = True
-) -> str:
+def create_demand(case: tuple, client: TestClient, match_count: int) -> str:
     url, auth, _, body, _ = case
     created = client.post(
         f"{url}/capacity/demands", headers=auth["employee"], json=body
     )
     assert created.status_code == 200, created.text
     demand_id = created.json()["id"]
-    if check_basis:
-        basis = client.get(
-            f"{url}/capacity/demands/{demand_id}/basis", headers=auth["b"]
-        )
-        assert basis.status_code == 200, basis.text
-        assert basis.json()["reference"]["count"] == match_count
+    basis = client.get(f"{url}/capacity/demands/{demand_id}/basis", headers=auth["b"])
+    assert basis.status_code == 200, basis.text
+    assert basis.json()["reference"]["count"] == match_count
     return demand_id
 
 
@@ -319,8 +323,8 @@ def test_three_matches_allow_load_words(
     match_count: int,
     channel: str,
 ) -> None:
-    for index, text in enumerate(LOAD_TEXTS):
-        demand_id = create_demand(case, client, match_count, check_basis=(index == 0))
+    for text in LOAD_TEXTS:
+        demand_id = create_demand(case, client, match_count)
         send_reply(case, db, client, channel, demand_id, text, rejected=False)
 
 
@@ -345,8 +349,8 @@ def test_new_load_words_are_rejected(
 def test_three_matches_allow_new_load_words(
     case: tuple, db: Session, client: TestClient, match_count: int
 ) -> None:
-    for index, text in enumerate(ASSISTANT_LOAD_TEXTS):
-        demand_id = create_demand(case, client, match_count, check_basis=(index == 0))
+    for text in ASSISTANT_LOAD_TEXTS:
+        demand_id = create_demand(case, client, match_count)
         send_reply(case, db, client, "rest", demand_id, text, rejected=False)
 
 
@@ -391,16 +395,14 @@ def test_unrelated_confirmation_and_sentence_boundaries_are_allowed(
     match_count: int,
     channel: str,
 ) -> None:
-    for index, text in enumerate(
-        (
-            "日期未确认",
-            "开始时间尚未确认",
-            "负荷情况目前都尚未确认",
-            *(
-                f"负荷{separator}日期未确认"
-                for separator in ("。", "；", "，", ",", ";", "\n")
-            ),
-        )
+    for text in (
+        "日期未确认",
+        "开始时间尚未确认",
+        "负荷情况目前都尚未确认",
+        *(
+            f"负荷{separator}日期未确认"
+            for separator in ("。", "；", "，", ",", ";", "\n")
+        ),
     ):
-        demand_id = create_demand(case, client, match_count, check_basis=(index == 0))
+        demand_id = create_demand(case, client, match_count)
         send_reply(case, db, client, channel, demand_id, text, rejected=False)
