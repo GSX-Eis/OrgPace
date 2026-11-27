@@ -1,28 +1,37 @@
 # 文档索引
 
-- [项目主页 README（English）](../README.md) · [简体中文](../README_CN.md)
+> English readers: see the [English Documentation Index](README_EN.md) or the [English README](../README.md).
+
+## 项目主页与快速体验
+
+- [项目主页 README（English）](../README.md) · [简体中文主页](../README_CN.md)
+- [English Documentation Index](README_EN.md)
+- [Docker Compose 本地体验说明](deployment-docker-compose.md)
+- [合成企业与演示数据说明](../examples/demo-org/README.md)
+- [行业能力词典模板](../templates/README.md)
+
+## 部署与运维
+
 - [生产安装、演示账号、备份与维护](deploy.md)
-- [架构、核心对象、权限与扩展位置](architecture.md)
-- [架构决策记录](adr/README.md)
-- [开发指南与本地检查](development.md)
-- [企业管理员指南](admin-guide.md)
-- [员工指南](employee-guide.md)
-- [经理指南](manager-guide.md)
-- [已发布画像导出字段与只读接口](profile-export.md)
-- [M1 验收记录](m1-acceptance.md)
-- [M5 验收记录](m5-acceptance.md)
-- [M6 验收记录](m6-acceptance.md)
-- [M7 验收记录](m7-acceptance.md)
-- [M8 验收记录](m8-acceptance.md)
-- [M8 协调 Agent 评测与已知限制](m8-coordination-eval.md)
-- [M9 验收记录与 M9.1 回归检查清单](m9-acceptance.md)
-- [M9 协调 Agent 评测](m9-coordination-eval.md)
-- [依赖许可证核验](licenses.md)
-- [M9 HTTPS 部署实测](m9-https-test.md)
-- [仓库简介与 topics 草稿（早期 README 草稿存档）](release-draft.md)
-- [Docker Compose 部署说明](deployment-docker-compose.md)
-- [合成企业与演示数据](../examples/demo-org/README.md)
-- [能力词典模板](../templates/README.md)
 - [跨服务冒烟脚本](../tests/smoke/compose_smoke.sh)
 
-根目录 README 截图保存在 `docs/assets/readme/`；历史指南截图在 `docs/img/` 与 `docs/screenshots/`。
+## 使用指南
+
+- [企业管理员指南](admin-guide.md)
+- [经理指南](manager-guide.md)
+- [员工指南](employee-guide.md)
+- [已发布画像导出字段与只读接口](profile-export.md)
+
+## 扩展与开发
+
+- [开发指南与本地检查](development.md)
+- [架构设计与扩展边界](architecture.md)
+- [扩展开发指南（数据源、IM 入口、能力模板）](extending.md)
+- [架构决策记录（ADR）](adr/README.md)
+- [贡献指南（CONTRIBUTING）](../CONTRIBUTING.md)
+
+## 安全与合规
+
+- [安全策略与漏洞披露（SECURITY）](../SECURITY.md)
+- [行为准则（CODE OF CONDUCT）](../CODE_OF_CONDUCT.md)
+- [依赖许可证核验](licenses.md)

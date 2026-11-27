@@ -1,0 +1,33 @@
+name: Feature Request
+description: Suggest an improvement, integration, or new capability for OrgPace.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for sharing an idea! For open-ended questions or workflow discussions, consider starting a thread in [GitHub Discussions](https://github.com/GSX-Eis/OrgPace/discussions) first.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement / Scenario
+      description: What workflow bottleneck or team coordination problem are you trying to solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution
+      description: Describe the behavior, UI, integration, or API behavior you would like to see.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Any workarounds or alternative designs you considered.
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Team size, deployment setup, data source, or permission constraints relevant to this request.

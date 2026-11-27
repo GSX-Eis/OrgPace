@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 72" width="72" height="72" role="img" aria-label="OrgPace logo">
+  <defs>
+    <linearGradient id="orgpace-bg-dark" x1="0" y1="0" x2="72" y2="72" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#111827" />
+      <stop offset="100%" stop-color="#0B1120" />
+    </linearGradient>
+    <linearGradient id="orgpace-accent-dark" x1="16" y1="18" x2="56" y2="54" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#34D399" />
+      <stop offset="100%" stop-color="#38BDF8" />
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="64" height="64" rx="16" fill="url(#orgpace-bg-dark)" />
+  <rect x="4.5" y="4.5" width="63" height="63" rx="15.5" fill="none" stroke="#334155" stroke-width="1" />
+  <!-- Forward schedule tracks -->
+  <rect x="17" y="21" width="22" height="7" rx="3.5" fill="#38BDF8" />
+  <rect x="26" y="32.5" width="29" height="7" rx="3.5" fill="url(#orgpace-accent-dark)" />
+  <rect x="17" y="44" width="26" height="7" rx="3.5" fill="#34D399" />
+  <!-- Capability / confirmation nodes -->
+  <circle cx="48" cy="24.5" r="4.5" fill="#7DD3FC" />
+  <circle cx="20.5" cy="36" r="3.5" fill="#64748B" />
+  <circle cx="51" cy="47.5" r="4.5" fill="#6EE7B7" />
+</svg>

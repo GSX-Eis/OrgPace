@@ -1,49 +1,98 @@
-# 贡献指南
+# Contributing to OrgPace
 
-本项目帮助企业基于可信能力和事实维护员工画像、开展跨部门协同。开始前请阅读[架构与权限](docs/architecture.md)、[开发环境](docs/development.md)和[本地检查与合并流程](docs/agent-workflow.md)。部署入口见[部署指南](docs/deploy.md)。
+Thank you for your interest in contributing to **OrgPace**! We welcome bug reports, documentation improvements, capability dictionary templates, integrations, and code pull requests from the community.
 
-## 提交范围
+> 中文读者也可参考[文档索引（中文）](docs/README.md)与[中文主页](README_CN.md)。
 
-一个 issue 对应一个 PR，标题以 issue 编号开头。先在 issue 说明问题、复现方法和预期行为；新功能、架构调整及任何依赖或锁文件变动须先讨论。沿用已有服务层、依赖和工具，不顺手加入无关重构。
+## Ways to Contribute
 
-修复行为或新增功能时先写能复现问题的失败测试，再实现最小改动。文档和拼写修正不需要新增行为测试。数据库改动必须附 Alembic 迁移，验证 upgrade、downgrade 和单一 head。API 客户端从 OpenAPI 生成，不手写请求类型。
+- **Ask Questions & Share Ideas:** Start a thread in [GitHub Discussions](https://github.com/GSX-Eis/OrgPace/discussions) for usage questions, deployment tips, or feature brainstorming.
+- **Report Bugs:** Open an issue using the [Bug Report template](.github/ISSUE_TEMPLATE/bug_report.yml). Never include real employee information, chat logs, or secrets.
+- **Propose Features or Extensions:** Open a [Feature Request](.github/ISSUE_TEMPLATE/feature_request.yml) before implementing large features, schema changes, or new dependencies.
+- **Report Security Issues Privately:** See [SECURITY.md](SECURITY.md) — never disclose vulnerabilities in public issues or PRs.
 
-所有业务数据访问都带企业上下文，权限在服务端统一判断。证据只追加，纠错用撤销或更正记录；不要修改原始证据。PR 应说明权限、隐私和兼容性影响，以及验证方法。
+All contributors are expected to follow our [Code of Conduct](CODE_OF_CONDUCT.md).
 
-## 开发与本地检查
+## Local Development Setup
 
-从仓库根目录安装锁定的依赖：
+### Prerequisites
+
+- Python 3.14+ and [`uv`](https://docs.astral.sh/uv/)
+- [Bun](https://bun.sh/) and Node.js (`>= 22.19.0`)
+- Docker and Docker Compose (`>= 2.24.4`) for PostgreSQL and full-stack verification
+
+### Install Dependencies & Run Dev Servers
+
+1. Copy the example environment file from the repository root (for local development only):
+
+   ```bash
+   cp .env.example .env
+   ```
+
+2. Start PostgreSQL and prepare the database:
+
+   ```bash
+   docker compose -f compose.yml -f compose.dev.yml up -d db
+   uv sync --all-packages --frozen
+   (cd backend && uv run bash scripts/prestart.sh)
+   ```
+
+3. Start the backend and frontend dev servers in separate terminals:
+
+   ```bash
+   # Terminal 1 (Backend API at http://localhost:8000)
+   (cd backend && uv run fastapi dev)
+
+   # Terminal 2 (Frontend UI at http://localhost:5173)
+   bun install --frozen-lockfile
+   (cd frontend && bun run dev)
+   ```
+
+See [docs/development.md](docs/development.md) for more details on local development workflows and test databases, and [docs/extending.md](docs/extending.md) (`ZH`) if you are adding data connectors, chat channel adapters, or industry capability dictionary templates.
+
+## Engineering Conventions
+
+Please follow these core principles across all changes:
+
+- **One focused PR per issue:** Keep changes minimal and avoid unrelated refactoring.
+- **Tenant & permission boundaries:** Every business query must stay scoped to its organization (`org_id`), with authorization enforced server-side.
+- **Append-only evidence:** Never update or delete historical evidence records; represent corrections with superseding or retraction records.
+- **Database migrations:** Any schema change must include an Alembic migration tested for both `upgrade` and `downgrade`, keeping a single migration head.
+- **Generated API client:** Regenerate the TypeScript client (`bash scripts/generate-client.sh`) whenever backend API routes or schemas change—never hand-edit generated files.
+- **Synthetic data only:** All tests, examples, and screenshots must use 100% synthetic organizations, accounts, and work records. Never commit real employee data or secrets.
+- **Bilingual UI & i18n:** User-facing web copy supports both English and Simplified Chinese; add translation keys for both locales instead of hardcoding UI strings.
+
+## Checks & Testing
+
+Run static checks and relevant tests before opening or updating a pull request:
 
 ```bash
-uv sync --all-packages --frozen
-bun install --frozen-lockfile
-```
-
-配置环境、启动数据库和运行开发服务器的方法见[开发指南](docs/development.md)。同机并行任务须使用独立 Compose 项目和分配的端口，不能连接其他任务的数据库；本地 `.env` 不提交。
-
-每次 push 前运行以下检查，后端测试只选择本次改动及引用该模块的测试：
-
-```bash
+# Backend lint & type checks
 (cd backend && uv run bash scripts/lint.sh)
-(cd frontend && bunx biome check --no-errors-on-unmatched --files-ignore-unknown=true ./)
-(cd frontend && bunx tsc --noEmit && bun run build)
-# 配好当前任务的 DATABASE_URL 和 POSTGRES_PORT，再替换为相关测试路径：
-(cd backend && uv run pytest tests/<相关路径> -x -q)
-bash scripts/preflight.sh
+
+# Frontend lint, i18n, typecheck & build
+(cd frontend && bunx biome check --no-errors-on-unmatched --files-ignore-unknown=true ./ && bunx tsc --noEmit && bun run build)
+bun frontend/scripts/check-i18n.ts
+bun frontend/scripts/check-no-chinese.ts
+
+# Backend tests (requires Postgres running)
+(cd backend && uv run pytest tests/<relevant-path> -x -q)
 ```
 
-`preflight.sh` 会同步远端、检查迁移、执行 pre-commit 和选中的测试；可先用 `--list` 查看计划。改了已有 Playwright 覆盖的页面时，只跑相关 spec；改了 Dockerfile 或 Compose 时，只构建受影响服务。全量后端、浏览器和安装检查交给 CI。不要通过删除、跳过测试或放宽检查让 CI 通过。
+Do not delete or skip existing tests or weaken lint/type checks to make CI pass.
 
-提交 PR 时列出做了什么、为什么、测试结果、已知限制；新增依赖须写许可证。代码、标识符、注释和 commit message 使用英文；issue、PR 和用户界面使用中文。PR 通过所需 CI、解决冲突并完成审查后，以 merge commit 合并；不直接推送 master，不 force push。
+## Pull Request Process
 
-## 示例数据与安全问题
+1. Fork the repository and create a branch from `master`.
+2. Write clear commit messages and fill out the [Pull Request Template](.github/PULL_REQUEST_TEMPLATE.md).
+3. If adding or updating dependencies, list exact package versions and verify license compatibility with **Apache-2.0** (see [docs/licenses.md](docs/licenses.md)).
+4. Ensure all GitHub Actions checks pass and respond to review feedback.
 
-只提交合成示例，不提交真实员工资料、企业内部材料、聊天记录、密钥或令牌。密钥通过环境变量或项目已有的安全配置入口提供；日志和错误输出中也不能带凭据。
+## Licensing
 
-安全问题不要公开提 issue，也不要在普通 PR、评论或附件中放入漏洞利用细节或敏感数据。私下报告的具体联系方式：**发布时由维护者公布**。
+By submitting a contribution to OrgPace, you certify that you have the right to submit the work and agree that your contribution is licensed under the **Apache License 2.0** (inbound = outbound), without requiring a separate CLA.
 
-## 贡献授权
-
-提交贡献即表示你有权提供这些内容，并同意贡献按 **Apache-2.0** 授权（inbound = outbound），无需额外的贡献者许可协议。第三方内容须保留原有版权和许可证声明，不能把其许可直接改成项目许可。
-
-项目许可证全文见 [LICENSE](LICENSE)，来源与第三方许可入口见 [NOTICE](NOTICE)。上游模板的 MIT 版权、许可与免责全文保留在 [模板 MIT 许可证](licenses/full-stack-fastapi-template-MIT.txt)。第三方依赖的使用和再分发义务见[许可证核验](docs/licenses.md)，贡献授权约定不改变这些第三方内容的许可。
+- Project license: [LICENSE](LICENSE)
+- Attribution & third-party notices: [NOTICE](NOTICE)
+- Upstream template attribution: [licenses/full-stack-fastapi-template-MIT.txt](licenses/full-stack-fastapi-template-MIT.txt)
+- Third-party dependency audit: [docs/licenses.md](docs/licenses.md) (`ZH`)
