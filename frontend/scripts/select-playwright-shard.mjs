@@ -27,9 +27,23 @@ export const estimateSpecWeight = (src) =>
   (/setup\/initialize|createSourcesOrg/.test(src) ? 150 : 0) +
   (/modelUrl|createServer/.test(src) ? 150 : 0)
 
+function listTestFiles(dir) {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    if (entry.isDirectory()) {
+      return entry.name === "node_modules"
+        ? []
+        : listTestFiles(path.join(dir, entry.name)).map((file) =>
+            path.posix.join(entry.name, file),
+          )
+    }
+    return entry.isFile() && /\.(?:spec|test)\.[cm]?[jt]sx?$/i.test(entry.name)
+      ? [entry.name]
+      : []
+  })
+}
+
 export const listEligibleSpecs = (dir = DIR) =>
-  readdirSync(dir)
-    .filter((f) => f.endsWith(".spec.ts"))
+  listTestFiles(dir)
     .sort()
     .flatMap((f) => {
       const s = readFileSync(path.join(dir, f), "utf8")
