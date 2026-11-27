@@ -38,31 +38,53 @@ def test_no_db_mode_blocks_non_unit_and_overrides_database_url(
     tmp_path: Path,
 ) -> None:
     import tests.conftest as root_conftest
-    from app.core.config import settings
 
+    env_before = dict(os.environ)
     if os.environ.get("PYTEST_NO_DB") == "1":
+        from app.core.config import settings
+
         assert str(settings.DATABASE_URL).endswith("@127.0.0.1:1/no_db_mode")
 
-    # Verify _enforce_no_db_env overwrites all keys without leaking into the process env.
-    env_before = dict(os.environ)
+    backend_dir = Path(__file__).resolve().parents[1]
+
+    # Verify _enforce_no_db_env in an isolated subprocess across full and GitHub-CI-sparse envs.
+    probe_code = (
+        "import os, tests.conftest as c\n"
+        "expected = c.NO_DB_ENV_OVERRIDES\n"
+        "os.environ.update({\n"
+        "    'DATABASE_URL': 'postgresql://postgres:real@127.0.0.1:5432/prod_like',\n"
+        "    'FASTAPI_ENV': 'production',\n"
+        "    'PROJECT_NAME': 'Prod',\n"
+        "    'SECRET_KEY': 'real-secret',\n"
+        "    'PI_SERVICE_TOKEN': 'real-token',\n"
+        "    'FIRST_SUPERUSER': 'admin@example.com',\n"
+        "    'FIRST_SUPERUSER_PASSWORD': 'real-password',\n"
+        "})\n"
+        "c._enforce_no_db_env()\n"
+        "assert all(os.environ[k] == v for k, v in expected.items()), 'scenario A failed'\n"
+        "for k in expected:\n"
+        "    os.environ.pop(k, None)\n"
+        "os.environ['DATABASE_URL'] = 'postgresql://postgres:ci@127.0.0.1:5432/ci_db'\n"
+        "os.environ['FASTAPI_ENV'] = 'development'\n"
+        "c._enforce_no_db_env()\n"
+        "assert all(os.environ[k] == v for k, v in expected.items()), 'scenario B failed'\n"
+    )
+    enforce_probe = subprocess.run(
+        [sys.executable, "-c", probe_code],
+        cwd=backend_dir,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert enforce_probe.returncode == 0, enforce_probe.stdout + enforce_probe.stderr
+
+    # Verify empty selection under PYTEST_NO_DB=1 fails without mutating parent env.
     with monkeypatch.context() as mp:
-        for key in (*root_conftest.NO_DB_ENV_OVERRIDES, "PYTEST_NO_DB"):
-            if key in os.environ:
-                mp.setenv(key, os.environ[key])
-            else:
-                mp.delenv(key, raising=False)
-        mp.setenv("DATABASE_URL", "postgresql://postgres:real@127.0.0.1:5432/prod_like")
-        root_conftest._enforce_no_db_env()
-        assert all(
-            os.environ[k] == v for k, v in root_conftest.NO_DB_ENV_OVERRIDES.items()
-        )
         mp.setenv("PYTEST_NO_DB", "1")
         with pytest.raises(pytest.UsageError, match="selected 0 tests"):
             root_conftest.pytest_collection_modifyitems(None, [])  # type: ignore[arg-type]
-    assert dict(os.environ) == env_before
 
     # Verify real pytest invocation with PYTEST_NO_DB=1 rejects non-unit selection before execution.
-    backend_dir = Path(__file__).resolve().parents[1]
     env = {
         **os.environ,
         "PYTEST_NO_DB": "1",
@@ -112,3 +134,10 @@ def test_no_db_mode_blocks_non_unit_and_overrides_database_url(
     )
     assert collected.returncode == 0, collected.stdout + collected.stderr
     assert "2 passed" in collected.stdout
+
+    changed_keys = sorted(
+        k
+        for k in set(os.environ) | set(env_before)
+        if os.environ.get(k) != env_before.get(k)
+    )
+    assert not changed_keys, f"Process env mutated keys: {changed_keys}"
