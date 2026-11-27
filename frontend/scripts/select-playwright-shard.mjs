@@ -36,7 +36,8 @@ function listTestFiles(dir) {
             path.posix.join(entry.name, file),
           )
     }
-    return entry.isFile() && /\.(?:spec|test)\.[cm]?[jt]sx?$/i.test(entry.name)
+    const suffix = entry.name.match(/\.(?:spec|test)(\.[cm]?[jt]sx?)$/i)
+    return entry.isFile() && suffix && suffix[1] === suffix[1].toLowerCase()
       ? [entry.name]
       : []
   })
@@ -72,6 +73,12 @@ export function selectPlaywrightShard(
   return out[shard - 1].files.sort()
 }
 
+export function toPlaywrightFilePattern(file, root = path.dirname(DIR)) {
+  // Playwright treats positional file arguments as regexes on absolute paths.
+  const absolute = path.resolve(root, file).split(path.sep).join("/")
+  return `/^${absolute.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$/`
+}
+
 if (
   process.argv[1] &&
   path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
@@ -80,4 +87,6 @@ if (
     Number(process.argv[2]),
     Number(process.argv[3]),
   ))
-    console.log(f)
+    console.log(
+      process.argv[4] === "--patterns" ? toPlaywrightFilePattern(f) : f,
+    )

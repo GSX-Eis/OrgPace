@@ -1,5 +1,4 @@
 import { deepEqual, equal, ok, throws } from "node:assert/strict"
-import { execFileSync } from "node:child_process"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -40,6 +39,10 @@ test("shards include nested files and every Playwright test suffix", () => {
       path.join(dir, "node_modules/vendor.spec.ts"),
       'test("dependency", () => {})',
     )
+    writeFileSync(
+      path.join(dir, "reviews/upper.test.TS"),
+      'test("unsupported extension", () => {})',
+    )
     for (const file of regular)
       writeFileSync(path.join(dir, file), 'test("ordinary", () => {})')
     for (const ext of ["ts", "js", "mjs", "mts", "cjs", "cts", "jsx", "tsx"])
@@ -66,36 +69,7 @@ test("shards include nested files and every Playwright test suffix", () => {
 })
 
 test("selectPlaywrightShard partitions specs deterministically and evenly", () => {
-  const frontend = path.resolve(import.meta.dirname, "..")
-  const listing = execFileSync(
-    "bunx",
-    [
-      "playwright",
-      "test",
-      "--list",
-      "--project=chromium",
-      "--grep-invert",
-      "@external-mcp|@real-jira",
-      "--reporter=list",
-    ],
-    {
-      cwd: frontend,
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        FIRST_SUPERUSER: "admin@example.com",
-        FIRST_SUPERUSER_PASSWORD: "listing-only",
-        NO_COLOR: "1",
-      },
-    },
-  )
-  const expected = [
-    ...new Set(
-      [...listing.matchAll(/^\s*\[chromium\] › (.+?):\d+:\d+ ›/gm)].map(
-        (m) => `tests/${m[1].split(path.sep).join("/")}`,
-      ),
-    ),
-  ].sort()
+  const expected = listEligibleSpecs().map((spec) => spec.file)
   ok(expected.length > 0)
   const shards = [1, 2, 3].map((s) => selectPlaywrightShard(s, 3))
   const shardsAgain = [1, 2, 3].map((s) => selectPlaywrightShard(s, 3))

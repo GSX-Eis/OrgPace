@@ -205,12 +205,18 @@ def test_playwright_ci_uses_balanced_shard_selector_and_excludes_real_jira() -> 
         step for step in shard_steps if step.get("name") == "Run Playwright tests"
     )
     run_cmd = main_step["run"]
-    assert "select-playwright-shard.mjs" in run_cmd
+    assert 'select-playwright-shard.mjs "$SHARD" 3 --patterns' in run_cmd
     assert '--grep-invert "@external-mcp|@real-jira"' in run_cmd
     assert "--fail-on-flaky-tests" in run_cmd
     assert "--shard=" not in run_cmd
     assert any(
         step.get("run") == "bun test" and step.get("working-directory") == "frontend"
+        for step in shard_steps
+    )
+    assert any(
+        step.get("run") == "bun scripts/check-playwright-shards.mjs"
+        and step.get("working-directory") == "frontend"
+        and step.get("if") == "matrix.shard == 1"
         for step in shard_steps
     )
     assert any(
