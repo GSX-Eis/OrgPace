@@ -1,0 +1,66 @@
+version: 2
+updates:
+  # Pi upgrades require an explicit review, including transitive dependencies.
+  - package-ecosystem: npm
+    directory: /pi
+    schedule:
+      interval: "monthly"
+    cooldown:
+      default-days: 7
+    ignore:
+      - dependency-name: "*"
+  # GitHub Actions
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 1
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: ⬆
+    labels:
+      - "internal"
+      - "dependencies"
+      - "github_actions"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+  # Python uv
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 1
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: ⬆
+    labels: [dependencies, internal]
+    groups:
+      python-packages:
+        patterns:
+          - "*"
+  # bun
+  - package-ecosystem: bun
+    directory: /
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 1
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: ⬆
+    labels: [dependencies, internal]
+    ignore:
+      - dependency-name: "@hey-api/openapi-ts"
+      # openapi-ts 0.97.3 uses the TypeScript JS API, which breaks on TS 7 (PR #6).
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      # Upgrade manually with frontend/Dockerfile.playwright; Docker updates are disabled.
+      - dependency-name: "@playwright/test"
+    groups:
+      npm-packages:
+        patterns:
+          - "*"

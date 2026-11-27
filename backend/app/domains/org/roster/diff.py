@@ -1,0 +1,408 @@
+from collections import Counter, defaultdict
+from uuid import UUID
+
+from sqlalchemy import func, or_
+from sqlmodel import Session, col, select
+
+from app.domains.org.employee_fields import FIELD_LABELS
+from app.domains.org.models import (
+    Department,
+    Employee,
+    EmploymentStatus,
+    OrgMembership,
+    ReportingLine,
+    Role,
+    RoleGrant,
+)
+from app.domains.org.roster.schemas import (
+    CHANGE_KINDS,
+    DepartmentNode,
+    EmployeeChange,
+    FieldChange,
+    ParsedRoster,
+    RosterDiff,
+    RosterIssue,
+)
+from app.i18n import tr
+from app.models import User, uses_email_login
+
+
+def compute_roster_diff(
+    session: Session, org_id: UUID, roster: ParsedRoster
+) -> RosterDiff:
+    """Read five bounded queries; never flush even if the caller has pending writes."""
+    if roster.has_errors:
+        raise ValueError(tr("名单有解析错误，不能对比"))
+    roster = roster.active()
+    with session.no_autoflush:
+        employees = session.exec(
+            select(Employee)
+            .where(Employee.org_id == org_id)
+            .order_by(Employee.employee_code)
+        ).all()
+        departments = session.exec(
+            select(Department).where(Department.org_id == org_id)
+        ).all()
+        lines = session.exec(
+            select(ReportingLine).where(
+                ReportingLine.org_id == org_id, col(ReportingLine.valid_to).is_(None)
+            )
+        ).all()
+        # User emails are deployment-wide unique; inspect only incoming emails or this tenant's accounts.
+        accounts = session.exec(
+            select(
+                User,
+                OrgMembership,
+                col(User.id).in_(
+                    select(OrgMembership.user_id).where(OrgMembership.org_id != org_id)
+                ),
+            )
+            .outerjoin(
+                OrgMembership,
+                (col(OrgMembership.user_id) == User.id)
+                & (OrgMembership.org_id == org_id),
+            )
+            .where(
+                or_(
+                    col(OrgMembership.org_id) == org_id,
+                    func.lower(User.email).in_(
+                        [row.email.lower() for row in roster.rows if row.email]
+                    ),
+                    func.lower(User.username).in_(
+                        [row.email.lower() for row in roster.rows if row.email]
+                    ),
+                )
+            )
+        ).all()
+        admins = session.exec(
+            select(User, OrgMembership)
+            .join(OrgMembership, col(OrgMembership.user_id) == User.id)
+            .join(
+                RoleGrant,
+                (col(RoleGrant.membership_id) == OrgMembership.id)
+                & (RoleGrant.org_id == org_id),
+            )
+            .where(OrgMembership.org_id == org_id, RoleGrant.role == Role.ORG_ADMIN)
+        ).all()
+    blockers: list[str] = []
+    warnings: list[RosterIssue] = []
+    changes: list[EmployeeChange] = []
+    by_id = {e.id: e for e in employees}
+    by_code: dict[str, Employee] = {}
+    duplicates: dict[str, list[str]] = defaultdict(list)
+    for employee in employees:
+        if employee.employee_code:
+            code = employee.employee_code.casefold()
+            by_code[code] = employee
+            duplicates[code].append(employee.employee_code)
+    for codes in duplicates.values():
+        if len(codes) > 1:
+            blockers.append(
+                tr("库里存在只差大小写的工号：{codes}", codes=tr("、").join(codes))
+            )
+    unkeyed = [e for e in employees if not e.employee_code]
+    if unkeyed:
+        warnings.append(
+            RosterIssue(
+                severity="warning",
+                row_number=None,
+                column=None,
+                message=tr(
+                    "{count} 名员工没有工号，不参与对比：{names}",
+                    count=len(unkeyed),
+                    names=tr("、").join(e.display_name for e in unkeyed),
+                ),
+            )
+        )
+    department_by_id = {d.id: d for d in departments}
+    paths: dict[UUID, tuple[str, ...]] = {}
+    for department in departments:
+        path: tuple[str, ...] = ()
+        current = department
+        seen: set[UUID] = set()
+        while True:
+            if current.id in seen:
+                raise ValueError(tr("现有部门层级存在循环，无法对比名单"))
+            seen.add(current.id)
+            path = (current.name, *path)
+            if current.parent_department_id is None:
+                break
+            current = department_by_id[current.parent_department_id]
+        paths[department.id] = path
+    existing = {path: department_by_id[id] for id, path in paths.items()}
+    incoming = {row.employee_code.casefold(): row for row in roster.rows}
+    current_managers = {
+        line.employee_id: by_id[line.manager_employee_id] for line in lines
+    }
+    linked = {
+        membership.employee_id: user
+        for user, membership, _ in accounts
+        if membership is not None
+    }
+    owners: dict[str, set[UUID]] = defaultdict(set)
+    for user, _, _ in accounts:
+        for identifier in (user.email, user.username):
+            if identifier:
+                owners[identifier.strip().lower()].add(user.id)
+    shared_accounts = {u.id for u, _, shared in accounts if shared or u.is_superuser}
+    linkable = {
+        u.id
+        for u, membership, _ in accounts
+        if membership is not None
+        and membership.employee_id is None
+        and u.is_active
+        and u.id not in shared_accounts
+    }
+    incoming_owners = Counter(
+        owner
+        for row in roster.rows
+        if row.email
+        for owner in owners.get(row.email.lower(), set())
+    )
+    columns = set(roster.column_mapping.values())
+    used: set[tuple[str, ...]] = set()
+    counts: Counter[tuple[str, ...]] = Counter()
+    for employee in unkeyed:
+        if (
+            employee.employment_status == EmploymentStatus.ACTIVE
+            and employee.department_id is not None
+            and employee.department_id in paths
+        ):
+            counts[paths[employee.department_id]] += 1
+    for row in roster.rows:
+        used.update(
+            row.department_path[:i] for i in range(1, len(row.department_path) + 1)
+        )
+        counts[row.department_path] += 1
+        matched = by_code.get(row.employee_code.casefold())
+        base = EmployeeChange(
+            kind="added",
+            employee_id=matched.id if matched else None,
+            employee_code=row.employee_code,
+            display_name=row.display_name,
+            row_number=row.row_number,
+        )
+        account = linked.get(matched.id) if matched else None
+        email_owners = owners.get(row.email.lower(), set()) if row.email else set()
+        will_link = (
+            matched is None
+            and len(email_owners) == 1
+            and email_owners <= linkable
+            and all(incoming_owners[owner] == 1 for owner in email_owners)
+        )
+        if will_link:
+            warnings.append(
+                RosterIssue(
+                    severity="warning",
+                    row_number=row.row_number,
+                    column="邮箱",
+                    message=tr("将关联现有账号 {email}，不重置密码", email=row.email),
+                )
+            )
+        elif email_owners - ({account.id} if account else set()):
+            blockers.append(
+                tr(
+                    "第 {row} 行「邮箱」：已被其他账号使用，请补上未被占用的邮箱",
+                    row=row.row_number,
+                )
+            )
+        if (
+            account
+            and row.email
+            and (not uses_email_login(account) or account.username != row.email)
+        ):
+            if account.id in shared_accounts:
+                blockers.append(
+                    tr(
+                        "第 {row} 行「邮箱」：账号同时属于其他企业，只能由部署人员处理",
+                        row=row.row_number,
+                    )
+                )
+        if matched is None:
+            changes.append(base)
+            continue
+        fields = (
+            [
+                FieldChange(
+                    field="display_name",
+                    before=matched.display_name,
+                    after=row.display_name,
+                )
+            ]
+            if matched.display_name != row.display_name
+            else []
+        )
+        if "职位" in columns and matched.title != row.title:
+            fields.append(
+                FieldChange(field="title", before=matched.title, after=row.title)
+            )
+        if (
+            "邮箱" in columns
+            and (matched.work_email or "").casefold() != (row.email or "").casefold()
+        ):
+            fields.append(
+                FieldChange(field="email", before=matched.work_email, after=row.email)
+            )
+        for field, label in FIELD_LABELS.items():
+            before, after = getattr(matched, field), getattr(row, field)
+            if label in columns and before != after:
+                fields.append(
+                    FieldChange(
+                        field=field,
+                        before=str(before) if before is not None else None,
+                        after=str(after) if after is not None else None,
+                    )
+                )
+        if fields:
+            changes.append(
+                base.model_copy(update={"kind": "updated", "fields": fields})
+            )
+        old_path = paths.get(matched.department_id) if matched.department_id else None
+        if old_path != row.department_path:
+            changes.append(
+                base.model_copy(
+                    update={
+                        "kind": "transferred",
+                        "fields": [
+                            FieldChange(
+                                field="department",
+                                before="/".join(old_path) if old_path else None,
+                                after="/".join(row.department_path),
+                            )
+                        ],
+                    }
+                )
+            )
+        manager = current_managers.get(matched.id)
+        if (
+            "上级工号" in columns
+            and ((manager.employee_code or "").casefold() if manager else "")
+            != (row.manager_code or "").casefold()
+        ):
+            new_manager = (
+                incoming[row.manager_code.casefold()] if row.manager_code else None
+            )
+            changes.append(
+                base.model_copy(
+                    update={
+                        "kind": "manager_changed",
+                        "fields": [
+                            FieldChange(
+                                field="manager",
+                                before=f"{manager.display_name}（{manager.employee_code}）"
+                                if manager
+                                else None,
+                                after=f"{new_manager.display_name}（{new_manager.employee_code}）"
+                                if new_manager
+                                else None,
+                            )
+                        ],
+                    }
+                )
+            )
+        if matched.employment_status == EmploymentStatus.INACTIVE:
+            changes.append(base.model_copy(update={"kind": "reactivated"}))
+    for employee in employees:
+        if (
+            employee.employee_code
+            and employee.employee_code.casefold() not in incoming
+            and employee.employment_status == EmploymentStatus.ACTIVE
+        ):
+            account = linked.get(employee.id)
+            if account and account.id in shared_accounts:
+                blockers.append(
+                    tr(
+                        "员工 {code} 的账号同时属于其他企业或是部署管理员，只能由部署人员处理离职",
+                        code=employee.employee_code,
+                    )
+                )
+            changes.append(
+                EmployeeChange(
+                    kind="deactivated",
+                    employee_id=employee.id,
+                    employee_code=employee.employee_code,
+                    display_name=employee.display_name,
+                    row_number=None,
+                )
+            )
+    summary: dict[str, int] = {
+        kind: sum(c.kind == kind for c in changes) for kind in CHANGE_KINDS
+    }
+    if summary["reactivated"]:
+        warnings.append(
+            RosterIssue(
+                severity="warning",
+                row_number=None,
+                column=None,
+                message=tr(
+                    "恢复在职的 {count} 名员工账号仍然停用，需要企业管理员在员工详情里启用并重置密码",
+                    count=summary["reactivated"],
+                ),
+            )
+        )
+
+    def remains_active(employee: Employee) -> bool:
+        return (
+            employee.employee_code.casefold() in incoming
+            if employee.employee_code
+            else employee.employment_status == EmploymentStatus.ACTIVE
+        )
+
+    available = any(
+        user.is_active
+        and (
+            membership.employee_id is None
+            or remains_active(by_id[membership.employee_id])
+        )
+        for user, membership in admins
+    )
+    if not available:
+        affected = [
+            by_id[m.employee_id].employee_code
+            for u, m in admins
+            if u.is_active
+            and m.employee_id
+            and not remains_active(by_id[m.employee_id])
+        ]
+        blockers.append(
+            tr(
+                "导入后企业将没有可用的企业管理员：管理员账号关联的员工 {codes} 会被停用或仍未在职",
+                codes=tr("、").join(code or tr("无工号") for code in affected),
+            )
+            if affected
+            else tr(
+                "导入后企业将没有可用的企业管理员：没有启用的管理员账号及在职关联员工"
+            )
+        )
+    created = sorted(used - existing.keys(), key=lambda path: (len(path), path))
+    unused = sorted(existing.keys() - used)
+    nodes = {
+        path: DepartmentNode(
+            name=path[-1],
+            path=path,
+            department_id=existing[path].id if path in existing else None,
+            is_new=path not in existing,
+            employee_count=counts[path],
+        )
+        for path in sorted(existing.keys() | used)
+    }
+    for path, node in nodes.items():
+        if len(path) > 1:
+            nodes[path[:-1]].children.append(node)
+    summary.update(departments_created=len(created), departments_unused=len(unused))
+    active_count = sum(
+        e.employment_status == EmploymentStatus.ACTIVE and bool(e.employee_code)
+        for e in employees
+    )
+    return RosterDiff(
+        summary=summary,
+        changes=changes,
+        departments=[node for path, node in nodes.items() if len(path) == 1],
+        created_departments=created,
+        unused_departments=unused,
+        warnings=warnings,
+        blockers=blockers,
+        active_count=active_count,
+        requires_mass_deactivation_confirm=summary["deactivated"] > 5
+        and summary["deactivated"] * 5 > active_count,
+    )

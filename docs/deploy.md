@@ -1,0 +1,343 @@
+# 部署、备份与维护
+
+## M4：IM 服务与网络
+
+Compose 新增 `im` 服务，复用后端镜像，单实例运行 `python -m app.im`；随安装或升级启动。它读取各企业的入口设置，每 30 秒检查变更；业务操作仍走统一服务层。不要扩容，也不要让另一部署使用同一机器人凭据。没有开启的入口不会建立平台连接。
+
+| 平台 | 连接方式与出网 | 公网入站 |
+| --- | --- | --- |
+| 飞书 | HTTPS `open.feishu.cn:443` 及 SDK 发现的 WSS 主机 443；严格出口网络需核准实际返回主机和证书，勿记录含凭据的连接 URL | 不需要 |
+| 企业微信 | WSS `openws.work.weixin.qq.com:443`；可选通讯录查询需 HTTPS `qyapi.weixin.qq.com:443` | 不需要 |
+| Telegram | HTTPS `api.telegram.org:443`，长轮询；服务器需具备可达网络 | 不需要 |
+
+防火墙或出口代理应允许长连接和长轮询。当前未实现公网 URL 回调模式；若改用回调，需要平台可达的公网 HTTPS 地址、可信证书与入站规则，不能只改一个开关。员工网页仍需能从使用网络访问。
+
+凭据由管理员在「管理 → IM 入口」填写并加密保存，不写进 Compose 或日志。查看 `docker compose ps im`、`docker compose logs im` 排查固定错误码；不要公开原消息、令牌或认证连接地址。停用、换凭据和重启会停连并重建，企业微信连接测试复用正在运行的连接状态。
+
+三个平台仅用假服务验证过。部署方须验证真实飞书权限、事件和卡片，企业微信可用范围、通讯录授权和卡片，以及 Telegram 收发和推送。飞书、企业微信卡片长度为保守预算，过长引导网页。管理员步骤及数据外发提示见[管理员指南](admin-guide.md#m4开启-im-入口)：IM 消息存于平台服务器和终端，Telegram 在境外；清理本地聊天不会清除外部副本。
+
+M4 依赖许可证核验补充：锁定的 `lark-oapi` 1.7.5 wheel 为 MIT，`websockets` 15.0.1 为 BSD-3-Clause，均兼容 Apache-2.0；详见 [ADR-0022](adr/0022-im-entrances.md)。升级这些依赖需重新核实连接关闭、日志和卡片边界。
+
+这份指南给负责服务器的部署者。安装后，企业管理员只需使用网页，见[管理员指南](admin-guide.md)。所有示例地址和数据均为虚构，请替换为自己的服务器地址。
+
+## 安装前准备
+
+- macOS：启动 Docker Desktop；Linux：安装并启动 Docker Engine。两者均需 Docker Compose **2.24.4 或以上**、Git、curl 和 bash（兼容 macOS 的 3.2）。用 `docker compose version` 检查版本。
+- 确保有足够磁盘放镜像、数据库和备份。建议至少剩余 20 GiB，低于 15 GiB 不要构建。
+- 为服务器准备固定的局域网 IPv4 或域名。管理员和员工的电脑必须能访问这个地址，不能填写他们各自的 `localhost`。
+- HTTP 默认用 80 端口，可换成未占用端口；HTTPS 另需空闲的 443。不要停掉其他应用来抢端口。
+
+```bash
+git clone https://github.com/GSX-Eis/OrgPace.git
+cd OrgPace
+./install.sh
+```
+
+仓库尚未公开时，克隆需要 GitHub 仓库访问权限。生产安装不要复制 `.env.example`：让安装器生成随机密钥和数据库密码，不导入演示数据，不创建默认账号。
+
+### 安装器每个问题怎么回答
+
+| 问题 | 填写方法 |
+| --- | --- |
+| 访问地址（IP 或域名） | 如 `192.168.1.10` 或 `profiles.example.com`；不含 `http://`、端口、路径。直接回车采用检测到的地址，使用前核对 |
+| 访问方式 | `1` HTTP（默认）；`2` HTTPS 自签；`3` HTTPS 域名证书，条件见下表 |
+| 证书通知邮箱 | 仅方式 3 询问；填能收到证书到期通知的邮箱 |
+| HTTP 端口 | 回车用 80，或填写 8080 等未占用端口；发现占用会要求换端口。HTTPS 的 443 不能由此修改 |
+
+| 访问方式 | 前提和表现 |
+| --- | --- |
+| HTTP | 可信局域网，允许所选端口入站；如 `http://192.168.1.10:8080`。传输未加密 |
+| HTTPS 自签 | 允许所选 HTTP 端口和 443 入站；HTTP 重定向到 HTTPS。Traefik 提供自签证书，浏览器会提示证书不受信任，核对地址后再继续 |
+| HTTPS + Let's Encrypt | 真实域名、公网 DNS 指向服务器、外网可达 80/443，HTTP 端口选 80，填写通知邮箱。使用 HTTP-01 challenge，经 HTTP 入口的 80 端口校验域名，HTTPS 重定向不影响校验。签发依赖公网条件；内网 IP 不能申请 |
+
+无人值守安装可用：
+
+```bash
+EPP_ADDRESS=192.168.1.10 EPP_HTTP_PORT=8080 ./install.sh --non-interactive
+# 自签方式改为 EPP_ACCESS=https-selfsigned
+# 域名证书改为 EPP_ACCESS=https-letsencrypt，并设置 EPP_ACME_EMAIL
+```
+
+同一台机器多套部署要使用不同目录、项目名和端口，例如 `COMPOSE_PROJECT_NAME=epp-test EPP_HTTP_PORT=18080`。HTTPS 各套仍会争用 443，不能仅靠项目名隔离。
+
+域名证书模式的 HTTP 端口必须为 80；填写其他端口或 80 被其他服务占用时，安装器停止，不会建议改用 8080。已有 `.env` 重跑也检查当前配置；本部署自己的代理已占用 80 时可以正常重跑，其他模式仍可自定义 HTTP 端口。安装器不会自动修改已有 `HTTP_PORT`。安装后的健康检查允许自签证书，只说明服务可用；真实域名部署需另用 `curl -I https://profiles.example.com`（不加 `-k`，替换成自己的域名）核对可信证书，不能将健康检查通过当作签发成功。
+
+HTTPS 代理只读取本 Compose 项目的容器，路由和服务名也带项目名前缀，避免同一 Docker 上其他带 Traefik 标签的项目被误接入。后端没有直接发布端口，流式响应设置为立即转发。域名证书保存在本项目的 `traefik-certificates` 卷内；停止或升级时保留该卷，不要加 `down -v`。
+
+自签证书适用于本机或受控内网试用。飞书目前使用出站长连接，不需要填写公网回调 URL；其他 IM 连接方式见本页开头。
+
+本机 HTTPS 实测结果和限制见 [M9 HTTPS 实测](m9-https-test.md)。登录返回 Bearer token，由网页保存在 localStorage，退出时清除；没有登录 Cookie，Secure/HttpOnly Cookie 验收对当前认证机制不适用，无需引入 Cookie 认证。未实现邮件通道，邮件投递验收不适用。
+
+### 初始化链接与局域网访问
+
+安装完成会打印访问地址和 `…/setup#token=…`。把**完整的初始化链接**单独交给企业管理员。它 72 小时有效、只能用一次，不要发到群里或截图公开；令牌只存哈希，放在 URL 的 `#` 后面避免进入服务器访问日志。
+
+管理员创建企业后直接进入管理助手，在「开始使用」面板核对企业名并配置模型；模型就绪后由助手引导其余设置。暂不配置模型可进入手工首页，之后从「数据与 AI → 模型」补配，首页待办保留设置进度。
+
+管理员按[网页向导](admin-guide.md)创建企业和管理员账号。链接过期或丢失且企业尚未创建时，再运行 `./install.sh` 会使旧链接失效并打印新链接；企业已创建时只提示登录，不会重建企业。重跑会保留已有 `.env` 和密钥，不会按新输入重新配置。
+
+服务默认监听全部网卡。请在服务器防火墙只对需要访问的网络放行所选 HTTP 端口，HTTPS 另放行 443；不需要开放数据库端口。macOS 在系统设置中允许 Docker 接收入站连接。另一台电脑用服务器的 IP 测试登录页；VPN、访客 Wi-Fi 隔离、路由器或公司防火墙也可能拦截连接。
+
+### 配置文件与登录限流
+
+安装生成的 `.env` 权限为 600，保存密钥和部署配置；不要提交到 Git，也不要覆盖。`COMPOSE_FILE` 使后续命令沿用生产配置；终端中不要导出另一套 `COMPOSE_FILE`、密钥或数据库密码覆盖它。修改数据库密码仅改 `.env` 不会修改现有数据库密码。
+
+同一登录名在 15 分钟内失败 5 次会被限流；密码重置会清除该账号旧失败的影响。同一来源 IP 默认失败 300 次后，该 IP 下所有登录（包括密码正确的）也会被限流。配置项及默认值为 `LOGIN_MAX_FAILURES=5`、`LOGIN_MAX_FAILURES_PER_IP=300`、`LOGIN_LOCK_MINUTES=15`。
+
+**Docker Desktop、NAT 或反向代理可能把不同人的来源合成同一个 IP。** 本机 Docker Desktop 中，localhost 和局域网访问均可能显示为 `192.168.65.1`。多企业模拟测试建议在 `.env` 增加 `LOGIN_MAX_FAILURES_PER_IP=1000`，保持每账号 5 次限制。生产按实际网络与人数决定，不能把提高阈值当成修复密码问题。修改后执行：
+
+```bash
+docker compose up -d
+```
+
+## Pi 内部服务
+
+安装同时构建 `pi` 服务，backend 和 worker 等它健康后启动。Pi 无宿主端口，非 root、只读根目录，只有 `/tmp` 使用 tmpfs；不挂载业务数据或 Docker socket。健康检查通过 Node 自身发送带认证的请求，不需要 shell 或 curl。
+
+`install.sh` 随机生成部署密钥 `PI_SERVICE_TOKEN` 写入权限为 600 的 `.env`；`upgrade.sh` 为缺少该变量的旧配置补齐，重复升级保留原值。生产禁止示例值 `changethis`。所有 Pi 路由（包括 `/health`）都要求此密钥，不要将它放进前端或公开日志。密钥轮换后重新运行 `docker compose up -d`，同时更新服务与调用方。模型 API key 每轮经请求体传入内存，Pi 不持久保存。
+
+API key 类提供方的起草和连接测试通过 Pi；ChatGPT 订阅暂时仍通过 LiteLLM，S7b 迁移。服务目前只接受 `draft`，默认期限 120 秒，单轮最多 8 次模型、16 次工具执行，进程最多 4 轮，不排队。Pi 只转发后端给出的工具，无命令或文件工具。
+
+Pi 需要模型出口，普通 Compose 网络不提供域名白名单。S7c 在模型请求内限制地址、DNS、重定向与内部 Ollama 目标；具体方案见下文「Pi 模型出口限制」，不能替代系统级网络隔离。部署者应使用防火墙或出口代理限制可访问的模型地址，不向不受信任的容器开放 Compose 网络或服务密钥。
+
+## 本机演示
+
+仅在另一个全新克隆目录复制演示配置，8000 端口需空闲：
+
+```bash
+cp .env.example .env
+docker compose up -d --wait
+```
+
+打开 <http://localhost:8000>。此方式有固定测试密码和开发接口，只供本机合成数据演示。已有部署不要覆盖 `.env`。
+
+也可在独立目录运行 `EPP_HTTP_PORT=18080 COMPOSE_PROJECT_NAME=epp-demo ./install.sh --demo --non-interactive`，由安装器生成随机演示密码；下表前四个身份不变，密码以安装器打印值为准；这种方式不创建平台超管，`superadmin` 仅由下面的 `.env.example` 演示配置提供。
+
+### 演示账号
+
+使用 `./install.sh --demo` 全新安装时，安装器为前四个账号生成同一个随机密码，显示在安装完成输出中，也保存在本机 `.env` 的 `DEMO_USER_PASSWORD`；请勿公开该文件或密码。手动使用 `.env.example` 的开发演示默认密码才是 **`demo-password-2026`**。账号和样例以 [示例数据说明](../examples/demo-org/README.md) 为准，所有公司、员工和证据均为虚构。
+
+| 登录名 | 身份 | 登录后可见内容 |
+| --- | --- | --- |
+| `admin@demo.example.com` | 企业管理员 | 全部 12 名员工及画像；自述和经理评价显示为受限，不能读正文 |
+| `manager.platform@demo.example.com` | 平台研发部经理，E01 林澈 | 平台研发部 3 名员工及其自述、经理评价 |
+| `employee.platform@demo.example.com` | 员工 E02 张伟 | 仅本人画像；有两个已发布版本，可对比历史 |
+| `employee.algorithm@demo.example.com` | 员工 E05 张伟 | 仅本人画像；与 E02 同名，但身份独立 |
+| `admin@example.com` | 平台超管，同时获授演示组织企业管理员 | 平台账号管理和演示组织全部画像；受限证据仍不能读正文 |
+
+登录名就是邮箱，比较时忽略首尾空格和大小写。最后一个账号仅在配置了 `FIRST_SUPERUSER` / `FIRST_SUPERUSER_PASSWORD` 时创建；安装器默认不创建平台超管。手动使用 `.env.example` 的开发演示默认密码是 **`changethis`**。平台超管本身不绕过组织权限，演示初始化显式授予了企业管理员角色。更改 `.env` 不会修改已导入账号的密码。
+
+已有演示库升级时，关联员工的三个账号按员工原有工作邮箱迁移为 `employee01@demo.example.com`、`employee02@demo.example.com`、`employee05@demo.example.com`；没有员工关联的旧管理员保留原登录名。重新导入演示数据会复用这些账号，不改密码。上表适用于全新演示库。
+
+### 演示停止、重置与冒烟测试
+
+在仓库根目录执行 `docker compose down` 停止服务并保留数据库。
+
+**警告：下面的命令会删除此 Compose 项目的数据库卷，包括你保存的数据。** 仅用于重置本机演示，下次启动会重新导入示例数据：
+
+```bash
+docker compose down -v
+```
+
+已启动的演示栈可用冒烟测试检查服务、画像完整性及角色隔离（额外需要 bash、curl、python3 和 docker compose）：
+
+```bash
+bash tests/smoke/compose_smoke.sh
+```
+
+默认检查 `http://localhost:8000`；可通过 `BASE_URL` 指定入口。密码优先取环境变量 `DEMO_USER_PASSWORD`，否则读取仓库根目录 `.env`；脚本沿用调用方的 `COMPOSE_PROJECT_NAME`。同一台机器运行多个克隆时，请给各自设置不同项目名和 `API_PORT`，避免资源或端口冲突。
+
+## 备份
+
+自动备份按 `.env` 的 `TZ=Asia/Shanghai`、`BACKUP_TIME=02:00` 每天运行，`BACKUP_KEEP=14` 保留最近 14 份，**手动备份也占份数**。修改时间或份数后执行 `docker compose up -d`，使 backup 容器重建。
+
+```bash
+./backup.sh                 # 立即备份，打印文件完整路径
+docker compose logs backup # 查看自动备份错误
+```
+
+备份在仓库 `backups/`，如 `app-20261103-020000.dump`。目录权限 700，文件权限 600；使用 `pg_dump -Fc`，成功后才从 `.partial` 改名并清理旧文件。备份包含受限证据原文，当前不加密、不自动复制到异地，部署者应定期安全转存。数据库备份不包含 `.env` 和 HTTPS 证书卷，需另行保管；丢失数据库密码会影响恢复。
+
+## 恢复
+
+恢复会清空当前 public schema 并还原备份：备份之后新建的表和数据都会删除，数据库恢复为备份时的状态。先把需要保留的当前备份复制到安全位置，避免被保留份数策略清理。
+
+```bash
+./backup.sh
+./restore.sh backups/app-20261103-020000.dump
+# 按提示输入：确认恢复
+```
+
+脚本先检查备份，再停止应用、任务队列与自动备份。完整解析备份后，在一个事务中清空 public schema 并导入数据库；失败时数据库保持恢复前的样子，成功后重新执行迁移并启动健康检查。恢复失败时应用保持停止，查看 `docker compose logs`，排查备份与数据库后再执行恢复。**不能将新版本数据库备份恢复到旧代码。**
+
+## 升级与回退
+
+升级到 M4.2 后自动起草为关闭，原来按能力、按部门的设置不保留，需要企业管理员在「数据与 AI → 模型」里打开。打开开关不会立即排队；需要首次起草时再点「开始起草」。员工本人选择不参与自动起草的设置保留。回退迁移只能重建空的分项设置，不能恢复原值；需要恢复原值时使用升级前备份。
+
+M4.2 下线管理员批量画像页面、上传模板、`profile-imports` 接口及 `import_profiles` 助手功能，改用对话附件或文字整理初始画像请求；员工本人 JSON 导入不受影响。已有待本人过目请求保留。新增 PDF 文本提取依赖精确锁定 `pypdf==6.21.4`（BSD-3-Clause，兼容 Apache-2.0）；升级需重建后端镜像。附件加密保存并按聊天保留期清理，支持图片的模型会接收本轮图片。新增员工档案字段默认关闭，启用后由管理员维护。
+
+### M5 升级说明
+
+从 M4.7 升级到 M5，沿用 `./upgrade.sh origin/master`：先备份数据库和 `.env`，重建镜像，由 prestart 顺序执行以下三个迁移后再启动应用。更早版本还会执行其间未应用的迁移，不能只手工添加三个新对象。
+
+| 顺序 / revision | 变更 | downgrade 影响 |
+| --- | --- | --- |
+| 1. `b615001dc001`，接 `b489001bc001` | `department.capability_failed_at` 记录部门能力生成失败时间，失败至少冷却 24 小时 | 删除失败时间，失去重试冷却记录 |
+| 2. `b617001dc001` | `organization.timezone`，已有企业默认为 `Asia/Shanghai` | 删除企业时区设置 |
+| 3. `b622001dc001` | 单行系统状态表 `worker_heartbeat` | 删除运行心跳记录 |
+
+该迁移链只有一个 head：`b489001bc001 → b615001dc001 → b617001dc001 → b622001dc001`。不修改原始证据。生产回退仍按下文恢复升级前备份并回退代码，不要直接降级数据库继续运行新代码。
+
+升级后请管理员核对「能力与规则 → 定期提醒」里的企业时区。没有时区的工作记录按它解析，默认仍为北京时间；部门能力生成任务仍每小时检查，但失败后至少等 24 小时才重试。详情见[管理员指南](admin-guide.md)。
+
+Worker 新增心跳健康检查，首次心跳前可能尚未健康，启动宽限为 120 秒。让升级脚本等待，不要因短暂的 unhealthy 删卷重装；超过宽限仍不健康时按下节排查。健康检查失败只标记状态，不会自动重启卡死进程。
+
+### 后台任务心跳与排障
+
+`system.heartbeat` 每分钟更新一次数据库中的 Worker 心跳。Compose 健康检查先运行 Procrastinate 的配置、连接、队列表检查，再运行 `python -m app.worker.health`；没有心跳、超过五分钟未更新或无法读库时失败。检查间隔十秒、超时五秒、连续失败五次才标记 unhealthy，启动宽限 120 秒。容器内运行同一检查也会返回非零退出码。
+
+管理员在管理助手空白页的「后台任务」卡看到距上次心跳时间及处理步骤。IM 进程每十秒独立检查，写入管理员收件箱，并在已启用通知、飞书绑定等条件满足时推送；同一次停顿去重。IM 自身停机时没有飞书提醒，网页状态与容器状态仍须检查。设计见 [ADR-0002](adr/0002-worker-and-compose-layout.md)。
+
+维护人员在**实际安装目录**沿用原 `.env`、Compose 文件和项目名执行以下步骤；不要连到其他部署或修改健康阈值来掩盖问题。
+
+1. 查看服务状态和最近日志，先确认数据库与 prestart 是否正常，再查看 worker：
+
+   ```bash
+   docker compose ps
+   docker compose logs --tail=100 prestart db worker im
+   ```
+
+2. 检查磁盘、数据库连接、迁移结果及 worker 是否仍运行。需要单独确认心跳时，从仍响应的 backend 容器运行相同检查：
+
+   ```bash
+   docker compose exec -T backend python -m app.worker.health
+   ```
+
+   无输出且退出码 0 表示心跳新鲜；非零表示失败。不要向外粘贴带凭据的配置或未脱敏日志。容器暂停时容器内检查也会暂停，不能只靠先前显示的 healthy 判断。
+
+3. 排除原因后重启本部署的 worker；如果已确认它处于人为暂停状态，先解除暂停：
+
+   ```bash
+   # 仅在 worker 确实被暂停时执行
+   docker compose unpause worker
+   docker compose restart worker
+   docker compose ps
+   ```
+
+   等新心跳写入后，再核对状态卡和健康检查恢复；同步、起草进度到对应页面查看。仍异常时保留日志和时间交维护人员继续处理，不要删除数据库卷或反复重建部署。
+
+心跳只证明 Worker 近期执行过系统任务，不代表每个同步或起草任务都成功；业务失败仍看「数据与 AI」的记录与原因。
+
+### M4.3 升级说明
+
+本次须重建后端和 Pi 镜像，并让 prestart 完成下列两个迁移，顺序为 `b368001ss001 → b373001bc001 → b381001dc001`（唯一 head）：
+
+| 迁移文件 | 作用与回退影响 |
+| --- | --- |
+| `b373001bc001_direct_profile_edits.py` | 新增直接修改决定和画像修改通知类型；downgrade 保留记录，但将 direct 映射为 web、profile_edited 映射为 status_changed，丢失类型区分 |
+| `b381001dc001_department_defaults.py` | 增加部门能力来源和词典版本；已有手工设置及可从审计识别的清空标为 admin。downgrade 删除 Pi 生成的能力行和来源标记，保留手工行及审计 |
+
+Worker 每小时执行一次 `capabilities.fill_department_defaults`，为从未设置及词典已换版的 Pi 部门生成对应能力。保持 worker 运行并配置可用模型；升级后、新建部门或模型恢复都等待下一轮，未处于失败冷却期时最多约一小时。M5 起失败后至少隔 24 小时重试，见上文。管理员保存过的部门不再自动覆盖，模型不可用跳过，词典没有适合项可保存空列表，不保证每个部门都有能力。这个任务不受「自动起草画像」开关控制。设计见 [ADR-0041](adr/0041-department-default-capabilities.md)。
+
+飞书应用需在开放平台开通并发布 `im:resource` 权限，才能读取私聊文件和图片。未授权时用户会看到「无法读取文件，请让管理员在飞书开放平台开通文件权限」。网页附件不依赖飞书权限；真实应用权限和收发由部署方验证。
+
+员工和经理登录后进入助手；画像页仅显示能力、等级和状态，本人档案等移到设置。员工固定格式 JSON 导入已删除，改为助手上传自由格式材料，外部 MCP 入口自 E53 起默认关闭。管理员材料整理改为确认后直接发布并通知员工；系统自动起草仍先交本人过目。详见 [ADR-0040](adr/0040-direct-profile-edits.md) 和[角色指南](employee-guide.md)。
+
+升级前确认 Git 工作区干净，保管 `.env` 并记录当前提交 `git rev-parse HEAD`。
+
+如果 `.env` 里手动写过 `LOGIN_MAX_FAILURES_PER_IP=30`，升级后需自行改成 300（或按人数调整），再执行 `docker compose up -d`；没有写过这一项的部署，升级后自动使用 300。安装和升级脚本都会保留已有 `.env`。
+
+```bash
+./upgrade.sh                # 当前跟踪分支执行 git pull --ff-only
+./upgrade.sh origin/master  # fetch 后切到远端 master，成为 detached HEAD
+```
+
+脚本依次获取代码、备份、构建镜像、迁移和重启，最后检查健康状态。指定提交或标签安装后，下次升级也显式传 `origin/master` 或目标标签。没有生成升级前备份时不会执行迁移。
+
+升级或重启时如果正在同步或起草，Worker 恢复后约 5 分钟内会自动接着做，无需手工处理。
+
+失败会打印原提交和备份路径。回退要使用**升级前的备份**，同时回退代码；先停止新版本，重新构建旧镜像再恢复，避免仍在运行的新镜像迁移数据库：
+
+```bash
+docker compose stop backend worker backup
+git checkout <升级前的提交>
+docker compose build
+# 创建旧版本的服务与迁移容器，但先不启动应用
+docker compose create backend worker prestart
+./restore.sh <升级前的备份文件>
+```
+
+恢复会删除升级后新增的表和数据，随后由旧代码重新执行迁移。不要仅切代码后继续使用已升级的数据库，也不要使用新版本备份向旧版本回退。跨版本恢复应先在隔离环境演练。
+
+手工降级 `c872001bc001` 时，如果 `im_notification` 中仍有待发借调 IM 提醒（`status = 'pending'` 且 `borrow_assignment_id` 非空），迁移会中止并保留原分配来源。请等待提醒发送完成，或在站内收件箱处理相关事项后等待提醒退出待发状态，再重试。也可以按上述回退步骤恢复升级前备份。
+
+## 管理员忘记密码与增加企业
+
+普通员工由企业管理员在网页重置。最后一名管理员忘记密码时，由部署者在安装目录执行：
+
+```bash
+docker compose exec -T backend python -m app.cli reset-password admin@example.com
+```
+
+把 `admin@example.com` 换为实际账号邮箱。命令仅打印这一次随机新密码，立即使旧会话失效并写审计，管理员下次登录必须改密。重置不会启用已停用账号。安全地单独转交新密码，不保留在共享日志里。
+
+默认一套部署服务一家企业。确需增加企业时：
+
+```bash
+docker compose exec -T backend python -m app.cli setup-link --new-org
+```
+
+用新链接建立独立企业。每家管理员和员工的邮箱在整套部署中都必须唯一，工号只须在本企业内唯一，不能给不同企业复用账号；保护规则会拒绝跨企业发放、重置或停用共享账号。不要靠更换工号绕过保护，应先核对人员身份。
+
+## 停止、重新启动与卸载
+
+```bash
+docker compose down        # 停止容器和网络，保留数据卷
+docker compose up -d --wait # 用原目录、.env 和项目名重新启动
+```
+
+日常停止**不要加 `-v`**。卸载前先导出备份、安全保存 `.env` 和证书。确认不再需要在线数据后才执行 `docker compose down -v --remove-orphans`，这会不可逆地删除本项目数据库及证书卷。最后删除安装目录；保留的异地备份仍可恢复。不要用全局 Docker 清理命令删除其他应用的数据。
+
+## 常见问题
+
+| 现象 | 排查 |
+| --- | --- |
+| Docker 未启动、Compose 版本过低 | 启动 Docker Desktop 或 Docker 服务，更新 Compose 到 2.24.4+ |
+| 提示端口占用 | 首次安装换未占用的 HTTP 端口；HTTPS 还需独占 443。已有 `.env` 不会被重跑安装覆盖 |
+| 服务器能访问，员工电脑不能 | 检查 IP、端口、主机和公司防火墙、VPN、访客网络隔离；不要让员工访问 localhost |
+| 初始化链接无效 | 核对完整链接和有效期；尚未建企业时重跑安装，旧链接随即失效 |
+| 页面要求重新登录 | 密码被修改或重置、账号停用后旧会话失效，请重新登录；账号问题联系管理员 |
+| 大家同时提示登录过多 | 检查是否共用来源 IP；等待窗口过期，按上文调整 IP 阈值。重置一个账号不能解除整个 IP 的限制 |
+| 名单预览过期 | 别人已导入新名单，重新上传预览后再确认 |
+| 找不到初始密码文件 | 已下载文件不可再次读取；对待首次登录账号重新生成，已使用账号单独重置密码 |
+| 备份或升级失败 | 查看 `docker compose ps`、`docker compose logs prestart backend backup`；不要删除数据库卷，按错误提示恢复 |
+
+## M2 升级与模型依赖
+
+升级前照常备份数据库与 `.env`，执行仓库升级脚本，让 prestart 跑完 Alembic。M1 已完成设置的企业升级后会回到向导，需补完必需的第 9 步「生成初始画像」；数据来源和账号对应可按界面说明完成或跳过；配置模型为必需步骤。模型现在分四种类型，原配置如需调整请在「模型」页重新选择并保存。M2 不提供批准或发布入口。
+
+模型调用已迁移为精确锁定的 Pi，升级需单独审查工具边界、认证、网络出口和额度映射，见 [ADR-0014](adr/0014-pi-agent.md)。旧订阅令牌格式不迁移，升级后请在模型页重新连接 ChatGPT。
+
+Jira、API key 和订阅凭据均由 `SECRET_KEY` 派生密钥加密。更换它后，需要在网页重新填写 Jira/模型密钥并重新连接 ChatGPT；不要通过复制明文数据库字段恢复。开发演示包含模拟 Jira，正式部署不需要它；离线镜像准备和生产配置仍遵循上文部署流程。
+
+开发模式可叠加 `compose.chatgpt-local.yml`，只读挂载单个授权文件到 Pi，绝不刷新或写回本机令牌；命令见[开发文档](development.md#本机-chatgpt-订阅测试)。生产订阅从网页连接，按企业加锁刷新；刷新失败提示重新连接。
+
+## M1 验证范围
+
+M1 部署流程使用 macOS 26.4.1 / Docker Desktop，全新克隆测试 HTTP、浏览器向导、改密、备份恢复、升级及自签 HTTPS；具体结果和截图见 [M1 验收记录](m1-acceptance.md)。Linux 安装由 PR 的 Ubuntu `test-production-install` job 验证，不能把本机通过当作 Linux 已通过。Safari 和 Let's Encrypt 公网签发没有实测，也没有验证真实企业网络或生产数据恢复。
+
+
+### 外部 MCP 部署开关（默认关闭）
+
+外部 AI 助手的 MCP、个人令牌（PAT）与 OAuth 授权接口自 E53 起受部署环境变量 `EXTERNAL_MCP_ENABLED` 控制，默认值为 `false`。默认状态下 `/mcp`、`/.well-known/oauth-*`、`/oauth/*` 以及对应 REST 入口均返回 `404`，网页端也不提供外部接入或令牌管理入口，无需面向普通部署开放公网 MCP 代理。仅当内部测试或受控环境需要启用时，才设置 `EXTERNAL_MCP_ENABLED=true`，并配合 HTTPS 与 `FRONTEND_HOST` 使用。
+
+飞书、企业微信等消息里的网页链接都用 `FRONTEND_HOST`，必须配成员工电脑和手机能访问的地址；`localhost` 只在部署机器上能打开。
+
+
+### Pi 模型出口限制（S7c）
+
+Pi 使用锁定的 `undici@7.30.1` 全局 dispatcher，每次请求建立新连接并检查全部 DNS 解析结果；3xx 直接报错，不跟随重定向。云元数据地址（含 `169.254.169.254`、`fd00:ec2::254`）和 link-local 地址一律拒绝。目录内提供方只允许公网；自定义通义千问、OpenAI 兼容服务和 Ollama 只允许该轮配置的主机与端口，可以访问配置的内网服务。没有本轮策略的请求拒绝。此限制只覆盖 Pi 进程的模型 HTTP 请求。
+
+生产环境不要设置 `PI_EGRESS_ALLOW_LOOPBACK=1`；它只用于目录提供方的本地假服务测试，仅放开回环地址。Compose 和安装配置均不设置此变量。
+
+部署者仍需用防火墙或出口代理约束其他进程、容器和按域名的白名单。根据选用提供方放行 HTTPS 443：`api.openai.com`、`auth.openai.com`、`chatgpt.com`、`api.anthropic.com`、`api.deepseek.com`、`dashscope.aliyuncs.com` / `dashscope-intl.aliyuncs.com` / `dashscope-us.aliyuncs.com`、`api.moonshot.ai` / `api.moonshot.cn`、`api.kimi.com`、`openrouter.ai`。自定义服务仅放行管理员配置的地址和端口；Pi 没有为其他进程提供网络隔离。

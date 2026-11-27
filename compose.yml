@@ -1,0 +1,108 @@
+x-backend: &backend
+  image: ${COMPOSE_PROJECT_NAME:-employee-profile}-backend:latest
+  pull_policy: never
+  environment:
+    PROJECT_NAME: ${PROJECT_NAME:?Variable not set}
+    FRONTEND_HOST: ${FRONTEND_HOST:-http://localhost:5173}
+    SECRET_KEY: ${SECRET_KEY:?Variable not set}
+    FIRST_SUPERUSER: ${FIRST_SUPERUSER:-}
+    FIRST_SUPERUSER_PASSWORD: ${FIRST_SUPERUSER_PASSWORD:-}
+    SEED_DEMO_DATA: ${SEED_DEMO_DATA:-false}
+    DEMO_USER_PASSWORD: ${DEMO_USER_PASSWORD:-}
+    # A missing variable is omitted, so Settings keeps its None default.
+    FASTAPI_ENV:
+    DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?Variable not set}@db:5432/app
+    SENTRY_DSN: ${SENTRY_DSN:-}
+    LOGIN_MAX_FAILURES: ${LOGIN_MAX_FAILURES:-5}
+    LOGIN_MAX_FAILURES_PER_IP: ${LOGIN_MAX_FAILURES_PER_IP:-300}
+    LOGIN_LOCK_MINUTES: ${LOGIN_LOCK_MINUTES:-15}
+    OAUTH_REGISTER_MAX_PER_IP_HOUR: ${OAUTH_REGISTER_MAX_PER_IP_HOUR:-10}
+    EXTERNAL_MCP_ENABLED: ${EXTERNAL_MCP_ENABLED:-false}
+    PI_URL: http://pi:8081
+    PI_SERVICE_TOKEN: ${PI_SERVICE_TOKEN:?Variable not set}
+
+services:
+  pi:
+    image: ${COMPOSE_PROJECT_NAME:-employee-profile}-pi:latest
+    build: ./pi
+    environment:
+      PI_SERVICE_TOKEN: ${PI_SERVICE_TOKEN:?Variable not set}
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "/nodejs/bin/node", "-e", "fetch('http://127.0.0.1:8081/health',{headers:{Authorization:'Bearer '+process.env.PI_SERVICE_TOKEN}}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  db:
+    image: postgres:18
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d app"]
+      interval: 10s
+      retries: 5
+      start_period: 30s
+      timeout: 10s
+    volumes:
+      - app-db-data:/var/lib/postgresql
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Variable not set}
+      POSTGRES_DB: app
+
+  prestart:
+    <<: *backend
+    command: bash scripts/prestart.sh
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  backend:
+    <<: *backend
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: ["fastapi", "run", "--workers", "4"]
+    depends_on:
+      pi:
+        condition: service_healthy
+      prestart:
+        condition: service_completed_successfully
+    ports:
+      - "${API_BIND:-127.0.0.1}:${API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/utils/health-check/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  im:
+    <<: *backend
+    command: ["python", "-m", "app.im"]
+    restart: unless-stopped
+    depends_on:
+      prestart:
+        condition: service_completed_successfully
+
+  worker:
+    <<: *backend
+    command: ["procrastinate", "--app=app.worker.app.app", "worker"]
+    depends_on:
+      pi:
+        condition: service_healthy
+      prestart:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "procrastinate --app=app.worker.app.app healthchecks && python -m app.worker.health"]
+      start_period: 120s
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  app-db-data:

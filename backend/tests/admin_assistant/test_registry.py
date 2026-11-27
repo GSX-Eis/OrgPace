@@ -1,0 +1,543 @@
+import asyncio
+import json
+import re
+from collections.abc import Iterator
+from dataclasses import replace
+from pathlib import Path
+from typing import Any
+from uuid import uuid4
+
+import pytest
+from fastapi.dependencies.models import Dependant
+from fastapi.routing import APIRoute
+from fastapi.testclient import TestClient
+from pydantic import BaseModel
+from sqlmodel import Session, select
+
+from app.authz.deps import get_org_admin, get_org_principal
+from app.authz.principal import Principal
+from app.domains.admin_assistant import registry as r
+from app.domains.admin_assistant import tools
+from app.domains.org.models import Organization
+from app.models import User
+
+
+def principal(db: Session, demo: tuple, role: str = "admin") -> Principal:
+    user = db.exec(
+        select(User).where(
+            User.email
+            == {
+                "admin": "admin@demo.example.com",
+                "employee": "employee.platform@demo.example.com",
+            }[role]
+        )
+    ).one()
+    return get_org_principal(next(iter(demo[1].values())).org_id, user, db)
+
+
+def call(
+    db: Session, p: Principal, name: str, args: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    return asyncio.run(r.admin_read(db, p, name, args or {}))
+
+
+@pytest.mark.parametrize(
+    "name", [n for n, f in r.FUNCTIONS.items() if f.kind == "read"]
+)
+def test_web_parity(
+    db: Session, shared_demo: tuple, client: TestClient, name: str
+) -> None:
+    url, employees, auth = shared_demo
+    entry = r.FUNCTIONS[name]
+    args = {}
+    if name == "get_employee_profile":
+        args = {"employee_id": str(employees["E02"].id)}
+    if name == "find_people":
+        args = {"capability_key": "backend_api"}
+    if name == "get_department_capabilities":
+        args = {"department_id": str(employees["E02"].department_id)}
+    if name == "get_appeal":
+        args = {"appeal_id": str(uuid4())}
+    if name == "get_project":
+        args = {"project_id": str(uuid4())}
+    if name == "get_demand":
+        args = {"demand_id": str(uuid4())}
+    if name == "test_im_connection":
+        args = {"platform": "feishu"}
+    result = call(db, principal(db, shared_demo), name, args)
+    expected = []
+    for method, path in entry.endpoints:
+        path = path.format(id=args.get("department_id"), **args)
+        response = client.request(
+            method,
+            url + path,
+            headers=auth["admin"],
+            params=args if name == "find_people" else None,
+        )
+        if response.status_code == 404:
+            error = "找不到该记录"
+            if (
+                name in ("list_projects", "get_project", "list_demands", "get_demand")
+                and response.json()["detail"] == "规划与负荷功能未开启"
+            ):
+                error = "规划与负荷功能未开启，如需使用请先在负荷与需求规则中开启"
+            assert result == {"data": {"error": error}}
+            return
+        assert response.status_code == 200, response.text
+        expected.append(response.json())
+    if name == "list_capability_templates":
+        expected.append(
+            client.get("/api/v1/capability-templates", headers=auth["admin"]).json()
+        )
+    web = expected[0]
+    if name == "get_progress":
+        web = {"sync_runs": expected[0], "drafting": expected[1]}
+    if name == "list_projects":
+        web = {"data": web, "count": len(web)}
+    if name == "get_employee_profile":
+        for item in web["items"]:
+            for ref in (item["claim"] or {}).get("evidence", []):
+                ref["title"] = {
+                    "work_record": "工作记录",
+                    "self_report": "员工自述",
+                    "manager_review": "经理评价",
+                }[ref["kind"]]
+    if name == "list_accounts":
+        for row in web["data"]:
+            for field in ("job_family", "work_location", "hire_date"):
+                row.pop(field)
+    assert result["data"] == web
+
+
+def test_capacity_reads_use_existing_admin_tool() -> None:
+    names = {tool.name for tool in tools.definitions()}
+    assert len(names) == 7
+    assert "admin_read" in names
+    assert names.isdisjoint(
+        {"list_projects", "get_project", "list_demands", "get_demand"}
+    )
+
+
+def test_boundaries(
+    db: Session, shared_demo: tuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = principal(db, shared_demo)
+    for name in r.FUNCTIONS:
+        assert "error" in call(db, principal(db, shared_demo, "employee"), name)["data"]
+        if r.FUNCTIONS[name].kind != "read":
+            assert "不是只读" in call(db, p, name)["data"]["error"]
+            continue
+        for key in ("org_id", "user_id"):
+            assert (
+                "参数不正确" in call(db, p, name, {key: str(uuid4())})["data"]["error"]
+            )
+    foreign = db.exec(select(Organization).where(Organization.id != p.org_id)).first()
+    assert foreign
+    for employee_id in (uuid4(), next(iter(shared_demo[1].values())).id):
+        wrong = replace(p, org_id=foreign.id)
+        assert call(
+            db, wrong, "get_employee_profile", {"employee_id": str(employee_id)}
+        ) == {"data": {"error": "找不到该记录"}}
+    monkeypatch.setitem(
+        r.FUNCTIONS,
+        "change",
+        replace(r.FUNCTIONS["get_today"], name="change", kind="change"),
+    )
+    for name in ("change", "missing"):
+        assert "不是只读" in call(db, p, name)["data"]["error"]
+    for area in ("home", "people", "rules", "data_ai", "connections", "more"):
+        functions = r.list_admin_functions(area)["data"]
+        assert functions
+        assert all(f["input_model"]["additionalProperties"] is False for f in functions)
+
+
+def test_table_limit() -> None:
+    rows = [{"名称": str(n)} for n in range(25)]
+    card = r._table(r.FUNCTIONS["list_accounts"], {"data": rows, "count": 123})
+    assert card and len(card.rows) == 20 and card.total == 123
+    assert card.columns == ["名称"] and card.page == "/employees"
+    assert r._table(r.FUNCTIONS["list_roles"], []).total == 0
+
+
+def test_demand_table_columns() -> None:
+    row = {
+        "events": [{"kind": "submitted"}],
+        "proposal": None,
+        "project": None,
+        "basis_url": None,
+        "created_at": "2026-11-01T00:00:00Z",
+        "status": "submitted",
+        "window_end": "2026-12-31",
+        "window_start": "2026-12-01",
+        "allocation_percent": 50,
+        "headcount": 2,
+        "capability_name": "接口开发",
+        "can_reply": True,
+        "id": str(uuid4()),
+    }
+    columns = [
+        "id",
+        "can_reply",
+        "capability_name",
+        "headcount",
+        "allocation_percent",
+        "window_start",
+        "window_end",
+        "status",
+        "created_at",
+    ]
+    function = r.FUNCTIONS["list_demands"]
+    card = r._table(function, {"data": [row] * 25, "count": 40})
+    assert card is not None
+    assert card.columns == columns
+    assert card.rows == [[row[column] for column in columns]] * 20
+    assert card.total == 40 and card.page == "/capacity"
+
+    empty = r._table(function, {"data": [], "count": 0})
+    assert empty is not None
+    assert empty.columns == empty.rows == []
+
+
+def test_capability_template_discovery(db: Session, shared_demo: tuple) -> None:
+    from app.core.config import settings
+    from app.domains.capability.templates import load_catalog
+
+    p = principal(db, shared_demo)
+    catalog = load_catalog(settings.CAPABILITY_TEMPLATES_DIR)
+    result = call(db, p, "list_capability_templates")["data"]
+    assert result == [t.public().model_dump(mode="json") for t in catalog]
+    template = catalog[0]
+    detail = call(
+        db, p, "list_capability_templates", {"template_id": template.entry.id}
+    )["data"]
+    assert len(detail["capabilities"]) == len(template.capabilities)
+    assert detail["capabilities"][0]["name"] == template.capabilities[0].name
+    assert detail["capabilities"][0]["category"] == template.capabilities[0].category
+    assert (
+        "error"
+        in call(db, p, "list_capability_templates", {"template_id": "missing"})["data"]
+    )
+    assert (
+        "需要企业管理员权限"
+        in call(
+            db, principal(db, shared_demo, "employee"), "list_capability_templates"
+        )["data"]["error"]
+    )
+
+
+def test_endpoint_coverage() -> None:
+    from app.api.main import api_router
+
+    def walk(routes: list[Any]) -> Iterator[APIRoute]:
+        for route in routes:
+            if isinstance(route, APIRoute):
+                yield route
+            elif hasattr(route, "original_router"):
+                yield from walk(route.original_router.routes)
+
+    def admin(dep: Dependant) -> bool:
+        return dep.call == get_org_admin or any(admin(d) for d in dep.dependencies)
+
+    assert not r.PENDING
+    registered = [e for f in r.FUNCTIONS.values() for e in f.endpoints]
+    classified = registered + list(r.NOT_FOR_ASSISTANT) + list(r.PENDING)
+    assert len(classified) == len(set(classified))
+    routes = list(walk(api_router.routes))
+    endpoints = {
+        (m, route.path.removeprefix("/orgs/{org_id}"))
+        for route in routes
+        for m in route.methods
+    }
+    assert set(classified) <= endpoints
+    for route in routes:
+        # These two route groups authorize inside the account service.
+        service_admin = route.endpoint.__module__ in (
+            "app.api.routes.accounts",
+            "app.api.routes.roles",
+        )
+        if admin(route.dependant) or service_admin:
+            for method in route.methods:
+                assert (method, route.path.removeprefix("/orgs/{org_id}")) in classified
+    assert all(r.NOT_FOR_ASSISTANT.values()) and all(r.PENDING.values())
+
+
+def test_function_map_covers_registry() -> None:
+    guide = Path(__file__).resolve().parents[3] / "docs/admin-function-map.md"
+    table = next(
+        block
+        for block in guide.read_text().split("\n\n")
+        if block.startswith("|") and "管理助手功能名" in block.splitlines()[0]
+    )
+    rows = [
+        line.split("|")[1:-1] for line in table.splitlines() if line.startswith("|")
+    ]
+    column = [cell.strip() for cell in rows[0]].index("管理助手功能名")
+    documented = {
+        name
+        for row in rows[2:]
+        for name in re.findall(r"`([a-z][a-z0-9_]*)`", row[column])
+    }
+    assert set(r.FUNCTIONS) <= documented
+    assert documented <= set(r.FUNCTIONS) | set(r.NOT_FOR_ASSISTANT)
+
+
+@pytest.mark.parametrize("replacement", ["—", "`unknown_function`", "get_today"])
+def test_function_map_rejects_missing_or_unknown_names(
+    replacement: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    guide = Path(__file__).resolve().parents[3] / "docs/admin-function-map.md"
+    text = guide.read_text().replace(
+        "| 管理助手 / 新对话 | `get_today` |", f"| `get_today` | {replacement} |"
+    )
+    text += "\n正文提及 `get_today`。\n"
+    original = Path.read_text
+    monkeypatch.setattr(
+        Path,
+        "read_text",
+        lambda self, *args, **kwargs: (
+            text if self == guide else original(self, *args, **kwargs)
+        ),
+    )
+    with pytest.raises(AssertionError):
+        test_function_map_covers_registry()
+
+
+def test_secret_and_title_canaries(
+    db: Session, demo: tuple, client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core.secrets import encrypt_secret
+    from app.domains.access_token.models import PersonalAccessToken
+    from app.domains.evidence.models import EvidenceKind, Visibility
+    from app.domains.evidence.service import append_evidence
+    from app.domains.im.models import ImSetting
+    from app.domains.model.models import ModelSetting
+    from app.domains.profile.models import ClaimEvidence, ProfileClaim
+    from app.domains.source.models import SourceConnection
+
+    p = principal(db, demo)
+    secret = "synthetic-secret-canary-271"
+    db.add(
+        ModelSetting(
+            org_id=p.org_id,
+            updated_by_user_id=p.user_id,
+            api_key_ciphertext=encrypt_secret(secret),
+        )
+    )
+    db.add(
+        SourceConnection(
+            org_id=p.org_id,
+            kind="jira",
+            updated_by_user_id=p.user_id,
+            secret_ciphertext=encrypt_secret(secret),
+            config={
+                "deployment": "cloud",
+                "base_url": "https://synthetic.atlassian.net",
+                "auth_type": "api_token",
+                "username": "admin@example.com",
+            },
+        )
+    )
+    db.add(
+        ImSetting(
+            org_id=p.org_id,
+            platform="feishu",
+            updated_by_user_id=p.user_id,
+            credentials=encrypt_secret(
+                json.dumps({"app_id": "synthetic", "app_secret": secret})
+            ),
+        )
+    )
+    # MCP stores only a digest, never plaintext.
+    from datetime import timedelta
+    from hashlib import sha256
+
+    from app.domains.base import utc_now
+
+    employee_principal = principal(db, demo, "employee")
+    db.add(
+        PersonalAccessToken(
+            org_id=p.org_id,
+            user_id=employee_principal.user_id,
+            employee_id=employee_principal.employee_id,
+            name="synthetic",
+            token_hash=sha256(secret.encode()).hexdigest(),
+            prefix="synthetic",
+            expires_at=utc_now() + timedelta(days=1),
+        )
+    )
+    assert "token" not in r.access.get_setting(db, p).model_dump()
+    employees = demo[1]
+    web = client.get(
+        demo[0] + f"/employees/{employees['E02'].id}/profile", headers=demo[2]["admin"]
+    ).json()
+    current_claim_id = next(
+        item["claim"]["id"] for item in web["items"] if item["claim"]
+    )
+    claim = db.exec(
+        select(ProfileClaim).where(
+            ProfileClaim.id == current_claim_id,
+            ProfileClaim.org_id == p.org_id,
+            ProfileClaim.subject_employee_id == employees["E02"].id,
+        )
+    ).first()
+    assert claim
+    title = "synthetic-evidence-canary-271"
+    for kind in EvidenceKind:
+        evidence, _ = append_evidence(
+            db,
+            org_id=p.org_id,
+            subject_employee_id=claim.subject_employee_id,
+            kind=kind,
+            source="jira" if kind == EvidenceKind.WORK_RECORD else "manual",
+            source_ref=str(uuid4()),
+            title=title,
+            content={"description": title},
+            visibility=Visibility.STANDARD,
+            provenance={},
+        )
+        db.add(
+            ClaimEvidence(
+                org_id=p.org_id,
+                claim_id=claim.id,
+                evidence_id=evidence.id,
+                relation="supports",
+            )
+        )
+    db.commit()
+    # Deterministic transports; saved credentials must never reach public outputs.
+    monkeypatch.setattr(
+        r.sources,
+        "check_jira",
+        lambda *_: r.sources.JiraConnectionTest(ok=True, message="连接成功"),
+    )
+    monkeypatch.setattr(
+        r.model,
+        "check_connection",
+        lambda *_: r.model.ConnectionTest(ok=True, message="连接成功"),
+    )
+
+    async def im_ok(*_: Any) -> BaseModel:
+        from app.domains.im.schemas import ImConnectionTest
+
+        return ImConnectionTest(ok=True, message="连接成功")
+
+    monkeypatch.setattr(r.im, "test_connection", im_ok)
+    for name in r.FUNCTIONS:
+        args = (
+            {"employee_id": str(claim.subject_employee_id)}
+            if name == "get_employee_profile"
+            else {"appeal_id": str(uuid4())}
+            if name == "get_appeal"
+            else {"platform": "feishu"}
+            if name == "test_im_connection"
+            else {}
+        )
+        result = call(db, p, name, args)
+        assert secret not in json.dumps(result, ensure_ascii=False)
+        assert title not in json.dumps(result, ensure_ascii=False)
+    response = client.get(
+        demo[0] + f"/employees/{claim.subject_employee_id}/profile",
+        headers=demo[2]["admin"],
+    )
+    assert response.status_code == 200 and title in response.text
+
+
+def test_existing_appeal(db: Session, demo: tuple, client: TestClient) -> None:
+    from app.domains.change_request.models import ItemDecision
+    from app.domains.review import service
+    from app.domains.review.models import ReviewAppeal
+    from tests.api.routes.test_reviews import manager, pending, values
+
+    owner, request = pending(db, demo)
+    service.decide(
+        manager(db, demo),
+        db,
+        request.id,
+        request.revision,
+        values(request, ItemDecision.REJECTED),
+    )
+    record = ReviewAppeal(
+        org_id=owner.org_id,
+        request_id=request.id,
+        item_id=request.items[0].id,
+        employee_id=owner.employee_id,
+        reason="合成申诉",
+    )
+    db.add(record)
+    db.commit()
+    expected = client.get(demo[0] + f"/appeals/{record.id}", headers=demo[2]["admin"])
+    assert expected.status_code == 200
+    assert (
+        call(db, principal(db, demo), "get_appeal", {"appeal_id": str(record.id)})[
+            "data"
+        ]
+        == expected.json()
+    )
+
+
+@pytest.mark.parametrize(
+    "name,tab",
+    [
+        ("get_im_settings", "im"),
+        ("test_im_connection", "im"),
+        ("update_im_setting", "im"),
+        ("get_mcp_setting", "mcp"),
+        ("update_mcp_setting", "mcp"),
+    ],
+)
+def test_connection_pages(name: str, tab: str, request: pytest.FixtureRequest) -> None:
+    from app.domains.admin_assistant.schemas import AdminTurnInput
+
+    if tab == "mcp":
+        request.getfixturevalue("enable_external_mcp")
+
+    page = f"/admin/data-ai?tab={tab}"
+    assert r.FUNCTIONS[name].page == page
+    assert AdminTurnInput(text="查看设置", page=page).page == page
+    legacy = f"/admin/connections?tab={tab}"
+    assert AdminTurnInput(text="恢复历史", page=legacy).page == legacy
+
+
+@pytest.mark.parametrize(
+    "name,page",
+    [
+        ("get_today", "/admin/assistant"),
+        ("get_progress", "/admin/data-ai?tab=sources"),
+        ("retry_sync_run", "/admin/data-ai?tab=sources"),
+        ("start_initial_drafting", "/admin/data-ai?tab=model"),
+        ("get_initial_handover", "/admin/data-ai?tab=model"),
+        ("hand_over_initial_profiles", "/admin/data-ai?tab=model"),
+    ],
+)
+def test_progress_functions_link_to_their_module(name: str, page: str) -> None:
+    assert r.FUNCTIONS[name].page == page
+
+
+@pytest.mark.parametrize("page", ["/admin", "/admin/assistant"])
+def test_assistant_accepts_current_and_historical_page(page: str) -> None:
+    from app.domains.admin_assistant.schemas import AdminTurnInput
+
+    assert AdminTurnInput(text="今天有什么要处理的", page=page).page == page
+
+
+def test_today_fallback_opens_sources(db: Session, shared_demo: tuple) -> None:
+    from app.domains.admin_assistant import tools
+    from app.domains.admin_assistant.schemas import LinkCard
+
+    cards: list = []
+    result = tools.call(db, principal(db, shared_demo), cards, "get_today", {})
+    assert isinstance(result, dict) and "data" in result
+    assert cards == [
+        LinkCard(title="查看数据来源和同步", page="/admin/data-ai?tab=sources")
+    ]
+
+
+def test_template_prompt_keeps_selection_in_assistant(
+    db: Session, shared_demo: tuple
+) -> None:
+    from app.domains.admin_assistant.prompts import system_prompt
+
+    prompt = system_prompt(principal(db, shared_demo), "/admin/assistant")
+    assert "list_capability_templates 列出模板让管理员选择" in prompt
+    assert "再起草 apply_capability_template 确认卡" in prompt
+    assert "词典页面没有模板选择器" in prompt

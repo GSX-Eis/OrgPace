@@ -1,0 +1,96 @@
+import { Columns3, List } from "lucide-react"
+import type { ReactNode } from "react"
+import { useTranslation } from "react-i18next"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { cn } from "@/lib/utils"
+
+export type PlanningView = "board" | "list"
+
+export function PlanningViewToggle({
+  view,
+  onChange,
+}: {
+  view: PlanningView
+  onChange: (view: PlanningView) => void
+}) {
+  const { t } = useTranslation()
+  return (
+    <fieldset
+      aria-label={t("capacity.demands.displayModeAria")}
+      className="flex shrink-0 gap-0.5 rounded-md border border-surface-border bg-muted/50 p-0.5"
+    >
+      {(
+        [
+          ["board", t("capacity.demands.boardView"), Columns3],
+          ["list", t("capacity.demands.listView"), List],
+        ] as const
+      ).map(([value, label, Icon]) => (
+        <Button
+          key={value}
+          size="sm"
+          variant="ghost"
+          className={cn(
+            "h-7 gap-1 px-2",
+            view === value && "bg-surface shadow-xs",
+          )}
+          aria-pressed={view === value}
+          onClick={() => onChange(value)}
+        >
+          <Icon aria-hidden="true" />
+          <span className="sr-only xl:not-sr-only">{label}</span>
+        </Button>
+      ))}
+    </fieldset>
+  )
+}
+
+export function PlanningBoard({
+  groups,
+}: {
+  groups: { label: string; color: string; cards: ReactNode[] }[]
+}) {
+  const { t } = useTranslation()
+  return (
+    <div
+      className={cn(
+        "grid items-start gap-3 sm:grid-cols-2",
+        groups.length === 5 ? "xl:grid-cols-5" : "xl:grid-cols-4",
+      )}
+    >
+      {groups.map(({ label, color, cards }) => (
+        <section
+          key={label}
+          aria-label={label}
+          className={cn(
+            "min-w-0 overflow-hidden rounded-lg border border-surface-border border-t-3 bg-muted/50",
+            color,
+          )}
+        >
+          <h2 className="flex items-center justify-between gap-2 border-surface-border border-b bg-surface px-3 py-2 text-sm font-semibold">
+            {label}
+            <Badge variant="secondary">{cards.length}</Badge>
+          </h2>
+          <div className="space-y-2 p-2">
+            {cards.length ? (
+              cards
+            ) : (
+              <p className="px-1 py-2 text-xs text-muted-foreground">
+                {t("capacity.demands.emptyColumn")}
+              </p>
+            )}
+          </div>
+        </section>
+      ))}
+    </div>
+  )
+}
+
+export function shortRequestNumber(id: string) {
+  return Number.parseInt(id.slice(-8), 16).toString().padStart(10, "0")
+}
+
+export const detailColumns =
+  "grid min-w-0 items-start gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(17rem,30%)]"
+export const detailAside =
+  "min-w-0 space-y-3 xl:sticky xl:top-16 xl:max-h-[calc(100dvh-5rem)] xl:overflow-y-auto"

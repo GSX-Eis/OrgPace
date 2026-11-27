@@ -1,0 +1,448 @@
+import json
+from collections.abc import Callable
+from uuid import UUID, uuid7
+
+import pytest
+from pydantic import ValidationError
+from sqlmodel import Session
+
+from app.authz.principal import Principal
+from app.domains.audit.models import ActorKind, AuditEvent
+from app.domains.capability.service import activate_template, list_capabilities
+from app.domains.change_request.claim import ClaimAfter
+from app.domains.change_request.models import (
+    ChangeItem,
+    ChangeItemEvidence,
+    ProfileChangeRequest,
+    RequestStatus,
+)
+from app.domains.drafting import model, service
+from app.domains.drafting.collect import collect, evidence_stats, relation
+from app.domains.evidence.models import Evidence
+from app.domains.evidence.service import retract_evidence
+from app.domains.inbox.models import InboxItem, InboxKind
+from app.domains.inbox.service import mark_read, my_inbox
+from app.domains.model.models import ModelSetting
+from app.domains.model.service import model_config
+from app.domains.org.models import ExternalIdentity
+from app.domains.profile.models import (
+    AssessmentStatus,
+    EvidenceRelation,
+    InferenceStatus,
+    ProfileClaim,
+    ProfileProgress,
+    ProfileVersion,
+)
+from app.worker.tasks import draft_initial
+from app.worker.tenant import TenantNotFound
+from tests.authz.test_tenant_access import tenant_data  # noqa: F401
+from tests.domains.test_drafting_model import (
+    add_assigned_jira_issues,
+    answer,
+    drafting,  # noqa: F401
+)
+from tests.domains.test_ingest import ingest, person, record, rows
+from tests.utils.pi import PiHarness
+
+pytestmark = pytest.mark.xdist_group("model")
+
+
+def test_claim_after_timestamp() -> None:
+    with pytest.raises(ValidationError):
+        ClaimAfter(
+            statement="x",
+            assessment_status="tentative",
+            latest_evidence_at="2026-01-01T00:00:00",
+        )
+
+
+def test_model_and_statistics(
+    request: pytest.FixtureRequest,
+    db: Session,
+    mock_drafting: Callable[[UUID, UUID], None],
+) -> None:
+    orgs, _, employees, users = request.getfixturevalue("tenant_data")
+    org, employee = orgs[0].id, employees[0]
+    mock_drafting(org, users[0].id)
+    principal = Principal.system_worker(org)
+    schema = activate_template(db, principal, "tech-rnd")
+    capabilities = list_capabilities(db, org, schema.id)
+    db.add_all(
+        [
+            ExternalIdentity(
+                org_id=org, employee_id=employee.id, source=s, external_id="alpha"
+            )
+            for s in ("jira", "csv:Git")
+        ]
+    )
+    db.flush()
+    for source in (
+        record(
+            person(), key="PUR-203", labels=["API"], occurred_at="2026-04-01T12:00:00Z"
+        ),
+        record(
+            person(role="评审人、记录人"),
+            source="csv:Git",
+            key="GIT-1",
+            labels=[],
+            title="接口变更，对应PUR-203",
+            occurred_at="2026-04-02T16:30:00Z",
+        ),
+        record(
+            person(role="reporter"),
+            key="PUR-204",
+            labels=["api"],
+            occurred_at="2026-05-01T00:00:00Z",
+        ),
+        record(person(role="reporter"), key="PUR-205", labels=["React"], components=[]),
+        record(person(), key="PUR-206", labels=["RKNN"]),
+    ):
+        ingest(db, org, source)
+    stale = next(e for e in rows(db, Evidence, org) if e.source_ref == "PUR-203")
+    ingest(
+        db,
+        org,
+        record(
+            person(),
+            key="PUR-203",
+            title="Updated API record",
+            occurred_at="2026-04-01T12:00:00Z",
+        ),
+    )
+    revoked = next(e for e in rows(db, Evidence, org) if e.source_ref == "PUR-206")
+    retract_evidence(
+        db,
+        evidence=revoked,
+        reason="Synthetic correction",
+        actor_type=principal.actor_type,
+        actor_id=None,
+    )
+    records = collect(db, org, employee)
+    assert not {stale.id, revoked.id} & {r.evidence.id for r in records}
+    result = model.draft(
+        [r for r in records if r.evidence.source_ref != "PUR-205"],
+        capabilities,
+        model_config(db.get(ModelSetting, org)),
+    )
+    items, generated_by = result.items, result.generated_by
+    assert len(items) == 1
+    items = service.postprocess(db, org, employee, items, capabilities)
+    item = items[0]
+    assert item.after.evidence_count == 1 and item.after.source_count == 2
+    assert item.after.latest_evidence_at.isoformat() == "2026-04-02T16:30:00+00:00"
+    assert (
+        item.after.level == "needs_support"
+        and item.after.assessment_status == AssessmentStatus.TENTATIVE
+    )
+    assert (
+        item.after.statement == "合成能力建议"
+        and "最近更新于 2026-04-03）。" in item.explanation
+    )
+    assert "依据 1 项工作经历" in item.explanation and "2 个来源" in item.explanation
+    assert (
+        "Git" in item.explanation
+        and "Jira" in item.explanation
+        and item.uncertainty == "需要本人确认"
+    )
+    supports = [
+        id_ for id_, rel in item.evidence.items() if rel == EvidenceRelation.SUPPORTS
+    ]
+    stats = evidence_stats(db, org, supports + [stale.id, revoked.id, uuid7()])
+    assert (stats.evidence_count, stats.source_count, stats.latest_evidence_at) == (
+        1,
+        2,
+        item.after.latest_evidence_at,
+    )
+    assert evidence_stats(db, orgs[1].id, supports).evidence_count == 0
+    assert service.write_initial_request(db, org, employee, items, generated_by)
+    change_request = rows(db, ProfileChangeRequest, org)[0]
+    first_id = change_request.id
+    assert change_request.revision == 1
+    from app.domains.inbox.models import InboxItem
+
+    notifications = rows(db, InboxItem, org)
+    assert len(notifications) == 1 and notifications[0].kind == "initial_review"
+    assert notifications[0].recipient_employee_id == employee.id
+    assert change_request.base_version_id is not None and change_request.author == {
+        "actor_type": "system_worker"
+    }
+    claim = ProfileClaim(
+        org_id=org,
+        subject_employee_id=employee.id,
+        capability_definition_id=item.capability_id,
+        statement="Published",
+        assessment_status=AssessmentStatus.TENTATIVE,
+        generated_by={},
+    )
+    db.add(claim)
+    db.flush()
+    assert service.write_initial_request(db, org, employee, items, generated_by)
+    assert rows(db, ProfileChangeRequest, org)[0].id == first_id
+    assert change_request.revision == 2
+    assert len(rows(db, InboxItem, org)) == 1
+    stored = rows(db, ChangeItem, org)
+    assert (
+        len(stored) == 1
+        and stored[0].op == "modify"
+        and stored[0].target_claim_id == claim.id
+    )
+    assert len(rows(db, ChangeItemEvidence, org)) == 3
+    change_request.status = RequestStatus.PENDING_REVIEW
+    db.flush()
+    assert not service.write_initial_request(db, org, employee, [], {})
+    assert len(rows(db, ChangeItem, org)) == 1
+    with pytest.raises(service.InvalidDraft):
+        service.write_initial_request(db, orgs[1].id, employee, [], {})
+    item.after.level = "invalid"
+    with pytest.raises(service.InvalidDraft):
+        service.postprocess(db, org, employee, [item], capabilities)
+    item.after.level = "routine"
+    item.evidence = {uuid7(): EvidenceRelation.SUPPORTS}
+    assert service.postprocess(db, org, employee, [item], capabilities) == []
+    assert not collect(db, org, employees[-1])
+    before = len(rows(db, ProfileChangeRequest, org))
+    db.commit()
+    draft_initial(org_id=str(org), employee_ids=[str(employees[-1].id)])
+    assert len(rows(db, ProfileChangeRequest, org)) == before
+    with pytest.raises(TenantNotFound):
+        draft_initial(org_id=str(uuid7()))
+
+
+def test_initial_writer_discards_unlevelled_items(
+    request: pytest.FixtureRequest, db: Session
+) -> None:
+    org, schema, _, employees, _ = request.getfixturevalue("drafting")
+    capability = list_capabilities(db, org, schema.id)[0]
+    invalid = model.DraftItem(
+        capability_id=capability.id,
+        after=ClaimAfter(
+            statement="证据不足，无法确定等级",
+            assessment_status=AssessmentStatus.TENTATIVE,
+        ),
+        evidence={},
+        explanation="合成依据",
+        uncertainty="待确认",
+    )
+    assert not service.write_initial_request(db, org, employees[0], [invalid], {})
+    assert not rows(db, ProfileChangeRequest, org)
+    invalid.after.level = capability.level_rubric["levels"][0]["key"]
+    assert service.write_initial_request(db, org, employees[0], [invalid], {})
+    assert rows(db, ChangeItem, org)[0].after["level"] is not None
+
+
+@pytest.mark.parametrize(
+    ("level", "empty_rubric", "reason"),
+    [
+        (None, False, "缺少等级"),
+        ("routine", True, "该能力没有可用等级"),
+        ("unknown-level", False, "等级不在该能力的给定等级中"),
+    ],
+)
+def test_partial_initial_draft_notifies_owner_and_records_audit(
+    request: pytest.FixtureRequest,
+    db: Session,
+    pi_service: PiHarness,
+    level: str | None,
+    empty_rubric: bool,
+    reason: str,
+) -> None:
+    org, schema, _, employees, _ = request.getfixturevalue("drafting")
+    employee = employees[1]
+    add_assigned_jira_issues(db, employee)
+    capabilities = list_capabilities(db, org, schema.id)
+    ungraded = next(c for c in capabilities if c.key == "backend_api")
+    eligible = next(c for c in capabilities if c.key != ungraded.key)
+    if empty_rubric:
+        ungraded.level_rubric = {"levels": []}
+        db.add(ungraded)
+        db.commit()
+    eligible_level = eligible.level_rubric["levels"][0]["key"]
+    reply = json.loads(answer(level=level))
+    reply["items"].extend(
+        json.loads(answer(capability_key=eligible.key, level=eligible_level))["items"]
+    )
+    pi_service.replies.extend([reply] * 3)
+    service.run_drafting(Principal.system_worker(org), [str(employee.id)])
+    db.expire_all()
+
+    assert len(pi_service.requests) == 4
+    for retry in pi_service.requests[1:3]:
+        feedback = json.loads(retry["body"]["messages"][-1]["content"])
+        assert feedback["accepted"] is False
+        assert f"{ungraded.key}（{reason}）" in feedback["error"]
+    (initial,) = rows(db, ProfileChangeRequest, org)
+    assert initial.subject_employee_id == employee.id
+    assert initial.status == RequestStatus.PENDING_OWNER
+    assert initial.generated_by["dropped_items"] == 1
+    assert initial.generated_by["ungraded_dropped_count"] == 1
+    assert initial.generated_by["ungraded_dropped_capabilities"] == [ungraded.name]
+    (item,) = rows(db, ChangeItem, org)
+    assert item.capability_definition_id == eligible.id
+    assert item.after["level"] == eligible_level
+    assert item.after["assessment_status"] == AssessmentStatus.TENTATIVE
+    assert not rows(db, ProfileClaim, org)
+    assert all(
+        version.subject_employee_id != employee.id
+        for version in rows(db, ProfileVersion, org)
+    )
+    (notice,) = rows(db, InboxItem, org)
+    assert notice.kind == InboxKind.INITIAL_REVIEW and notice.request_id == initial.id
+    assert notice.recipient_employee_id == employee.id
+    assert "另有 1 项能力未能定级已跳过" in notice.message
+    progress = db.get(ProfileProgress, (org, employee.id))
+    assert progress.inference_status == InferenceStatus.GENERATED
+    audit = next(
+        e for e in rows(db, AuditEvent, org) if e.action == "initial_profiles.drafted"
+    )
+    assert audit.details["partial_ungraded"] == audit.details["generated"] == 1
+    assert audit.details["failed"] == 0
+
+
+@pytest.mark.parametrize(
+    "starts_partial", [False, True], ids=["adds-hint", "clears-hint"]
+)
+def test_redrafting_refreshes_existing_owner_notice(
+    request: pytest.FixtureRequest,
+    db: Session,
+    pi_service: PiHarness,
+    starts_partial: bool,
+) -> None:
+    org, schema, _, employees, users = request.getfixturevalue("drafting")
+    employee = employees[1]
+    add_assigned_jira_issues(db, employee)
+    capabilities = list_capabilities(db, org, schema.id)
+    ungraded = next(c for c in capabilities if c.key == "backend_api")
+    eligible = next(c for c in capabilities if c.key != ungraded.key)
+    eligible_items = json.loads(
+        answer(
+            capability_key=eligible.key, level=eligible.level_rubric["levels"][0]["key"]
+        )
+    )["items"]
+    complete, partial = json.loads(answer()), json.loads(answer(level=None))
+    for reply in (complete, partial):
+        reply["items"].extend(eligible_items)
+    first, second = (
+        ([partial] * 3, [complete]) if starts_partial else ([complete], [partial] * 3)
+    )
+    worker = Principal.system_worker(org)
+    owner = Principal(ActorKind.USER, org, users[1].id, employee.id, False, frozenset())
+
+    pi_service.replies.extend(first)
+    service.run_drafting(worker, [str(employee.id)])
+    (initial,) = rows(db, ProfileChangeRequest, org)
+    request_id, revision = initial.id, initial.revision
+    (notice,) = my_inbox(owner, db, pending_only=True).data
+    read_at = mark_read(owner, db, notice.id).read_at if starts_partial else None
+    db.commit()
+
+    pi_service.replies.extend(second)
+    service.run_drafting(worker, [str(employee.id)])
+    db.expire_all()
+
+    (rerun,) = rows(db, ProfileChangeRequest, org)
+    assert rerun.id == request_id and rerun.revision == revision + 1
+    assert rerun.status == RequestStatus.PENDING_OWNER
+    inbox = my_inbox(owner, db, pending_only=True)
+    assert inbox.count == inbox.pending_count == 1
+    (updated,) = inbox.data
+    assert updated.id == notice.id and updated.request_id == rerun.id
+    assert updated.read_at == read_at
+    message = "初始画像已起草，请确认后提交"
+    if starts_partial:
+        assert "ungraded_dropped_count" not in rerun.generated_by
+        assert "ungraded_dropped_capabilities" not in rerun.generated_by
+    else:
+        count = rerun.generated_by["ungraded_dropped_count"]
+        assert count == 1
+        assert rerun.generated_by["ungraded_dropped_capabilities"] == [ungraded.name]
+        message += f"（另有 {count} 项能力未能定级已跳过，可在画像页补充）"
+    assert updated.message == message
+
+
+@pytest.mark.parametrize("field", ["title", "detail"])
+@pytest.mark.parametrize(
+    "text,keys,count",
+    [
+        ("对应 PUR-203。", ["PUR-203"], 1),
+        ("对应PUR-203。", ["PUR-203"], 1),
+        ("见PLM-0012和FW-215", ["PLM-0012", "FW-215"], 1),
+        ("PUR-203号需求", ["PUR-203"], 1),
+        ("XPUR-203", ["PUR-203"], 2),
+        ("1PUR-203", ["PUR-203"], 2),
+        ("PUR-203x", ["PUR-203"], 2),
+    ],
+)
+def test_record_reference_boundaries(
+    request: pytest.FixtureRequest,
+    db: Session,
+    field: str,
+    text: str,
+    keys: list[str],
+    count: int,
+) -> None:
+    orgs, _, employees, _ = request.getfixturevalue("tenant_data")
+    org, employee = orgs[0].id, employees[0]
+    db.add_all(
+        ExternalIdentity(
+            org_id=org, employee_id=employee.id, source=s, external_id="alpha"
+        )
+        for s in ("jira", "csv:Git")
+    )
+    db.flush()
+    for key in keys:
+        ingest(db, org, record(person(), key=key))
+    ingest(
+        db,
+        org,
+        record(person(), source="csv:Git", key="GIT-1", **{field: text}),
+    )
+    records = collect(db, org, employee)
+    assert len(records) == len(keys) + 1
+    stats = evidence_stats(db, org, [r.evidence.id for r in records])
+    assert (stats.evidence_count, stats.source_count) == (count, 2)
+    assert len({r.experience_id for r in records}) == count
+
+
+@pytest.mark.usefixtures("mock_drafting")
+def test_seed_fallback_and_transitive_groups(
+    request: pytest.FixtureRequest,
+    db: Session,
+    mock_drafting: Callable[[UUID, UUID], None],
+) -> None:
+    from app.domains.evidence.models import EvidenceKind, Visibility
+    from app.domains.evidence.service import append_evidence
+    from app.domains.work.models import Task
+
+    orgs, _, employees, users = request.getfixturevalue("tenant_data")
+    org, employee = orgs[0].id, employees[0]
+    for source, key, title in [
+        ("jira", "A-1", "API"),
+        ("csv:Git", "B-2", "对应 A-1"),
+        ("csv:PLM", "C-3", "对应 B-2"),
+    ]:
+        db.add(Task(org_id=org, source=source, external_key=key, title=title))
+        append_evidence(
+            db,
+            org_id=org,
+            subject_employee_id=employee.id,
+            kind=EvidenceKind.WORK_RECORD,
+            source=source,
+            source_ref=key,
+            title=title,
+            content={},
+            visibility=Visibility.STANDARD,
+            provenance={},
+        )
+    db.flush()
+    mock_drafting(org, users[0].id)
+    records = collect(db, org, employee)
+    assert len({r.experience_id for r in records}) == 1
+    assert all(relation(r) == EvidenceRelation.SUPPORTS for r in records)
+    stats = evidence_stats(db, org, [r.evidence.id for r in records])
+    assert stats.evidence_count == 1 and stats.latest_evidence_at is None
+    schema = activate_template(db, Principal.system_worker(org), "tech-rnd")
+    caps = list_capabilities(db, org, schema.id)
+    items = model.draft(records, caps, model_config(db.get(ModelSetting, org))).items
+    items = service.postprocess(db, org, employee, items, caps)
+    assert "最近更新时间未知" in items[0].explanation
+    assert records[0].task is not None

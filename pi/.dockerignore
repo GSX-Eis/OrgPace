@@ -1,0 +1,12 @@
+*
+!Dockerfile
+!package.json
+!package-lock.json
+!sample.mjs
+!sample.test.mjs
+!server.mjs
+!context.mjs
+!runtime.mjs
+!egress.mjs
+!auth.mjs
+!local-auth.mjs

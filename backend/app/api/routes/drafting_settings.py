@@ -1,0 +1,98 @@
+from fastapi import APIRouter
+
+from app.api.deps import SessionDep
+from app.authz.deps import OrgAdminDep, OrgPrincipalDep
+from app.domains.drafting.note import (
+    DraftingNoteInput,
+    DraftingNotePublic,
+    read_note,
+    save_note,
+)
+from app.domains.drafting.settings import (
+    AutoDraftPublic,
+    AutoDraftUpdate,
+    DraftingSettingsPublic,
+    DraftingSettingsUpdate,
+    read_auto_draft,
+    read_settings,
+    save_auto_draft,
+    save_settings,
+)
+from app.domains.drafting.update_settings import (
+    UpdateSettingsInput,
+    UpdateSettingsPublic,
+    read_update_settings,
+    save_update_settings,
+)
+from app.domains.org.schemas import OrganizationTimezone
+from app.domains.org.timezone import read_timezone, save_timezone
+
+router = APIRouter(prefix="/orgs/{org_id}", tags=["drafting-settings"])
+
+
+@router.get("/drafting-note", response_model=DraftingNotePublic)
+def get_drafting_note(
+    session: SessionDep, principal: OrgAdminDep
+) -> DraftingNotePublic:
+    return read_note(session, principal.org_id)
+
+
+@router.put("/drafting-note", response_model=DraftingNotePublic)
+def put_drafting_note(
+    body: DraftingNoteInput, session: SessionDep, principal: OrgAdminDep
+) -> DraftingNotePublic:
+    return save_note(session, principal, body)
+
+
+@router.get("/drafting-settings", response_model=DraftingSettingsPublic)
+def get_drafting_settings(
+    session: SessionDep, principal: OrgAdminDep
+) -> DraftingSettingsPublic:
+    return read_settings(session, principal.org_id)
+
+
+@router.put("/drafting-settings", response_model=DraftingSettingsPublic)
+def put_drafting_settings(
+    body: DraftingSettingsUpdate, session: SessionDep, principal: OrgAdminDep
+) -> DraftingSettingsPublic:
+    return save_settings(session, principal, body)
+
+
+@router.get("/me/auto-draft", response_model=AutoDraftPublic)
+def get_auto_draft(session: SessionDep, principal: OrgPrincipalDep) -> AutoDraftPublic:
+    return read_auto_draft(session, principal)
+
+
+@router.put("/me/auto-draft", response_model=AutoDraftPublic)
+def put_auto_draft(
+    body: AutoDraftUpdate, session: SessionDep, principal: OrgPrincipalDep
+) -> AutoDraftPublic:
+    return save_auto_draft(session, principal, body)
+
+
+@router.get("/update-settings", response_model=UpdateSettingsPublic)
+def get_update_settings(
+    session: SessionDep, principal: OrgAdminDep
+) -> UpdateSettingsPublic:
+    return read_update_settings(session, principal.org_id)
+
+
+@router.put("/update-settings", response_model=UpdateSettingsPublic)
+def put_update_settings(
+    body: UpdateSettingsInput, session: SessionDep, principal: OrgAdminDep
+) -> UpdateSettingsPublic:
+    return save_update_settings(session, principal, body)
+
+
+@router.get("/update-settings/timezone", response_model=OrganizationTimezone)
+def get_org_timezone(
+    session: SessionDep, principal: OrgAdminDep
+) -> OrganizationTimezone:
+    return read_timezone(session, principal.org_id)
+
+
+@router.put("/update-settings/timezone", response_model=OrganizationTimezone)
+def put_org_timezone(
+    body: OrganizationTimezone, session: SessionDep, principal: OrgAdminDep
+) -> OrganizationTimezone:
+    return save_timezone(session, principal, body)

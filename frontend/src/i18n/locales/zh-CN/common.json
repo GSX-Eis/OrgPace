@@ -1,0 +1,194 @@
+{
+  "appTitle": "知程",
+  "orgFallback": "企",
+  "language": {
+    "label": "界面语言",
+    "zh": "中文",
+    "en": "EN"
+  },
+  "actions": {
+    "close": "关闭",
+    "backHome": "返回首页",
+    "retry": "重试",
+    "copy": "复制",
+    "save": "保存",
+    "cancel": "取消",
+    "previousPage": "上一页",
+    "nextPage": "下一页",
+    "firstPage": "第一页",
+    "lastPage": "最后一页",
+    "morePages": "更多页"
+  },
+  "status": {
+    "loading": "加载中…",
+    "noData": "暂无数据",
+    "copied": "已复制",
+    "copyFailed": "复制失败，请重试",
+    "successToast": "操作成功",
+    "errorToast": "操作失败"
+  },
+  "theme": {
+    "label": "外观",
+    "toggle": "切换主题",
+    "light": "浅色",
+    "dark": "深色",
+    "system": "跟随系统"
+  },
+  "nav": {
+    "spaces": {
+      "collab": "协同",
+      "org": "组织",
+      "plan": "规划",
+      "settings": "设置"
+    },
+    "groups": {
+      "membersAndOrg": "成员与架构",
+      "capabilitiesAndRules": "能力与规则",
+      "personal": "个人",
+      "orgAdmin": "企业管理"
+    },
+    "items": {
+      "aiAssistant": "AI 助手",
+      "inbox": "收件箱",
+      "reviews": "待审批",
+      "myProfile": "我的画像",
+      "employees": "员工",
+      "myTeam": "我的团队",
+      "orgChart": "组织架构",
+      "dictionary": "能力词典",
+      "approvalRules": "审批规则",
+      "reminders": "定期提醒",
+      "capacityRules": "负荷与需求规则",
+      "myWorkload": "我的负荷",
+      "teamWorkload": "团队负荷",
+      "borrowRequests": "借调请求",
+      "accountSecurity": "账号与安全",
+      "integrations": "连接与集成",
+      "preferences": "偏好与代理",
+      "sources": "数据来源",
+      "workRecords": "工作记录",
+      "model": "模型",
+      "builtInBot": "内置助手",
+      "imChannels": "IM 入口",
+      "auditLogs": "审计日志"
+    },
+    "titles": {
+      "employeeDetail": "员工详情",
+      "capacityAndWorkload": "协作与负荷",
+      "findPeople": "找人",
+      "oauthConsent": "应用授权"
+    },
+    "aria": {
+      "openSpaceNav": "打开空间导航",
+      "spaceNav": "空间导航",
+      "collapseSpaceNav": "折叠空间导航",
+      "expandSpaceNav": "展开空间导航",
+      "breadcrumb": "面包屑",
+      "mainNav": "主导航",
+      "switchOrg": "切换企业",
+      "organization": "企业",
+      "userMenu": "用户菜单",
+      "navigation": "导航",
+      "mobileNavigation": "移动端导航",
+      "collapseSidebar": "收起导航",
+      "expandSidebar": "展开导航",
+      "toggleSidebar": "切换导航"
+    },
+    "userFallback": "用户",
+    "logout": "退出登录",
+    "newConversation": "新对话",
+    "recentConversations": "最近对话",
+    "noEmployeeOrAdmin": "你的账号尚未绑定员工身份或管理权限，请联系企业管理员处理。",
+    "orgState": {
+      "loading": "正在加载企业信息…",
+      "loadFailed": "加载失败，请重试",
+      "noOrg": "你的账号尚未加入任何企业，请联系企业管理员。"
+    }
+  },
+  "adminConversations": {
+    "ariaLabel": "管理助手会话",
+    "loading": "正在加载对话…",
+    "retry": "重试加载对话",
+    "initialSetup": "首次设置",
+    "conversation": "对话",
+    "setupAriaLabel": "首次设置 · {{count}} 步待完成",
+    "stepsRemaining": "{{count}} 步待完成",
+    "subtitleTurns": "管理助手 · {{count}} 轮",
+    "empty": "暂无历史对话",
+    "retentionDays": "保留 {{days}} 天",
+    "ephemeralRetention": "闲置 2 小时后自动清除"
+  },
+  "table": {
+    "rangeSummary": "第 {{from}}–{{to}} 条，共 ",
+    "rangeSuffix": " 条",
+    "rowsPerPage": "每页条数",
+    "pageLabel": "页码"
+  },
+  "errors": {
+    "network": "无法连接服务器，请检查网络",
+    "validation": "填写内容格式有误，请检查后重试",
+    "http400": "填写内容有误，请检查后重试",
+    "http401": "登录已失效，请重新登录",
+    "http403": "没有权限执行此操作",
+    "http404": "内容不存在，或你没有权限查看",
+    "http409": "内容已更新，请刷新后重试",
+    "http429": "操作过于频繁，请稍后重试",
+    "http500": "服务暂时异常，请稍后重试",
+    "http502": "服务暂时不可用，请稍后重试",
+    "http503": "服务暂时不可用，请稍后重试",
+    "fallback": "操作失败，请稍后重试"
+  },
+  "errorPage": {
+    "title": "页面出错 - 知程",
+    "heading": "出错了",
+    "subheading": "页面暂时无法显示",
+    "description": "页面加载出错，请刷新重试。"
+  },
+  "notFound": {
+    "title": "页面不存在 - 知程",
+    "heading": "页面不存在",
+    "description": "该页面不存在或链接已失效。"
+  },
+  "chat": {
+    "assistantTitleAdmin": "管理助手",
+    "assistantTitlePersonal": "工作助手",
+    "projectDraft": "项目草稿",
+    "initialSetup": "首次设置",
+    "conversation": "对话",
+    "newConversation": "新对话",
+    "assistantModeAria": "助手模式",
+    "modeAdmin": "企业管理",
+    "modePersonal": "个人与团队",
+    "attachmentAria": "附件：{{filename}}",
+    "attachmentCleaned": "已按保留期清理",
+    "attachmentReading": "正在读取…",
+    "attachmentDownload": "下载附件",
+    "maxAttachments": "每轮最多 5 个附件",
+    "unsupportedFileType": "不支持的附件类型",
+    "fileSizeLimit": "附件不能为空，图片不超过 5 MB，文件不超过 10 MB",
+    "selectAttachmentsAria": "选择对话附件",
+    "pendingAttachmentsAria": "待发送附件",
+    "uploading": "上传中…",
+    "uploaded": "已上传",
+    "uploadedWithNotice": "已上传：{{notice}}",
+    "removeAttachmentAria": "移除 {{filename}}",
+    "addAttachmentAria": "添加附件",
+    "stopAria": "停止",
+    "sendAria": "发送",
+    "stopped": "已停止",
+    "elapsedSeconds": "耗时 {{seconds}} 秒",
+    "runningTool": "正在{{name}}…",
+    "completedSteps": "已完成 {{count}} 步操作",
+    "toolStatusRunning": "进行中",
+    "toolStatusOk": "成功",
+    "toolStatusFailed": "失败",
+    "toolStepLine": "{{name}}：{{status}}",
+    "cannotStartConversation": "无法开启对话，请重试",
+    "streamConnectionFailed": "对话连接失败，请重试",
+    "streamInterrupted": "对话连接中断，请重试"
+  },
+  "passwordInput": {
+    "hide": "隐藏密码",
+    "show": "显示密码"
+  }
+}

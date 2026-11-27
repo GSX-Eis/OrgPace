@@ -1,0 +1,107 @@
+[project]
+name = "app"
+version = "0.1.0"
+description = ""
+requires-python = ">=3.14,<4.0"
+dependencies = [
+    "fastapi[standard]>=0.141.1,<1.0.0",
+    "python-multipart<1.0.0,>=0.0.27",
+    "email-validator<3.0.0.0,>=2.1.0.post1",
+    "pydantic>=2.13.5",
+    "alembic>=1.19.1,<2.0.0",
+    "httpx<1.0.0,>=0.25.1",
+    "psycopg[binary]>=3.3.6,<4.0.0",
+    "sqlmodel>=0.0.46,<1.0.0",
+    "pydantic-settings<3.0.0,>=2.2.1",
+    "sentry-sdk[fastapi]>=2.70.0,<3.0.0",
+    "pyjwt>=2.15.0,<3.0.0",
+    "pwdlib[argon2,bcrypt]>=0.3.1",
+    "procrastinate~=3.10.0",
+    "pyyaml>=6.0.3,<7",
+    "openpyxl>=3.1.5,<4",
+    "cryptography>=46,<47",
+    "mcp==2.3.0",
+    "websockets>=15,<16",
+    "lark-oapi==1.7.5",
+    "pypdf==6.21.4",
+    "ortools==9.15.6755",
+]
+
+[dependency-groups]
+dev = [
+    "pytest<10.0.0,>=7.4.3",
+    "pytest-xdist>=3.8,<4",
+    "pytest-cov>=7,<8",
+    "mypy<3.0.0,>=1.8.0",
+    "ty>=0.0.25",
+    "ruff<1.0.0,>=0.16.0",
+    "coverage<8.0.0,>=7.4.3",
+    "types-pyyaml>=6.0.12.20261030",
+    "types-openpyxl>=3.1.5.20261017",
+    "pytest-split==0.11.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.mypy]
+strict = true
+exclude = ["venv", ".venv", "alembic"]
+
+[tool.ruff]
+target-version = "py314"
+exclude = ["alembic"]
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    "B",  # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+    "ARG001", # unused arguments in functions
+    "T201",   # print statements are not allowed
+    "TID251",
+]
+ignore = [
+    "E501",  # line too long, handled by black
+    "B008",  # do not perform function calls in argument defaults
+    "W191",  # indentation contains tabs
+    "B904",  # Allow raising exceptions without from e, for HTTPException
+]
+
+[tool.ruff.lint.pyupgrade]
+# Preserve types, even if a file imports `from __future__ import annotations`.
+keep-runtime-typing = true
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"openai" = { msg = "Use app.domains.model.pi_client instead." }
+"anthropic" = { msg = "Use app.domains.model.pi_client instead." }
+
+[tool.ruff.lint.per-file-ignores]
+"app/domains/model/pi_client.py" = ["TID251"]
+
+[tool.coverage.run]
+source = ["app"]
+
+[tool.coverage.report]
+show_missing = true
+sort = "-Cover"
+
+[tool.ty.terminal]
+error-on-warning = true
+
+[tool.fastapi]
+entrypoint = "app.main:app"
+
+[tool.pytest.ini_options]
+faulthandler_timeout = 60
+verbosity_test_cases = 1
+markers = [
+    "roster_performance: roster parsing time limits, run serially without coverage in CI",
+    "chatgpt_live: local opt-in ChatGPT subscription integration",
+    "migration: tests using an isolated database cloned from the migration template",
+]

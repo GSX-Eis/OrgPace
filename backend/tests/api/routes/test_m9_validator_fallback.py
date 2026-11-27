@@ -1,0 +1,244 @@
+from uuid import uuid4
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlmodel import Session, col, select
+
+from app.domains.bot import schemas as s
+from app.domains.bot import store, tools
+from app.domains.im.rendering import render
+from app.domains.planning import service
+from app.domains.planning.schemas import OptionInput, OptionPublic
+from app.domains.profile.models import ProfileVersion
+from app.domains.review.publish import current_claims
+from tests.api.routes.test_m7_planning_readonly import (
+    business_rows,
+    business_rows_without_forecast,
+)
+from tests.api.routes.test_m8_coordination_tools import assert_no_b_people
+from tests.domains.test_im_gateway import principal
+
+pytest_plugins = ("tests.api.routes.test_m8_coordination_tools",)
+
+
+@pytest.fixture
+def feasible_coordination(
+    coordination: tuple, db: Session, client: TestClient
+) -> tuple:
+    people, auth, demand = coordination
+    latest = db.exec(
+        select(ProfileVersion)
+        .where(
+            ProfileVersion.org_id == demand.org_id,
+            ProfileVersion.subject_employee_id == people["E04"].id,
+        )
+        .order_by(col(ProfileVersion.revision).desc())
+    ).first()
+    claims = current_claims(db, demand.org_id, people["E04"].id)
+    response = client.post(
+        f"/api/v1/orgs/{demand.org_id}/employees/{people['E04'].id}/profile/direct-edits",
+        headers=auth["admin"],
+        json={
+            "base_revision": latest.revision if latest else None,
+            "items": [
+                {
+                    "op": "modify" if demand.capability_key in claims else "add",
+                    "capability_key": demand.capability_key,
+                    "statement": "合成能力判断",
+                    "level": "routine",
+                }
+            ],
+        },
+    )
+    assert response.status_code == 200, response.text
+    db.expire_all()
+    return coordination
+
+
+@pytest.mark.parametrize("channel", ["web", "feishu"])
+def test_worse_recommendation_keeps_both_choices(
+    feasible_coordination: tuple, db: Session, channel: str
+) -> None:
+    people, _, demand = feasible_coordination
+    manager = principal(db, demand.org_id, people["E05"].id)
+    before = business_rows_without_forecast(db, demand.org_id)
+    case = service.create_case(manager, db, demand.id)
+    option = service.create_option(
+        manager,
+        db,
+        service.authorized_case(manager, db, case.id),
+        OptionInput.model_validate(
+            {
+                "assignees": [
+                    {
+                        "employee_id": str(people["E04"].id),
+                        "allocation_percent": 100,
+                        "start_date": demand.window_start.isoformat(),
+                        "end_date": demand.window_end.isoformat(),
+                    }
+                ]
+            }
+        ),
+    )
+    assert option.verdict == "infeasible"
+    session = store.create_session(db, manager, channel=channel)
+    cards: list[s.Message] = []
+    result = tools.call(
+        db,
+        manager,
+        session,
+        cards,
+        "prepare_plan_proposal",
+        {
+            "case_id": str(case.id),
+            "option_id": str(option.id),
+            "text": "请核对部门方案",
+        },
+    )
+    assert isinstance(result, dict) and "请用答复卡重新提交" in str(result["error"])
+    assert not cards and business_rows_without_forecast(db, demand.org_id) == before
+    before = business_rows(db, demand.org_id)
+    compare_arguments = {
+        "function": "compare_plan_options",
+        "arguments": {"case_id": str(case.id), "option_ids": [str(option.id)]},
+    }
+    tools.call(
+        db,
+        manager,
+        session,
+        cards,
+        "coordination",
+        compare_arguments,
+    )
+    (comparison,) = cards
+    assert isinstance(comparison, s.PlanCard)
+    assert comparison.fields[1].value == "不可行"
+    fallback = comparison.rule_fallback
+    assert fallback is not None
+    assert_no_b_people(fallback.model_dump(mode="json"), people)
+    assert {f.label for f in fallback.fields} == {
+        "类型",
+        "结论",
+        "交付日期",
+        "覆盖人数",
+        "缺口",
+        "新人数",
+    }
+    assert fallback.fields[1].value == "可行"
+    assert (
+        next(f.value for f in fallback.differences if f.label == "结论")
+        == "不可行 → 可行"
+    )
+    link = f"/capacity?tab=incoming&demand={demand.id}&plans=1"
+    best = next(o for o in case.options if o.verdict == "feasible")
+    assert comparison.link == f"{link}#case={case.id}&option={option.id}"
+    assert fallback.link == f"{link}#case={case.id}&option={best.id}"
+    assert comparison.link != fallback.link
+    text, actions = render(comparison)
+    assert "备选方案" in text and "不可行 → 可行" in text
+    assert text.count(link) == 2
+    assert f"#case={case.id}&option={option.id}" in text
+    assert f"#case={case.id}&option={best.id}" in text
+    assert len(text) < 12000 and not actions
+    cards.clear()
+    result = tools.call(
+        db,
+        manager,
+        session,
+        cards,
+        "prepare_demand_reply",
+        {
+            "demand_id": str(demand.id),
+            "revision": demand.revision,
+            "outcome": "not_now",
+            "reason_code": "capacity",
+            "text": "请核对部门答复",
+        },
+    )
+    assert result["status"] == "pending"
+    (reply,) = cards
+    assert isinstance(reply, s.CapacityCard)
+    assert reply.arguments["outcome"] == "not_now"
+    assert reply.arguments["reason_code"] == "capacity"
+    assert reply.plan is None
+    assert_no_b_people(reply.model_dump(mode="json"), people)
+    reply_text, reply_actions = render(reply)
+    assert len(reply_text) < 12000 and len(reply_actions) == 2
+    assert business_rows(db, demand.org_id) == before
+    for code in ("E01", "E04", "E10", "foreign"):
+        viewer = principal(db, people[code].org_id, people[code].id)
+        denied: list[s.Message] = []
+        result = tools.call(
+            db,
+            viewer,
+            store.create_session(db, viewer, channel=channel),
+            denied,
+            "prepare_plan_proposal",
+            {"case_id": str(case.id), "option_id": str(option.id), "text": "合成答复"},
+        )
+        assert "error" in result and not denied
+        assert_no_b_people(result, people)
+        result = tools.call(
+            db,
+            viewer,
+            store.create_session(db, viewer, channel=channel),
+            denied,
+            "coordination",
+            compare_arguments,
+        )
+        assert "error" in result and not denied
+        assert_no_b_people(result, people)
+    assert business_rows(db, demand.org_id) == before
+
+
+@pytest.mark.parametrize("channel", ["web", "feishu"])
+def test_equal_or_better_conclusion_has_no_fallback(
+    feasible_coordination: tuple, db: Session, channel: str
+) -> None:
+    people, _, demand = feasible_coordination
+    manager = principal(db, demand.org_id, people["E05"].id)
+    case = service.create_case(manager, db, demand.id)
+    option = next(o for o in case.options if o.verdict == "feasible")
+    cards: list[s.Message] = []
+    tools.call(
+        db,
+        manager,
+        store.create_session(db, manager, channel=channel),
+        cards,
+        "prepare_plan_proposal",
+        {"case_id": str(case.id), "option_id": str(option.id), "text": "合成答复"},
+    )
+    assert isinstance(cards[0], s.CapacityCard)
+    assert cards[0].plan is None
+    assert "备选方案" not in render(cards[0])[0]
+    assert tools.plan_card(option, case).rule_fallback is None
+
+
+def test_fallback_uses_snapshot_rules_in_original_order(
+    coordination: tuple, db: Session
+) -> None:
+    people, _, demand = coordination
+    manager = principal(db, demand.org_id, people["E05"].id)
+    case = service.create_case(manager, db, demand.id)
+    base = case.options[0]
+
+    def option(kind: str, verdict: str, **updates: object) -> OptionPublic:
+        return base.model_copy(
+            update={"id": uuid4(), "kind": kind, "verdict": verdict, **updates}
+        )
+
+    custom = option("custom", "infeasible")
+    other_snapshot = option("direct", "feasible", snapshot_id=uuid4())
+    ignored_custom = option("custom", "feasible")
+    borrow = option("borrow", "conditional")
+    equal = option("direct", "conditional")
+    case = case.model_copy(
+        update={"options": [other_snapshot, ignored_custom, borrow, equal, custom]}
+    )
+    card = tools.plan_card(custom, case)
+    assert card.rule_fallback.fields[0].value == "向其他部门借调"
+    for verdict in ("feasible", "conditional", "insufficient_data", "infeasible"):
+        selected = custom.model_copy(update={"verdict": verdict})
+        assert (tools.plan_card(selected, case).rule_fallback is not None) == (
+            verdict in ("insufficient_data", "infeasible")
+        )

@@ -1,0 +1,128 @@
+{
+  "pageTitle": "收件箱 - 知程",
+  "heading": "收件箱",
+  "kinds": {
+    "capacity": "协作与负荷",
+    "profile_edited": "画像已更新",
+    "initial_review": "初始画像待确认",
+    "question": "待确认问题",
+    "submitted": "画像申请已提交",
+    "status_changed": "申请状态更新",
+    "admin_todos": "管理员待办",
+    "dictionary_changed": "能力词典已更新",
+    "review_requested": "画像待审批",
+    "decided": "画像审批结果"
+  },
+  "capacityLinks": {
+    "openPlans": "打开方案页",
+    "openBorrows": "打开借调页",
+    "viewReviews": "查看待审批",
+    "viewDetails": "查看详情"
+  },
+  "question": {
+    "answered": "已回答，已保存为受限自述证据",
+    "closed": "问题已关闭",
+    "reason": "提问原因：{{reason}}",
+    "quickRepliesAria": "快捷答复",
+    "quickReplies": {
+      "solo": "情况属实，我独立负责了相关工作",
+      "support": "仅参与协作支持，非主要负责人",
+      "later": "目前暂无补充，后续在画像页更新"
+    },
+    "answerLabel": "你的回答",
+    "restrictedHint": "提交后保存为受限自述证据。",
+    "submitting": "正在保存…",
+    "submit": "提交回答"
+  },
+  "requestStatus": {
+    "draft": "草稿",
+    "pending_owner": "待本人确认",
+    "pending_review": "待经理审批",
+    "approved": "已批准",
+    "changes_requested": "被拒绝",
+    "rejected": "被拒绝",
+    "withdrawn": "已撤回"
+  },
+  "itemDecision": {
+    "approved": "已批准",
+    "rejected": "被拒绝",
+    "pending": "待决定"
+  },
+  "capacityStatus": {
+    "approved": "已同意",
+    "returned": "已退回",
+    "pending": "待审批"
+  },
+  "profileDetail": {
+    "noRecord": "暂无记录",
+    "ungraded": "未定级",
+    "addedLevel": "新增等级：",
+    "addedStatement": "新增描述：",
+    "beforeLabel": "改前",
+    "originalRecord": "原记录",
+    "afterLabel": "→ 改后",
+    "retractPrefix": "改前：",
+    "retractArrow": "→ 移除此项判断",
+    "attachPrefix": "原有判断：",
+    "attachArrow": "→ 仅补充依据",
+    "managerReason": "经理理由：",
+    "reviewer": "审批人：{{name}}",
+    "time": "时间：{{time}}",
+    "decisionComment": "审批说明："
+  },
+  "workloadDetail": {
+    "reviewer": "审批人：{{name}}",
+    "time": "时间：{{time}}",
+    "changeLabel": "变更内容：",
+    "changeApproved": "改前 {{before}} → 改后 {{after}}",
+    "changeRequested": "改前 {{before}} → 申请调整为 {{after}}",
+    "changeNew": "申请调整为 {{after}}",
+    "weeksLabel": "适用周次：",
+    "approvedWeek": "批准当周",
+    "reasonLabel": "申请理由：",
+    "managerReason": "经理理由："
+  },
+  "extensionDetail": {
+    "reviewer": "审批人：{{name}}",
+    "time": "时间：{{time}}",
+    "capabilityLabel": "涉及能力：",
+    "changeLabel": "变更内容：",
+    "changeApproved": "原完成日期 {{before}} → 新完成日期 {{after}}",
+    "changeRequested": "原完成日期 {{before}} → 申请延至 {{after}}",
+    "reasonLabel": "申请理由：",
+    "managerReason": "经理理由："
+  },
+  "approvalDetail": {
+    "summaryOnly": "当前权限仅显示通知摘要",
+    "reviewAction": "查看并审批",
+    "viewDetails": "查看详情"
+  },
+  "toolbar": {
+    "markFilteredTitle": "标记所有符合当前筛选条件的未读消息",
+    "markAllTitle": "标记收件箱中所有未读消息",
+    "markFiltered": "当前筛选标为已读",
+    "markAll": "全部标为已读",
+    "statusSummary": "{{unread}} 条未读 · {{pending}} 条待办"
+  },
+  "list": {
+    "ariaLabel": "消息列表",
+    "viewLegend": "收件箱视图",
+    "pendingTab": "待办",
+    "allTab": "全部",
+    "filterButton": "筛选",
+    "unreadOnly": "仅看未读",
+    "byKind": "按消息类型",
+    "allKinds": "全部类型",
+    "empty": "暂无消息",
+    "unreadSr": "未读",
+    "paginationAria": "收件箱分页",
+    "prevPage": "上一页",
+    "nextPage": "下一页",
+    "pageSummary": "第 {{page}} 页 · 共 {{count}} 条"
+  },
+  "detailPane": {
+    "backToList": "返回消息列表",
+    "ariaLabel": "消息详情",
+    "markRead": "标为已读"
+  }
+}

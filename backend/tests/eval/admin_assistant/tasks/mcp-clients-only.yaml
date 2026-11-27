@@ -1,0 +1,9 @@
+id: mcp-clients-only
+menu: connections
+external_mcp_enabled: true
+steps:
+  - {type: say, text: 只把外部 AI 工具允许的客户端改成 eval-client，保留关闭状态，不要开启}
+  - {type: apply}
+expect:
+  services:
+    - {function: get_mcp_setting, args: {}, value: {enabled: false, allowed_clients: [eval-client]}}

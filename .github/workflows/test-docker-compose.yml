@@ -1,0 +1,129 @@
+name: Test Docker Compose
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  test-docker-compose:
+    runs-on: ubuntu-latest
+    env:
+      COMPOSE_PROJECT_NAME: epp-compose-ci
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: cp .env.example .env
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build stack with cache
+        uses: docker/bake-action@5be5f02ff8819ecd3092ea6b2e6261c31774f2b4 # v6
+        with:
+          source: .
+          files: compose.yml
+          load: true
+          set: |
+            backend.cache-from=type=gha,scope=compose-backend
+            backend.cache-to=type=gha,scope=compose-backend,mode=max
+            pi.cache-from=type=gha,scope=compose-pi
+            pi.cache-to=type=gha,scope=compose-pi,mode=max
+      - name: Verify Compose image names
+        run: docker image inspect "${COMPOSE_PROJECT_NAME}-backend:latest" "${COMPOSE_PROJECT_NAME}-pi:latest" > /dev/null
+      - run: docker compose up -d --no-build --wait
+      - name: Test demo stack and role permissions
+        run: bash tests/smoke/compose_smoke.sh
+      - if: always()
+        run: docker compose down -v --remove-orphans
+
+  test-production-install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check shell scripts
+        run: shellcheck install.sh upgrade.sh backup.sh restore.sh deploy/common.sh deploy/backup/*.sh
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Warm production build cache
+        uses: docker/bake-action@5be5f02ff8819ecd3092ea6b2e6261c31774f2b4 # v6
+        env:
+          COMPOSE_PROJECT_NAME: epp-production-ci
+          PROJECT_NAME: CI
+          POSTGRES_PASSWORD: cache-config-only
+          SECRET_KEY: cache-config-only
+          PI_SERVICE_TOKEN: cache-config-only
+        with:
+          source: .
+          files: compose.yml
+          load: true
+          set: |
+            backend.cache-from=type=gha,scope=production-backend
+            backend.cache-to=type=gha,scope=production-backend,mode=max
+            pi.cache-from=type=gha,scope=production-pi
+            pi.cache-to=type=gha,scope=production-pi,mode=max
+      - name: Install without demo data
+        env:
+          EPP_ACCESS: http
+          EPP_HTTP_PORT: '8080'
+          COMPOSE_PROJECT_NAME: epp-production-ci
+        run: |
+          set -o pipefail
+          ./install.sh --non-interactive | tee install-output.txt
+          grep -q '/setup#token=' install-output.txt
+      - name: Verify production install and idempotency
+        run: |
+          ! grep -q changethis .env
+          grep -Eq '^PI_SERVICE_TOKEN=[0-9a-f]{64}$' .env
+          test "$(docker compose ps pi --format '{{.Health}}')" = healthy
+          docker compose exec -T backend python -c 'import os,httpx; url=os.environ["PI_URL"]+"/health"; assert httpx.get(url).status_code == 401; assert httpx.get(url,headers={"Authorization":"Bearer "+os.environ["PI_SERVICE_TOKEN"]}).status_code == 200'
+          grep -qx 'LOGIN_MAX_FAILURES_PER_IP=300' .env
+          test "$(stat -c %a .env)" = 600
+          test "$(docker compose exec -T db psql -U postgres -d app -tAc 'select count(*) from organization')" = 0
+          test "$(docker compose exec -T db psql -U postgres -d app -tAc 'select count(*) from "user"')" = 0
+          address=$(hostname -I | awk '{print $1}')
+          curl --noproxy '*' -H 'Accept: text/html' -fsS "http://$address:8080/login" >/dev/null
+          token=$(sed -n 's/.*\/setup#token=//p' install-output.txt)
+          curl --noproxy '*' -fsS -X POST "http://$address:8080/api/v1/setup/initialize" \
+            -H 'Content-Type: application/json' \
+            -d "{\"token\":\"$token\",\"org_name\":\"CI 测试企业\",\"admin_username\":\"admin@example.com\",\"admin_password\":\"synthetic-password-2026\"}" \
+            | python3 -c 'import json,sys; result=json.load(sys.stdin); assert result["access_token"] and result["org_id"]'
+          cp .env .env.before
+          ./install.sh --non-interactive > reinstall-output.txt
+          grep -q '企业已初始化' reinstall-output.txt
+          ! grep -q '/setup#token=' reinstall-output.txt
+          cmp .env .env.before
+          file=$(./backup.sh)
+          test -s "$file"
+          test -r "$file"
+          test "$(stat -c %u "$file")" = "$(id -u)"
+          test "$(stat -c %a "$file")" = 600
+          docker compose exec -T db psql -v ON_ERROR_STOP=1 -U postgres -d app -c 'CREATE TABLE restore_probe(id int, org_id uuid REFERENCES organization(id)); INSERT INTO restore_probe SELECT 1, id FROM organization;'
+          printf '确认恢复\n' | ./restore.sh "$file"
+          test -z "$(docker compose exec -T db psql -U postgres -d app -tAc "select to_regclass('public.restore_probe')")"
+          test "$(docker compose exec -T db psql -U postgres -d app -tAc 'select count(*) from organization')" = 1
+          curl --noproxy '*' -fsS "http://$address:8080/api/v1/utils/health-check/" >/dev/null
+      - name: Upgrade old deployment and preserve generated Pi secret
+        run: |
+          rm install-output.txt reinstall-output.txt .env.before
+          sed -i '/^PI_SERVICE_TOKEN=/d' .env
+          ./upgrade.sh HEAD
+          grep -Eq '^PI_SERVICE_TOKEN=[0-9a-f]{64}$' .env
+          token_line=$(grep '^PI_SERVICE_TOKEN=' .env)
+          ./upgrade.sh HEAD
+          test "$(grep '^PI_SERVICE_TOKEN=' .env)" = "$token_line"
+          test "$(docker compose ps pi --format '{{.Health}}')" = healthy
+      - name: Stop test stack
+        if: always()
+        run: docker compose down -v --rmi local --remove-orphans

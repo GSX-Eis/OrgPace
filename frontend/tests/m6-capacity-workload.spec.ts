@@ -1,0 +1,578 @@
+import { expect, test } from "@playwright/test"
+import type { EmployeeAccount } from "../src/client"
+
+test.use({
+  storageState: { cookies: [], origins: [] },
+  viewport: { width: 1440, height: 900 },
+})
+
+test("模块开关、负荷申请、审批和直接调整遵守角色范围", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(120000)
+  const password = "synthetic-capacity-password-2026"
+  const post = async (url: string, data: object, token?: string) => {
+    const response = await request.post(url, {
+      data,
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+    expect(response.ok(), await response.text()).toBeTruthy()
+    return response.json()
+  }
+  const setup = await post("/api/v1/private/setup-tokens", {
+    purpose: "new_org",
+  })
+  const admin = await post("/api/v1/setup/initialize", {
+    token: setup.token,
+    org_name: "合成负荷企业",
+    admin_username: `capacity-${crypto.randomUUID()}@example.com`,
+    admin_password: password,
+  })
+  const base = `/api/v1/orgs/${admin.org_id}`
+  const headers = { Authorization: `Bearer ${admin.access_token}` }
+  const roster = await request.post(`${base}/roster/imports`, {
+    headers,
+    multipart: {
+      file: {
+        name: "roster.csv",
+        mimeType: "text/csv",
+        buffer: Buffer.from(
+          `工号,姓名,部门,上级工号,邮箱\nM,合成经理,研发,,m-${crypto.randomUUID()}@example.com\nE,合成员工,研发,M,e-${crypto.randomUUID()}@example.com\nO,范围外员工,客户,,o-${crypto.randomUUID()}@example.com\n`,
+        ),
+      },
+    },
+  })
+  expect(roster.ok()).toBeTruthy()
+  const preview = await roster.json()
+  await post(
+    `${base}/roster/imports/${preview.id}/apply`,
+    { base_revision: preview.base_revision },
+    admin.access_token,
+  )
+  expect(
+    (await request.post(`${base}/accounts/issue`, { headers, data: {} })).ok(),
+  ).toBeTruthy()
+  const accounts: EmployeeAccount[] = (
+    await (await request.get(`${base}/accounts`, { headers })).json()
+  ).data
+  const manager = accounts.find((row) => row.employee_code === "M")!
+  const employee = accounts.find((row) => row.employee_code === "E")!
+  const outside = accounts.find((row) => row.employee_code === "O")!
+  await post(
+    `${base}/role-grants`,
+    {
+      user_id: manager.account!.user_id,
+      role: "dept_manager",
+      department_id: manager.department!.id,
+    },
+    admin.access_token,
+  )
+  const tokens = new Map<string, string>()
+  for (const account of [manager, employee]) {
+    const reset = await post(
+      `${base}/accounts/${account.account!.user_id}/reset-password`,
+      {},
+      admin.access_token,
+    )
+    const login = await request.post("/api/v1/login/access-token", {
+      form: { username: reset.username, password: reset.initial_password },
+    })
+    expect(login.ok()).toBeTruthy()
+    const changed = await request.patch("/api/v1/users/me/password", {
+      headers: { Authorization: `Bearer ${(await login.json()).access_token}` },
+      data: {
+        current_password: reset.initial_password,
+        new_password: password,
+      },
+    })
+    expect(changed.ok()).toBeTruthy()
+    tokens.set(account.employee_code!, (await changed.json()).access_token)
+  }
+  const open = async (token: string, path = "/capacity") => {
+    await page.goto("/login")
+    await page.evaluate(
+      ({ token, orgId }) => {
+        localStorage.setItem("access_token", token)
+        localStorage.setItem("current_org_id", orgId)
+      },
+      { token, orgId: admin.org_id },
+    )
+    await page.goto(path)
+  }
+  await open(admin.access_token, "/admin/rules?tab=capacity")
+  await expect(
+    page.getByRole("checkbox", { name: "启用规划与负荷功能" }),
+  ).not.toBeChecked()
+  await page.getByRole("checkbox", { name: "启用规划与负荷功能" }).check()
+  await page.getByRole("combobox", { name: "谁可以提需求" }).click()
+  await page.getByRole("option", { name: "只有部门经理", exact: true }).click()
+  await page.getByRole("button", { name: "保存设置", exact: true }).click()
+  await expect(page.getByRole("status")).toContainText("负荷与需求规则已保存")
+  await page.goto("/capacity?tab=team")
+  const plan = page.getByRole("navigation", { name: "空间导航" })
+  await expect(plan.getByRole("link")).toHaveText(["团队负荷", "借调请求"])
+  await expect(page.getByRole("tablist")).toHaveCount(0)
+  const chart = page.getByRole("table", { name: "团队负荷，按部门、姓名排序" })
+  await expect(chart).toBeVisible()
+  await expect(
+    chart.getByRole("button", { name: "设置", exact: true }),
+  ).toHaveCount(0)
+  await chart
+    .getByRole("row")
+    .filter({ hasText: "合成员工" })
+    .getByRole("button", { name: /查看负荷明细$/ })
+    .first()
+    .click()
+  const readonlyDates = page.getByRole("dialog", {
+    name: "负荷明细 · 合成员工",
+  })
+  await expect(readonlyDates).toContainText("暂无请假或不可用日期。")
+  await expect(
+    readonlyDates.getByRole("button", { name: "添加请假日期", exact: true }),
+  ).toHaveCount(0)
+  await readonlyDates.press("Escape")
+  await open(tokens.get("E")!)
+  await expect(
+    page.getByRole("link", { name: "规划", exact: true }),
+  ).toBeVisible()
+  await expect(
+    page.getByRole("link", { name: "团队负荷", exact: true }),
+  ).toHaveCount(0)
+  await page.goto("/capacity?tab=team")
+  await expect(
+    page.getByRole("link", { name: "我的负荷", exact: true }),
+  ).toHaveAttribute("aria-current", "page")
+  await expect(
+    page.getByText("暂无（未关联 Jira）", { exact: true }),
+  ).toBeVisible()
+  const overview = page.getByRole("region", { name: "每周投入" })
+  await expect(
+    overview
+      .getByRole("button", { name: /查看负荷明细$/ })
+      .getByText("未确认", { exact: true }),
+  ).toHaveCount(8)
+  await expect(overview).toContainText("部门经理尚未确认该周负荷基线")
+  await expect(overview.locator("dl")).toHaveCount(0)
+  await expect(
+    overview.getByText("已占用 / 可用", { exact: true }),
+  ).toHaveCount(0)
+  await expect(overview.getByTitle(/^有余量/)).toHaveCount(0)
+  await overview
+    .getByRole("button", { name: /查看负荷明细$/ })
+    .first()
+    .click()
+  const initialDetails = page.getByRole("dialog", { name: /^负荷明细/ })
+  await expect(initialDetails.locator("dl dd")).toHaveText([
+    "未确认",
+    "0%",
+    "100%",
+    "无",
+  ])
+  await initialDetails.press("Escape")
+  for (const [percent, reason] of [
+    ["85", "合成项目占用"],
+    ["60", "合成申请待核对"],
+  ]) {
+    await page.getByRole("button", { name: "申请调整", exact: true }).click()
+    const adjustment = page.getByRole("dialog", { name: "申请调整" })
+    await expect(adjustment).toBeVisible()
+    const start = await page.getByLabel("开始周", { exact: true }).inputValue()
+    const end = new Date(`${start}T00:00:00Z`)
+    end.setUTCDate(end.getUTCDate() + 7)
+    await page
+      .getByLabel("结束周", { exact: true })
+      .fill(end.toISOString().slice(0, 10))
+    await page.getByLabel("申请负荷（%）").fill(percent)
+    await page.getByLabel("申请原因").fill(reason)
+    await page.getByRole("button", { name: "提交申请", exact: true }).click()
+    await expect(adjustment).toBeHidden()
+    await expect(
+      page.getByRole("region", { name: "调整申请记录" }).getByRole("status"),
+    ).toContainText("当前有申请正在审批中")
+    await expect(
+      page
+        .getByRole("region", { name: "每周投入" })
+        .getByText("调整审批中", { exact: true }),
+    ).toHaveCount(2)
+    await open(tokens.get("M")!, "/capacity?tab=approvals")
+    await expect(
+      page.getByRole("link", { name: "规划", exact: true }),
+    ).toBeVisible()
+    await page.reload()
+    await expect(
+      page.getByRole("link", { name: /^负荷与延期/ }),
+    ).toHaveAttribute("aria-current", "page")
+    const row = page.locator("summary").filter({ hasText: `申请 ${percent}%` })
+    await expect(row).toContainText(
+      `${start} 至 ${end.toISOString().slice(0, 10)}`,
+    )
+    await row.click()
+    const application = page.getByRole("article", { name: "员工的调整申请" })
+    if (percent === "85")
+      await application
+        .getByRole("button", { name: "同意", exact: true })
+        .click()
+    else {
+      await expect(
+        application.getByRole("button", { name: "退回", exact: true }),
+      ).toBeDisabled()
+      await application
+        .getByLabel("处理说明（退回必填）")
+        .fill("请补充项目范围")
+      await application
+        .getByRole("button", { name: "退回", exact: true })
+        .click()
+    }
+    await expect(application).toHaveCount(0)
+    await expect(row).toHaveCount(0)
+    await open(tokens.get("E")!)
+    await expect(
+      overview.getByTitle("基本满（已占用 85% / 可用 100%）", { exact: true }),
+    ).toHaveCount(2)
+  }
+  await expect(
+    page.getByText("处理说明：请补充项目范围", { exact: true }),
+  ).toBeVisible()
+  await page.goto("/inbox")
+  await page
+    .getByRole("link", { name: "查看详情", exact: true })
+    .first()
+    .click()
+  await expect(page).toHaveURL("/capacity")
+  await open(tokens.get("M")!, "/capacity?tab=team")
+  await expect(
+    page
+      .getByRole("row")
+      .filter({ hasText: "合成经理" })
+      .getByRole("button", { name: "设置", exact: true }),
+  ).toHaveCount(0)
+  await expect(
+    page.getByRole("row").filter({ hasText: "范围外员工" }),
+  ).toHaveCount(0)
+  await page
+    .getByRole("row")
+    .filter({ hasText: "合成员工" })
+    .getByRole("button", { name: "设置", exact: true })
+    .click()
+  await expect(page.getByRole("dialog")).toContainText("保存后通知本人")
+  await expect(page.getByLabel("调整说明（选填）")).toHaveCount(0)
+  const firstWeek = await page
+    .getByLabel("开始周", { exact: true })
+    .inputValue()
+  const nextWeek = new Date(`${firstWeek}T00:00:00Z`)
+  nextWeek.setUTCDate(nextWeek.getUTCDate() + 7)
+  await page
+    .getByLabel("结束周", { exact: true })
+    .fill(nextWeek.toISOString().slice(0, 10))
+  await page.getByLabel("其他工作占比（%）").fill("110")
+  await page.getByRole("button", { name: "确认设置", exact: true }).click()
+  const row = chart.getByRole("row").filter({ hasText: "合成员工" })
+  await expect(row).toContainText("110%")
+  await expect(row.getByText("110% / 100%", { exact: true })).toHaveCount(2)
+  await row
+    .getByRole("button", { name: /110% \/ 100%，超负荷，查看负荷明细/ })
+    .first()
+    .click()
+  const details = page.getByRole("dialog", { name: "负荷明细 · 合成员工" })
+  await expect(details).toContainText("平台外工作")
+  await expect(details).toContainText("110%")
+  await expect(
+    details.getByRole("button", { name: "设置周投入" }),
+  ).toBeVisible()
+  const nextCell = row
+    .getByRole("button", { name: /110% \/ 100%，超负荷，查看负荷明细/ })
+    .nth(1)
+  await details.getByRole("button", { name: "设置周投入" }).click()
+  await page.getByLabel("其他工作占比（%）").fill("30")
+  await nextCell.click()
+  await expect(details).toContainText(nextWeek.toISOString().slice(0, 10))
+  await expect(nextCell).toHaveAttribute("aria-pressed", "true")
+  await details.getByRole("button", { name: "设置周投入" }).click()
+  await expect(page.getByLabel("其他工作占比（%）")).toHaveValue("110")
+  const selfCell = chart
+    .getByRole("row")
+    .filter({ hasText: "合成经理" })
+    .getByRole("button", { name: /查看负荷明细/ })
+    .first()
+  await selfCell.click()
+  const selfDetails = page.getByRole("dialog", { name: "负荷明细 · 合成经理" })
+  await expect(selfDetails).toBeVisible()
+  await expect(
+    selfDetails.getByRole("button", { name: "设置周投入" }),
+  ).toHaveCount(0)
+  await selfDetails.press("Escape")
+  await expect(selfCell).toBeFocused()
+  await page.getByRole("combobox", { name: "部门筛选" }).click()
+  await expect(
+    page.getByRole("option", { name: "客户", exact: true }),
+  ).toHaveCount(0)
+  await page.getByRole("option", { name: "研发", exact: true }).click()
+  await page.screenshot({
+    path: test.info().outputPath("team.png"),
+    fullPage: true,
+  })
+  const managerHeaders = { Authorization: `Bearer ${tokens.get("M")}` }
+  const next = nextWeek.toISOString().slice(0, 10)
+  const thirdWeek = new Date(nextWeek)
+  thirdWeek.setUTCDate(thirdWeek.getUTCDate() + 7)
+  const third = thirdWeek.toISOString().slice(0, 10)
+  const change = {
+    items: [{ employee_id: employee.id, other_percent: 70 }],
+    start_week: next,
+    end_week: next,
+  }
+  expect(
+    (
+      await request.put(`${base}/capacity/weeks`, {
+        headers: managerHeaders,
+        data: change,
+      })
+    ).ok(),
+  ).toBeTruthy()
+  await page.reload()
+  await expect(row.getByText("70% / 100%", { exact: true })).toHaveCount(1)
+  await page.getByRole("button", { name: "下一期" }).click()
+  await expect(row.getByText("未确认", { exact: true })).toHaveCount(8)
+  const writes: unknown[] = []
+  page.on("request", (req) => {
+    if (
+      req.method() === "POST" &&
+      new URL(req.url()).pathname === `${base}/capacity/weeks/carry-over`
+    ) {
+      writes.push(req.postDataJSON())
+    }
+  })
+  const reuse = page.getByRole("button", { name: "沿用上次配置" })
+  const reusePreview = page.getByRole("dialog", { name: "沿用上次配置" })
+  await reuse.click()
+  await expect(reusePreview).toContainText("每次向后多填 1 周")
+  await expect(reusePreview).toContainText(third)
+  const people = reusePreview.getByRole("listitem")
+  await expect(people).toHaveCount(1)
+  await expect(people).toContainText("合成员工")
+  await expect(people).toContainText("70%")
+  await reusePreview.getByRole("button", { name: "取消" }).click()
+  await expect(reusePreview).toBeHidden()
+  await expect(reuse).toBeFocused()
+  expect(writes).toEqual([])
+  await reuse.click()
+  await reusePreview.getByRole("button", { name: "确认沿用" }).click()
+  await expect(reusePreview).toBeHidden()
+  expect(writes).toEqual([
+    {
+      items: [
+        {
+          employee_id: employee.id,
+          week_start: third,
+          baseline_week_start: next,
+          other_percent: 70,
+        },
+      ],
+    },
+  ])
+  await page.getByRole("button", { name: "回到本周" }).click()
+  await expect(row.getByText("110% / 100%", { exact: true })).toHaveCount(1)
+  await expect(row.getByText("70% / 100%", { exact: true })).toHaveCount(2)
+  await expect(row.getByText("未确认", { exact: true })).toHaveCount(5)
+  const week = (
+    await (
+      await request.get(`${base}/capacity/workloads/me`, {
+        headers: managerHeaders,
+      })
+    ).json()
+  ).weeks[0].week_start
+  const weekly = (employeeId: string, percent: number) => ({
+    items: [{ employee_id: employeeId, other_percent: percent }],
+    start_week: week,
+    end_week: week,
+  })
+  expect(
+    (
+      await request.put(`${base}/capacity/weeks`, {
+        headers: managerHeaders,
+        data: weekly(outside.id, 50),
+      })
+    ).status(),
+  ).toBe(404)
+  expect(
+    (
+      await request.put(`${base}/capacity/weeks`, {
+        headers,
+        data: weekly(employee.id, 50),
+      })
+    ).status(),
+  ).toBe(403)
+  expect(
+    (
+      await request.get(`${base}/capacity/workloads`, {
+        headers: { Authorization: `Bearer ${tokens.get("E")}` },
+      })
+    ).status(),
+  ).toBe(403)
+  const adjusted = await request.put(`${base}/capacity/weeks`, {
+    headers: managerHeaders,
+    data: weekly(employee.id, 50),
+  })
+  expect(adjusted.ok()).toBeTruthy()
+  await open(tokens.get("E")!)
+  await expect(
+    overview.getByTitle("有余量（已占用 50% / 可用 100%）", { exact: true }),
+  ).toHaveText("50% / 100%")
+  await expect(overview.locator("dl")).toHaveCount(0)
+  await overview
+    .getByRole("button", { name: /查看负荷明细$/ })
+    .first()
+    .click()
+  const mineDetails = page.getByRole("dialog", { name: /^负荷明细/ })
+  await expect(mineDetails.locator("dl dt")).toHaveText([
+    "平台外工作",
+    "平台内分配",
+    "可用上限",
+    "余量",
+    "请假",
+  ])
+  await expect(mineDetails.locator("dl dd")).toHaveText([
+    "50%",
+    "0%",
+    "100%",
+    "50%",
+    "无",
+  ])
+  await mineDetails.press("Escape")
+  await expect(overview).toContainText("每个可用工作日计 20% 容量")
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.reload()
+  await expect(
+    page.locator("main p").filter({ hasText: /^我的负荷$/ }),
+  ).toBeInViewport({ ratio: 1 })
+  const crumb = page
+    .getByRole("navigation", { name: "面包屑" })
+    .getByText("我的负荷", { exact: true })
+  await expect(crumb).toBeVisible()
+  await expect
+    .poll(() =>
+      crumb.evaluate((element) => element.scrollWidth <= element.clientWidth),
+    )
+    .toBeTruthy()
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBeTruthy()
+  await overview
+    .getByRole("button", { name: /查看负荷明细$/ })
+    .first()
+    .click()
+  const mobileDetails = page.getByRole("dialog", { name: /^负荷明细/ })
+  const unavailable = mobileDetails.getByRole("region", {
+    name: "本周请假日期",
+  })
+  await unavailable.getByLabel("开始日期", { exact: true }).fill(week)
+  const secondDay = new Date(`${week}T00:00:00Z`)
+  secondDay.setUTCDate(secondDay.getUTCDate() + 1)
+  await unavailable
+    .getByLabel("结束日期", { exact: true })
+    .fill(secondDay.toISOString().slice(0, 10))
+  await unavailable
+    .getByRole("button", { name: "提交请假", exact: true })
+    .click()
+  await expect(
+    unavailable.getByRole("button", { name: "删除", exact: true }),
+  ).toHaveCount(1)
+  const legend = overview.getByRole("list", { name: "甘特图图例" })
+  await expect(legend.getByRole("listitem")).toHaveText([
+    "未确认",
+    "有余量",
+    "基本满",
+    "超负荷（>100% 或超可用）",
+    "已分配任务",
+    "跨部门借调",
+    "方案暂留",
+    "请假 / 不可用",
+    "其他工作",
+    "预测基线",
+  ])
+  const holidayBadge = overview.getByTitle("基本满（已占用 50% / 可用 60%）", {
+    exact: true,
+  })
+  await expect(holidayBadge).toHaveText("50% / 60%")
+  await expect(holidayBadge).toHaveClass(/\bbg-amber-500\/10\b/)
+  await expect(mobileDetails.locator("dl dd")).toHaveText([
+    "50%",
+    "0%",
+    "60%",
+    "10%",
+    "已请假",
+  ])
+  await expect(overview).toContainText("请假")
+  await page.screenshot({
+    path: test.info().outputPath("mine-mobile.png"),
+    fullPage: true,
+  })
+  for (const viewport of [
+    { width: 390, height: 844 },
+    { width: 1440, height: 900 },
+  ]) {
+    await page.setViewportSize(viewport)
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBeTruthy()
+  }
+  await unavailable.getByRole("button", { name: "删除", exact: true }).click()
+  await expect(
+    unavailable.getByRole("button", { name: "删除", exact: true }),
+  ).toHaveCount(0)
+  await mobileDetails.press("Escape")
+  await open(tokens.get("M")!, "/capacity?tab=team")
+  await page
+    .getByRole("row")
+    .filter({ hasText: "合成员工" })
+    .getByRole("button", { name: /查看负荷明细$/ })
+    .first()
+    .click()
+  const dates = page.getByRole("dialog", { name: "负荷明细 · 合成员工" })
+  const friday = new Date(`${week}T00:00:00Z`)
+  friday.setUTCDate(friday.getUTCDate() + 4)
+  await dates
+    .getByLabel("结束日期", { exact: true })
+    .fill(friday.toISOString().slice(0, 10))
+  await dates.getByRole("button", { name: "添加请假日期", exact: true }).click()
+  await expect(dates.getByRole("status")).toContainText(
+    "以下周次已有任务超出可用负荷，请与部门经理协调",
+  )
+  await dates.getByRole("button", { name: "删除", exact: true }).click()
+  await expect(
+    dates.getByRole("button", { name: "删除", exact: true }),
+  ).toHaveCount(0)
+  await open(admin.access_token, "/admin/rules?tab=capacity")
+  await page.getByRole("checkbox", { name: "启用规划与负荷功能" }).uncheck()
+  await page.getByRole("button", { name: "保存设置", exact: true }).click()
+  await expect(page.getByRole("status")).toContainText("负荷与需求规则已保存")
+  for (const token of [
+    admin.access_token,
+    tokens.get("M")!,
+    tokens.get("E")!,
+  ]) {
+    await open(token)
+    await expect(
+      page.getByText("规划与负荷功能未开启，如需使用请联系企业管理员。", {
+        exact: true,
+      }),
+    ).toBeVisible()
+    await expect(
+      page.getByRole("link", { name: "规划", exact: true }),
+    ).toHaveCount(0)
+  }
+  await open(tokens.get("M")!, "/find-people")
+  await expect(page).toHaveURL("/assistant?mode=personal&find=true")
+  await expect(
+    page.getByRole("form", { name: "按能力找人（只读筛选）" }),
+  ).toBeVisible()
+  await page.goto(`/employees/${employee.id}`)
+  await expect(
+    page.getByRole("heading", { name: "合成员工", exact: true }),
+  ).toBeVisible()
+})

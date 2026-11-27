@@ -1,0 +1,512 @@
+from uuid import UUID
+
+from fastapi import HTTPException
+from sqlmodel import Session, col, select
+
+from app.authz.principal import Principal
+from app.authz.review import review_access
+from app.domains.audit.service import record_audit
+from app.domains.base import utc_now
+from app.domains.capability.models import CapabilityDefinition
+from app.domains.capability.schemas import CapabilityPublic
+from app.domains.capability.service import get_schema, level_exists, list_capabilities
+from app.domains.change_request.employee import (
+    EmployeeRecordNotFound,
+    InvalidItems,
+    RequestConflict,
+)
+from app.domains.change_request.models import (
+    ChangeItem,
+    ChangeItemEvidence,
+    ItemDecision,
+    ProfileChangeRequest,
+    RequestOrigin,
+    RequestStatus,
+    ReviewDecision,
+    ReviewVia,
+    SubmissionVia,
+)
+from app.domains.change_request.schemas import ChangeItemPublic
+from app.domains.change_request.service import transition
+from app.domains.evidence.models import EvidenceKind, Visibility
+from app.domains.evidence.service import (
+    EvidenceNotFound,
+    append_evidence,
+    evidence_access,
+    evidence_details,
+)
+from app.domains.inbox.models import InboxKind
+from app.domains.inbox.service import notify
+from app.domains.org.models import Department, Employee, Organization
+from app.domains.profile.models import EvidenceRelation
+from app.domains.profile.schemas import ClaimEvidencePublic, ClaimPublic
+from app.domains.review.publish import (
+    current_claims,
+    effective_evidence,
+    item_evidence,
+    jira_only,
+    publish,
+)
+from app.domains.review.routing import can_review, review_assignment, reviewers_for
+from app.domains.review.schemas import (
+    DecisionInput,
+    DecisionResult,
+    PendingReviews,
+    ReviewDetail,
+    ReviewItem,
+    ReviewSummary,
+)
+from app.i18n import bilingual, tr, use_locale
+from app.models import User
+
+
+class ReviewForbidden(HTTPException):
+    def __init__(self) -> None:
+        super().__init__(403, "你不是当前审批人，或不能审批本人的请求")
+
+
+def list_pending_reviews(principal: Principal, session: Session) -> PendingReviews:
+    data = []
+    for request, subject, department in session.exec(
+        select(ProfileChangeRequest, Employee, Department)
+        .join(
+            Employee,
+            (col(Employee.id) == ProfileChangeRequest.subject_employee_id)
+            & (col(Employee.org_id) == ProfileChangeRequest.org_id),
+        )
+        .outerjoin(
+            Department,
+            (col(Department.id) == Employee.department_id)
+            & (col(Department.org_id) == Employee.org_id),
+        )
+        .where(
+            ProfileChangeRequest.org_id == principal.org_id,
+            ProfileChangeRequest.status == RequestStatus.PENDING_REVIEW,
+        )
+        .order_by(col(ProfileChangeRequest.submitted_at), col(ProfileChangeRequest.id))
+    ).all():
+        reviewers = reviewers_for(session, principal.org_id, subject.id)
+        allowed = can_review(session, principal, subject.id) is not None
+        if not allowed and not (principal.is_org_admin and not reviewers):
+            continue
+        count = len(
+            session.exec(
+                select(ChangeItem.id).where(
+                    ChangeItem.org_id == principal.org_id,
+                    ChangeItem.request_id == request.id,
+                    col(ChangeItem.decision).is_(None),
+                )
+            ).all()
+        )
+        data.append(
+            ReviewSummary(
+                id=request.id,
+                subject_employee_id=subject.id,
+                employee_name=subject.display_name,
+                department_name=department.name if department else None,
+                submitted_at=request.submitted_at,
+                submitted_via=request.submitted_via,
+                client_name=request.client_name,
+                owner_reviewed=request.submitted_via != SubmissionVia.ADMIN_HANDOVER,
+                item_count=count,
+                can_decide=allowed,
+                unavailable_reason=None if reviewers else tr("没有可用的审批人"),
+            )
+        )
+    return PendingReviews(data=data, count=len(data))
+
+
+def _request(
+    principal: Principal, session: Session, request_id: UUID, *, lock: bool = False
+) -> ProfileChangeRequest:
+    query = select(ProfileChangeRequest).where(
+        ProfileChangeRequest.org_id == principal.org_id,
+        ProfileChangeRequest.id == request_id,
+    )
+    if lock:
+        query = query.with_for_update()
+    request = session.exec(
+        query.execution_options(populate_existing=True)
+    ).one_or_none()
+    if request is None:
+        raise EmployeeRecordNotFound()
+    if principal.employee_id == request.subject_employee_id:
+        raise ReviewForbidden()
+    return request
+
+
+def get_review(
+    principal: Principal, session: Session, request_id: UUID
+) -> ReviewDetail:
+    request = _request(principal, session, request_id)
+    if not review_access(session, principal, request):
+        raise ReviewForbidden()
+    schema = get_schema(session, principal.org_id)
+    definitions = {
+        c.key: c for c in list_capabilities(session, principal.org_id, schema.id)
+    }
+    current = current_claims(session, principal.org_id, request.subject_employee_id)
+    rows = session.exec(
+        select(ChangeItem, CapabilityDefinition)
+        .join(
+            CapabilityDefinition,
+            (col(CapabilityDefinition.id) == ChangeItem.capability_definition_id)
+            & (col(CapabilityDefinition.org_id) == ChangeItem.org_id),
+        )
+        .where(
+            ChangeItem.org_id == principal.org_id,
+            ChangeItem.request_id == request.id,
+            col(ChangeItem.decision).is_(None),
+        )
+        .order_by(col(ChangeItem.position))
+    ).all()
+    evidence_by_item = {row.id: item_evidence(session, row) for row, _ in rows}
+    evidence_ids = {id_ for evidence in evidence_by_item.values() for id_ in evidence}
+    access = evidence_access(
+        session,
+        principal,
+        evidence_ids,
+        review_permissions={request.id: True},
+    )
+    if evidence_ids != set(access):
+        raise EvidenceNotFound()
+    review_scope = {
+        (ev_id, capability.key)
+        for row, capability in rows
+        for ev_id in evidence_by_item[row.id]
+    }
+    details = evidence_details(
+        session,
+        principal,
+        access,
+        review_subject_id=request.subject_employee_id,
+        review_scope=review_scope or None,
+    )
+    result = []
+    for row, capability in rows:
+        evidence = evidence_by_item[row.id]
+        item = ChangeItemPublic.model_validate(
+            row, update={"capability": CapabilityPublic.model_validate(capability)}
+        )
+        item.evidence = [
+            ClaimEvidencePublic(
+                evidence_id=id_,
+                kind=details[id_].kind,
+                status=details[id_].status,
+                title=details[id_].title,
+                occurred_at=details[id_].occurred_at,
+                relation=evidence[id_][1],
+                redacted=details[id_].redacted,
+            )
+            for id_ in sorted(evidence)
+            if id_ in details
+        ]
+        before = current.get(item.capability.key)
+        definition = definitions.get(item.capability.key)
+        reason = (
+            tr("能力编码不在当前启用的词典中")
+            if definition is None
+            else tr("目标判断已被其他请求取代")
+            if (before.id if before else None) != item.target_claim_id
+            else tr("等级已调整，请拒绝并让员工重新选择")
+            if item.after
+            and not level_exists(definition.level_rubric, item.after.level)
+            else None
+        )
+        result.append(
+            ReviewItem(
+                before=ClaimPublic.model_validate(before) if before else None,
+                after=item,
+                evidence=[details[id_] for id_ in evidence if id_ in details],
+                jira_only=jira_only(effective_evidence(session, row, before, evidence)),
+                approvable=reason is None,
+                approval_blocked_reason=reason,
+            )
+        )
+    represented_user_id = can_review(session, principal, request.subject_employee_id)
+    manager = (
+        session.get(User, represented_user_id)
+        if represented_user_id and represented_user_id != principal.user_id
+        else None
+    )
+    return ReviewDetail(
+        id=request.id,
+        revision=request.revision,
+        items=result,
+        submitted_via=request.submitted_via,
+        client_name=request.client_name,
+        owner_reviewed=request.submitted_via != SubmissionVia.ADMIN_HANDOVER,
+        acting_for_name=(manager.full_name or manager.username) if manager else None,
+        assignment_reason=(
+            None
+            if manager
+            else review_assignment(
+                session, principal.org_id, request.subject_employee_id
+            )[1]
+        ),
+    )
+
+
+def validate_decisions(preview: ReviewDetail, decisions: list[DecisionInput]) -> None:
+    inputs = {d.item_id: d for d in decisions}
+    if len(inputs) != len(decisions) or set(inputs) != {
+        i.after.id for i in preview.items
+    }:
+        raise InvalidItems(
+            [{"index": 0, "message": tr("必须逐项决定所有尚未决定的改动，不能重复")}]
+        )
+    for index, review_item in enumerate(preview.items):
+        value = inputs[review_item.after.id]
+        if value.decision != ItemDecision.APPROVED and not (value.reason or "").strip():
+            raise InvalidItems([{"index": index, "message": tr("拒绝必须填写原因")}])
+        if value.decision == ItemDecision.APPROVED and not review_item.approvable:
+            raise InvalidItems(
+                [
+                    {
+                        "index": index,
+                        "message": review_item.approval_blocked_reason
+                        or tr("不能批准"),
+                    }
+                ]
+            )
+
+
+def decide(
+    principal: Principal,
+    session: Session,
+    request_id: UUID,
+    revision: int,
+    decisions: list[DecisionInput],
+    comment: str | None = None,
+    via: ReviewVia = ReviewVia.WEB,
+    client_name: str | None = None,
+) -> DecisionResult:
+    # Dictionary saves take the exclusive organization lock before remapping requests.
+    session.exec(
+        select(Organization)
+        .where(Organization.id == principal.org_id)
+        .with_for_update(read=True)
+    ).one()
+    request = _request(principal, session, request_id, lock=True)
+    reviewer = can_review(session, principal, request.subject_employee_id)
+    if (
+        via
+        not in (
+            ReviewVia.WEB,
+            ReviewVia.MCP,
+            ReviewVia.IM,
+            ReviewVia.BOT,
+        )
+        or reviewer is None
+    ):
+        raise ReviewForbidden()
+    if request.revision != revision or request.status != RequestStatus.PENDING_REVIEW:
+        raise RequestConflict("内容已更新，请刷新查看")
+    subject_emp = session.exec(
+        select(Employee)
+        .where(
+            Employee.org_id == principal.org_id,
+            Employee.id == request.subject_employee_id,
+        )
+        .with_for_update()
+    ).one()
+    preview = get_review(principal, session, request.id)
+    rows = session.exec(
+        select(ChangeItem)
+        .where(
+            ChangeItem.org_id == principal.org_id, ChangeItem.request_id == request.id
+        )
+        .order_by(col(ChangeItem.position))
+    ).all()
+    inputs = {d.item_id: d for d in decisions}
+    validate_decisions(preview, decisions)
+    decision = ReviewDecision(
+        org_id=principal.org_id,
+        request_id=request.id,
+        reviewer_user_id=principal.user_id,
+        acting_for_user_id=reviewer if reviewer != principal.user_id else None,
+        via=via,
+        client_name=client_name,
+        comment=comment,
+        request_revision=revision,
+    )
+    session.add(decision)
+    session.flush()
+    pending_rows = [i for i in rows if i.decision is None]
+    for item in pending_rows:
+        value = inputs[item.id]
+        item.decision, item.decision_reason, item.review_decision_id = (
+            value.decision,
+            value.reason,
+            decision.id,
+        )
+    approved = [i for i in pending_rows if i.decision == ItemDecision.APPROVED]
+    rejected = [i for i in rows if i.decision == ItemDecision.REJECTED]
+    version = publish(session, request, approved, decision) if approved else None
+    draft = None
+    if rejected:
+        draft = ProfileChangeRequest(
+            org_id=request.org_id,
+            subject_employee_id=request.subject_employee_id,
+            parent_request_id=request.id,
+            origin=RequestOrigin.CORRECTION,
+            status=RequestStatus.DRAFT,
+            author=request.author,
+            base_version_id=version.id if version else request.base_version_id,
+        )
+        session.add(draft)
+        session.flush()
+        for position, original in enumerate(rejected):
+            item = ChangeItem(
+                **original.model_dump(
+                    exclude={
+                        "id",
+                        "created_at",
+                        "request_id",
+                        "position",
+                        "decision",
+                        "review_decision_id",
+                        "published_claim_id",
+                    }
+                ),
+                request_id=draft.id,
+                position=position,
+            )
+            session.add(item)
+            session.flush()
+            session.add_all(
+                [
+                    ChangeItemEvidence(
+                        org_id=request.org_id,
+                        item_id=item.id,
+                        evidence_id=id_,
+                        relation=relation,
+                    )
+                    for id_, (_, relation) in item_evidence(session, original).items()
+                ]
+            )
+        rej_zh, rej_en = bilingual(
+            "部分改动已被拒绝，请修改草稿后重新提交"
+            if approved
+            else "改动已被拒绝，请修改草稿后重新提交"
+        )
+        notify(
+            session,
+            draft,
+            InboxKind.STATUS_CHANGED,
+            rej_zh,
+            message_en=rej_en,
+        )
+    status = (
+        RequestStatus.APPROVED
+        if any(i.decision == ItemDecision.APPROVED for i in rows)
+        else RequestStatus.REJECTED
+    )
+    transition(request, status)
+    request.decided_at = utc_now()
+    reason_items = [i for i in pending_rows if (i.decision_reason or "").strip()]
+    if (comment or "").strip() or reason_items:
+        evidence, _ = append_evidence(
+            session,
+            org_id=request.org_id,
+            subject_employee_id=request.subject_employee_id,
+            kind=EvidenceKind.MANAGER_REVIEW,
+            source="manager_review",
+            source_ref=str(decision.id),
+            title="画像审批意见",
+            content={
+                "comment": comment,
+                "reasons": [
+                    {"item_id": str(i.id), "reason": i.decision_reason}
+                    for i in reason_items
+                ],
+            },
+            visibility=Visibility.RESTRICTED,
+            provenance={
+                "request_id": str(request.id),
+                "decision_id": str(decision.id),
+                "via": via.value,
+            },
+        )
+        session.add_all(
+            [
+                ChangeItemEvidence(
+                    org_id=request.org_id,
+                    item_id=i.id,
+                    evidence_id=evidence.id,
+                    relation=EvidenceRelation.CONTEXT,
+                )
+                for i in (pending_rows if (comment or "").strip() else reason_items)
+            ]
+        )
+    record_audit(
+        session,
+        org_id=request.org_id,
+        actor_type=principal.actor_type,
+        actor_id=str(principal.user_id),
+        action="change_request.decided",
+        target_type="profile_change_request",
+        target_id=str(request.id),
+        details={
+            "decision_id": str(decision.id),
+            "via": via.value,
+            "client_name": client_name,
+            "acting_for_user_id": str(decision.acting_for_user_id)
+            if decision.acting_for_user_id
+            else None,
+            **(
+                {"delegation_mode": "org_hierarchy"}
+                if decision.acting_for_user_id
+                else {}
+            ),
+        },
+    )
+    dec_zh, dec_en = bilingual("画像请求已完成审批，请查看逐项结果")
+    notify(session, request, InboxKind.DECIDED, dec_zh, message_en=dec_en)
+    if decision.acting_for_user_id is not None:
+        assert principal.user_id is not None
+        actor_emp_name = (
+            session.exec(
+                select(Employee.display_name).where(
+                    Employee.org_id == request.org_id,
+                    Employee.id == principal.employee_id,
+                )
+            ).one_or_none()
+            if principal.employee_id is not None
+            else None
+        )
+        actor_user = session.get(User, principal.user_id)
+        actor_name = actor_emp_name or (
+            (actor_user.full_name or actor_user.username)
+            if actor_user is not None
+            else None
+        )
+        with use_locale("zh-CN"):
+            del_zh = tr(
+                "员工 {subject} 的画像请求已由上级 {actor} 代为审批",
+                subject=subject_emp.display_name,
+                actor=actor_name or tr("上级审批人"),
+            )
+        with use_locale("en"):
+            del_en = tr(
+                "员工 {subject} 的画像请求已由上级 {actor} 代为审批",
+                subject=subject_emp.display_name,
+                actor=actor_name or tr("上级审批人"),
+            )
+        notify(
+            session,
+            request,
+            InboxKind.DECIDED,
+            del_zh,
+            recipient_user_id=decision.acting_for_user_id,
+            message_en=del_en,
+        )
+    session.flush()
+    return DecisionResult(
+        request_id=request.id,
+        decision_id=decision.id,
+        status=request.status,
+        revision=request.revision,
+        published_version_id=version.id if version else None,
+        returned_request_id=draft.id if draft else None,
+    )

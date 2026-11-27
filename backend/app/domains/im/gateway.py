@@ -1,0 +1,513 @@
+import asyncio
+import json
+import logging
+import re
+from collections.abc import Callable, Generator
+from contextlib import contextmanager, suppress
+from datetime import datetime, timedelta
+from functools import partial
+from uuid import UUID
+
+import anyio
+from fastapi import HTTPException
+from pydantic import ValidationError
+from sqlalchemy import Engine
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import SQLAlchemyError
+from sqlmodel import Session, col, select, update
+
+from app.authz.principal import Principal
+from app.core.secrets import SecretUnavailable, decrypt_secret
+from app.domains.base import utc_now
+from app.domains.bot import delivery
+from app.domains.bot.attachments import AttachmentError
+from app.domains.im import actions, binding
+from app.domains.im.adapters.base import Adapter, Event, ImError
+from app.domains.im.adapters.feishu import Feishu
+from app.domains.im.adapters.telegram import Telegram
+from app.domains.im.adapters.wecom import Wecom
+from app.domains.im.models import ImEvent, ImSetting
+from app.domains.im.notifications import send_pending
+from app.domains.im.schemas import Platform
+from app.i18n import Locale, current_locale, tr, use_locale
+from app.worker.monitor import dispatch_worker_alerts
+
+ADAPTERS: dict[Platform, type[Adapter]] = {
+    "telegram": Telegram,
+    "wecom": Wecom,
+    "feishu": Feishu,
+}
+logger = logging.getLogger(__name__)
+
+
+class Gateway:
+    def __init__(self, engine: Engine) -> None:
+        self.engine = engine
+        self.tasks: dict[tuple[UUID, Platform], tuple[str, asyncio.Task[None]]] = {}
+        self.identities: dict[tuple[Platform, str], UUID] = {}
+        self.adapters: dict[tuple[UUID, Platform], tuple[str, Adapter]] = {}
+
+    def enabled(self, org_id: UUID, platform: Platform, credentials: str) -> bool:
+        with Session(self.engine) as db:
+            row = db.get(ImSetting, (org_id, platform))
+            return bool(row and row.enabled and row.credentials == credentials)
+
+    def dispatch(
+        self,
+        event: Event,
+        identity: str,
+        credentials: str,
+        on_started: Callable[[], None] | None = None,
+    ) -> str | actions.Reply | None:
+        if not self.enabled(event.org_id, event.platform, credentials):
+            return None
+        with Session(self.engine) as db:
+            added = (
+                db.connection()
+                .execute(
+                    insert(ImEvent)
+                    .values(
+                        org_id=event.org_id,
+                        platform=event.platform,
+                        event_id=f"{identity}:{event.event_id}",
+                    )
+                    .on_conflict_do_nothing()
+                    .returning(col(ImEvent.event_id))
+                )
+                .first()
+            )
+            # shortcut: Receipt is at most once; revisit if crash-safe reply delivery is required.
+            db.commit()
+            if (
+                added is None
+                or (
+                    event.text is None
+                    and not event.callback_id
+                    and not event.attachment
+                    and not event.attachment_error
+                )
+                or not event.external_chat_id
+            ):
+                return None
+            if not event.private:
+                return "请私聊我"
+            text = event.text or ""
+            match = re.fullmatch(r"绑定\s+([0-9]{6})", text.strip())
+            locale: Locale = "zh-CN"
+            try:
+                if text.strip().startswith("绑定") and not event.callback_id:
+                    ok = binding.bind(
+                        db,
+                        event.org_id,
+                        event.platform,
+                        event.external_user_id,
+                        event.external_chat_id,
+                        identity,
+                        match[1] if match else "",
+                    )
+                    if not ok:
+                        return binding.GUIDE
+                    bound_principal = binding.current_binding(
+                        db,
+                        event.org_id,
+                        event.platform,
+                        event.external_user_id,
+                        event.external_chat_id,
+                        identity,
+                    )
+                    with use_locale(binding.user_locale(db, bound_principal)):
+                        return tr("绑定成功，请回网页查看或解绑。")
+                p = binding.current_binding(
+                    db,
+                    event.org_id,
+                    event.platform,
+                    event.external_user_id,
+                    event.external_chat_id,
+                    identity,
+                )
+                if p is None or p.employee_id is None:
+                    return event.attachment_error or binding.GUIDE
+                setting = db.get(ImSetting, (event.org_id, event.platform))
+                if not setting or setting.bot_identity != identity:
+                    return event.attachment_error or binding.GUIDE
+                locale = binding.user_locale(db, p)
+                with use_locale(locale):
+                    if event.attachment_error:
+                        return tr(event.attachment_error)
+                    if event.callback_id:
+                        return actions.callback(db, p, event, identity)
+                    return actions.text(db, p, event, identity, on_started=on_started)
+            except AttachmentError as error:
+                db.rollback()
+                with use_locale(locale):
+                    return tr(str(error.detail))
+            except HTTPException as error:
+                db.rollback()
+                logger.warning(
+                    "IM dispatch failed: org=%s platform=%s callback=%s status=%s",
+                    event.org_id,
+                    event.platform,
+                    bool(event.callback_id),
+                    error.status_code,
+                )
+                with use_locale(locale):
+                    return (
+                        tr("操作未完成，请重新查看后再试。")
+                        if event.callback_id
+                        else binding.GUIDE
+                    )
+            except ValidationError:
+                db.rollback()
+                with use_locale(locale):
+                    return tr("请输入不超过一万字的文本。")
+
+    def email_binding(
+        self,
+        event: Event,
+        identity: str,
+        credentials: str = "",
+        email: str | None = None,
+    ) -> bool:
+        with Session(self.engine) as db:
+            return (
+                binding.bind_email(db, event, identity, credentials, email)
+                if email is not None
+                else binding.wants_email(db, event, identity)
+            )
+
+    def bound_locale(self, event: Event, identity: str) -> Locale:
+        with Session(self.engine) as db:
+            principal = binding.current_binding(
+                db,
+                event.org_id,
+                event.platform,
+                event.external_user_id,
+                event.external_chat_id,
+                identity,
+            )
+            return binding.user_locale(db, principal)
+
+    @contextmanager
+    def bound_session(
+        self, event: Event, identity: str
+    ) -> Generator[tuple[Session, Principal | None]]:
+        with Session(self.engine) as db:
+            principal = binding.current_binding(
+                db,
+                event.org_id,
+                event.platform,
+                event.external_user_id,
+                event.external_chat_id,
+                identity,
+            )
+            # Release this read before queueing the separately guarded message transaction.
+            db.rollback()
+            yield db, principal
+
+    def connection_state(
+        self,
+        org_id: UUID,
+        platform: Platform,
+        credentials: str,
+        checked_at: datetime | None,
+        identity: str | None = None,
+    ) -> bool:
+        with Session(self.engine) as db:
+            statement = update(ImSetting).where(
+                col(ImSetting.org_id) == org_id,
+                col(ImSetting.platform) == platform,
+                col(ImSetting.credentials) == credentials,
+            )
+            if identity is not None:
+                statement = statement.where(col(ImSetting.enabled).is_(True)).values(
+                    bot_identity=identity
+                )
+            if platform == "wecom":
+                statement = statement.values(connection_checked_at=checked_at)
+            changed = db.exec(statement.returning(col(ImSetting.org_id))).first()
+            db.commit()
+            return changed is not None
+
+    def wanted(self) -> dict[tuple[UUID, Platform], str]:
+        with Session(self.engine) as db:
+            rows = db.exec(select(ImSetting).where(ImSetting.enabled == True)).all()  # noqa: E712
+            return {
+                (r.org_id, r.platform): r.credentials
+                for r in rows
+                if r.platform in ADAPTERS and r.credentials
+            }
+
+    def worker_alerts(self) -> None:
+        with Session(self.engine) as db:
+            dispatch_worker_alerts(db, utc_now())
+
+    async def handle(
+        self, event: Event, identity: str, credentials: str, adapter: Adapter
+    ) -> None:
+        if event.callback_id:
+            await adapter.answer_callback(event.callback_id)
+        if (
+            isinstance(adapter, (Feishu, Wecom))
+            and event.private
+            and (event.text is not None or event.attachment is not None)
+            and not (event.text or "").strip().startswith("绑定")
+            and await delivery._run(
+                partial(self.enabled, event.org_id, event.platform, credentials)
+            )
+        ):
+            wanted = await delivery._run(partial(self.email_binding, event, identity))
+            if wanted:
+                email = await adapter.enterprise_email(event.external_user_id)
+                bound = bool(email) and await delivery._run(
+                    partial(self.email_binding, event, identity, credentials, email)
+                )
+                if bound:
+                    locale = await delivery._run(
+                        partial(self.bound_locale, event, identity)
+                    )
+                    with use_locale(locale):
+                        bound_notice = tr(
+                            "已自动绑定你的企业账号（可在网页「设置 → 连接与集成」解绑），请直接发消息即可。"
+                        )
+                    await adapter.send_text(event.external_chat_id, bound_notice)
+                    return
+        loop = asyncio.get_running_loop()
+        reminder: asyncio.Task[None] | None = None
+        finished = False
+
+        async def remind(locale: Locale) -> None:
+            await asyncio.sleep(30)
+            try:
+                if await delivery._run(
+                    partial(self.enabled, event.org_id, event.platform, credentials)
+                ):
+                    with use_locale(locale):
+                        notice = tr("上一条消息还在处理中，请稍候。")
+                    await adapter.send_text(event.external_chat_id, notice)
+            except Exception:
+                logger.warning("IM processing reminder failed")
+
+        async def acknowledge(locale: Locale) -> None:
+            nonlocal reminder
+            if finished:
+                return
+            enabled = await delivery._run(
+                partial(self.enabled, event.org_id, event.platform, credentials)
+            )
+            if finished or not enabled:
+                return
+            reminder = asyncio.create_task(remind(locale))
+            with use_locale(locale):
+                ack_text = tr("收到，正在处理…")
+            await adapter.send_text(event.external_chat_id, ack_text)
+
+        def on_started() -> None:
+            asyncio.run_coroutine_threadsafe(
+                acknowledge(current_locale.get()), loop
+            ).result()
+
+        try:
+            # Model turns are synchronous; keep polling tasks and setting refresh responsive.
+            work = asyncio.create_task(
+                asyncio.to_thread(
+                    self.dispatch, event, identity, credentials, on_started
+                )
+            )
+            try:
+                reply = await asyncio.shield(work)
+            except asyncio.CancelledError:
+                finished = True
+                # Dispatch can be waiting for acknowledge on this loop; join without cancelling it.
+                while not work.done():
+                    try:
+                        await asyncio.shield(work)
+                    except asyncio.CancelledError:
+                        continue
+                work.result()
+                raise
+            if not reply or not await delivery._run(
+                partial(self.enabled, event.org_id, event.platform, credentials)
+            ):
+                return
+            if isinstance(reply, str):
+                await adapter.send_text(event.external_chat_id, reply)
+                return
+            async with delivery.in_thread(self.bound_session(event, identity)) as (
+                db,
+                p,
+            ):
+                if p is None:
+                    return
+                with use_locale(reply.locale):
+                    if reply.clear_buttons and event.message_id:
+                        try:
+                            await adapter.clear_buttons(
+                                event.external_chat_id, event.message_id
+                            )
+                        except ImError as error:
+                            if error.code != "recipient_unavailable":
+                                raise
+                    await actions.deliver(db, p, event, identity, reply, adapter)
+        finally:
+            finished = True
+            if reminder:
+                reminder.cancel()
+                with suppress(asyncio.CancelledError):
+                    await reminder
+
+    async def poll(self, adapter: Adapter, identity: str, credentials: str) -> None:
+        slots = asyncio.Semaphore(4)
+        pending: dict[str, asyncio.Task[None]] = {}
+        heartbeat_written_at = utc_now()
+
+        async def handle(event: Event, previous: asyncio.Task[None] | None) -> None:
+            if previous:
+                await previous
+            async with slots:
+                try:
+                    await self.handle(event, identity, credentials, adapter)
+                except ImError as error:
+                    if error.code != "recipient_unavailable":
+                        raise
+
+        def finished(user: str, task: asyncio.Task[None]) -> None:
+            if pending.get(user) is task:
+                del pending[user]
+
+        try:
+            async with asyncio.TaskGroup() as group:
+                while True:
+                    async for event in adapter.poll():
+                        user = event.external_user_id
+                        task = group.create_task(handle(event, pending.get(user)))
+                        pending[user] = task
+                        task.add_done_callback(partial(finished, user))
+                    if isinstance(
+                        adapter, Wecom
+                    ) and utc_now() - heartbeat_written_at >= timedelta(minutes=1):
+                        if await delivery._run(
+                            partial(
+                                self.connection_state,
+                                adapter.org_id,
+                                "wecom",
+                                credentials,
+                                adapter.checked_at,
+                            )
+                        ):
+                            heartbeat_written_at = utc_now()
+        except ExceptionGroup as errors:
+            # TaskGroup joins all children before preserving the existing reconnect path.
+            raise errors.exceptions[0] from None
+
+    async def connect(self, org_id: UUID, platform: Platform, credentials: str) -> None:
+        delay = 1
+        identity = None
+        adapter = None
+        try:
+            while True:
+                try:
+                    adapter = ADAPTERS[platform](
+                        org_id, json.loads(decrypt_secret(credentials))
+                    )
+                    if isinstance(adapter, Wecom):
+                        identity = adapter.credentials["bot_id"]
+                        if self.identities.get((platform, identity), org_id) != org_id:
+                            raise ImError("bot_already_used")
+                        self.identities[platform, identity] = org_id
+                    identity = await adapter.test_connection()
+                    key = platform, identity
+                    owner = self.identities.get(key)
+                    if owner is not None and owner != org_id:
+                        raise ImError("bot_already_used")
+                    self.identities[key] = org_id
+                    if not await delivery._run(
+                        partial(
+                            self.connection_state,
+                            org_id,
+                            platform,
+                            credentials,
+                            adapter.checked_at if isinstance(adapter, Wecom) else None,
+                            identity,
+                        )
+                    ):
+                        return
+                    self.adapters[org_id, platform] = credentials, adapter
+                    delay = 1
+                    await self.poll(adapter, identity, credentials)
+                except (
+                    ImError,
+                    SecretUnavailable,
+                    ValueError,
+                    KeyError,
+                    SQLAlchemyError,
+                ) as error:
+                    code = (
+                        error.code
+                        if isinstance(error, ImError)
+                        else (
+                            "storage"
+                            if isinstance(error, SQLAlchemyError)
+                            else "invalid_credentials"
+                        )
+                    )
+                    logger.warning(
+                        "IM connection stopped: org=%s platform=%s code=%s",
+                        org_id,
+                        platform,
+                        code,
+                    )
+                    if not isinstance(error, SQLAlchemyError) and (
+                        not isinstance(error, ImError) or not error.retryable
+                    ):
+                        return
+                finally:
+                    self.adapters.pop((org_id, platform), None)
+                    if adapter:
+                        await adapter.close()
+                        adapter = None
+                    if platform == "wecom":
+                        await delivery._run(
+                            partial(
+                                self.connection_state,
+                                org_id,
+                                platform,
+                                credentials,
+                                None,
+                            ),
+                            anyio.CapacityLimiter(1),
+                        )
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 60)
+        finally:
+            if identity and self.identities.get((platform, identity)) == org_id:
+                del self.identities[platform, identity]
+
+    async def refresh(self) -> None:
+        wanted = await delivery._run(self.wanted)
+        for key, (credentials, task) in list(self.tasks.items()):
+            if wanted.get(key) != credentials:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                del self.tasks[key]
+        for (org_id, platform), credentials in wanted.items():
+            # Failed credentials stay stopped until settings actually change.
+            if (org_id, platform) not in self.tasks:
+                task = asyncio.create_task(self.connect(org_id, platform, credentials))
+                self.tasks[org_id, platform] = credentials, task
+
+    async def run(self) -> None:
+        try:
+            while True:
+                await self.refresh()
+                try:
+                    await delivery._run(self.worker_alerts)
+                    await send_pending(self.engine, self.adapters)
+                except SQLAlchemyError:
+                    logger.warning("IM notification delivery stopped: code=storage")
+                await asyncio.sleep(10)
+        finally:
+            for _, task in self.tasks.values():
+                task.cancel()
+            await asyncio.gather(
+                *(t for _, t in self.tasks.values()), return_exceptions=True
+            )

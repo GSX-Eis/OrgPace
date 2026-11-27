@@ -1,0 +1,243 @@
+"""File previews stay in encrypted UI messages; the model receives summaries."""
+
+import json
+from base64 import b64decode, b64encode
+from typing import TYPE_CHECKING, Literal
+from uuid import UUID
+
+from fastapi import UploadFile
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, SecretStr
+from sqlmodel import Session
+
+from app.authz.principal import Principal
+from app.core.secrets import encrypt_secret
+from app.domains.admin_assistant import store
+from app.domains.admin_assistant.models import AdminAssistantSession
+from app.domains.bot import store as messages
+from app.domains.org.roster import service as roster
+from app.domains.org.roster.schemas import RosterImportPreview
+from app.domains.org.timezone import read_timezone
+from app.domains.source.import_records import import_work_records, preview_work_records
+from app.domains.work.records import COLUMNS
+from app.i18n import tr
+
+if TYPE_CHECKING:
+    from app.domains.admin_assistant.registry import AdminFunction, Area, Handler
+    from app.domains.admin_assistant.schemas import AdminTurnResponse
+
+FileKind = Literal["work_csv"]
+
+
+class FileError(BaseModel):
+    location: str
+    message: str
+
+
+class FileSummary(BaseModel):
+    counts: dict[str, int]
+    errors: list[FileError] = Field(default_factory=list)
+    warnings: list[FileError] = Field(default_factory=list)
+    skipped: list[FileError] = Field(default_factory=list)
+
+
+class FileArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    filename: str = Field(max_length=200)
+    content: SecretStr
+
+
+def apply_work(
+    db: Session, p: Principal, args: FileArgs, *, commit: bool = True
+) -> BaseModel:
+    return import_work_records(
+        db,
+        p,
+        b64decode(args.content.get_secret_value()),
+        args.filename,
+        commit=commit,
+    )
+
+
+def register_files(functions: dict[str, AdminFunction]) -> None:
+    from app.domains.admin_assistant.registry import AdminFunction
+
+    entries: list[tuple[str, str, Area, Handler, str, str]] = [
+        (
+            "import_work_records",
+            "导入已上传的工作记录，不能撤销",
+            "data_ai",
+            apply_work,
+            "/admin/data-ai?tab=sources",
+            "/sources/csv/imports",
+        ),
+    ]
+    for name, title, area, handler, page, endpoint in entries:
+        functions[name] = AdminFunction(
+            name,
+            area,
+            "change",
+            "normal",
+            title,
+            FileArgs,
+            handler,
+            page,
+            (("POST", endpoint),),
+            file_field="content",
+            undoable=False,
+        )
+
+
+def summary(preview: RosterImportPreview) -> dict[str, JsonValue]:
+    return bounded_summary(
+        {
+            "counts": dict[str, JsonValue](preview.summary),
+            "error_count": sum(i.severity == "error" for i in preview.issues),
+            "errors": [
+                {"row_number": i.row_number, "message": i.message[:200]}
+                for i in [i for i in preview.issues if i.severity == "error"][:20]
+            ],
+        }
+    )
+
+
+def bounded_summary(data: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    # Bound serialized text too: escaped cell contents can be much larger than 200 characters.
+    for key in ("errors", "warnings"):
+        issues = data.get(key)
+        if isinstance(issues, list):
+            data[key] = [
+                {k: v[:200] if isinstance(v, str) else v for k, v in i.items()}
+                for i in issues[:20]
+                if isinstance(i, dict)
+            ]
+    while len(json.dumps(data, ensure_ascii=False)) > 7800:
+        for key in ("warnings", "errors"):
+            issues = data.get(key)
+            if isinstance(issues, list) and issues:
+                issues.pop()
+                break
+        else:
+            return {"counts": {}, "error": tr("摘要过长，请在预览卡中查看")}
+    return data
+
+
+def model_context(
+    db: Session, session: AdminAssistantSession
+) -> list[dict[str, JsonValue]]:
+    for message in reversed(messages.messages_for(db, session, limit=20)):
+        if message.role != "assistant" or not isinstance(message.payload, dict):
+            continue
+        cards = message.payload.get("messages")
+        if not isinstance(cards, list):
+            continue
+        for card in cards:
+            if isinstance(card, dict) and card.get("type") == "file_preview":
+                if card.get("kind") == "roster":
+                    data = summary(RosterImportPreview.model_validate(card["preview"]))
+                else:
+                    preview = FileSummary.model_validate(card["preview"])
+                    data = bounded_summary(
+                        {
+                            **preview.model_dump(mode="json", exclude={"skipped"}),
+                            "error_count": preview.counts.get(
+                                "错误", len(preview.errors)
+                            ),
+                            "warning_count": preview.counts.get(
+                                "警告", len(preview.warnings)
+                            ),
+                        }
+                    )
+                return [{"type": "file_preview", "preview": data}]
+    return []
+
+
+def upload(
+    db: Session,
+    p: Principal,
+    session_id: UUID,
+    kind: FileKind,
+    file: UploadFile,
+) -> AdminTurnResponse:
+    limit_mb = 5
+    content = file.file.read(limit_mb * 1024 * 1024 + 1)
+    if len(content) > limit_mb * 1024 * 1024:
+        raise roster.RosterError(
+            413, tr("文件超过 {limit_mb} MB，请拆分后再上传", limit_mb=limit_mb)
+        )
+    return _upload_other(db, p, session_id, kind, content, file.filename or "")
+
+
+def _upload_other(
+    db: Session,
+    p: Principal,
+    session_id: UUID,
+    kind: FileKind,
+    content: bytes,
+    filename: str,
+) -> AdminTurnResponse:
+    from app.domains.admin_assistant import change_set
+    from app.domains.admin_assistant.schemas import (
+        AdminTurnResponse,
+        ChangeSetCard,
+        FilePreviewCard,
+        ProposeChanges,
+    )
+
+    preview = FileSummary(counts={})
+    filename = filename.replace("\\", "/").rsplit("/", 1)[-1][:200]
+    args: dict[str, JsonValue] = {"filename": filename}
+    function = "import_work_records"
+    parsed = preview_work_records(
+        content, filename, timezone=read_timezone(db, p.org_id).timezone
+    )
+    preview.counts = {
+        "记录条数": len(parsed.rows),
+        "涉及人数": len(
+            {
+                (r.source, person.account)
+                for r in parsed.rows
+                for person in [r.actor, *r.participants]
+            }
+        ),
+    }
+    preview.counts["警告"] = sum(i.level == "warning" for i in parsed.issues)
+    for level, target in (("error", preview.errors), ("warning", preview.warnings)):
+        target.extend(
+            FileError(
+                location=(tr("第 {row} 行 ", row=i.row_number) if i.row_number else "")
+                + COLUMNS.get(i.column or "", i.column or "")[:200],
+                message=i.message[:200],
+            )
+            for i in parsed.issues
+            if i.level == level
+        )
+    preview.warnings = preview.warnings[:20]
+    if preview.errors:
+        preview.counts["错误"] = len(preview.errors)
+        preview.errors = [
+            FileError(location=e.location[:200], message=e.message[:200])
+            for e in preview.errors[:20]
+        ]
+    response = AdminTurnResponse(messages=[FilePreviewCard(kind=kind, preview=preview)])
+    if not preview.errors:
+        row = change_set.propose(
+            db,
+            p,
+            session_id,
+            ProposeChanges.model_validate(
+                {"items": [{"function": function, "args": args}]}
+            ),
+        )
+        row.secrets = encrypt_secret(
+            json.dumps({"content": b64encode(content).decode("ascii")})
+        )
+        db.add(row)
+        response.messages.append(ChangeSetCard(change_set=change_set.public(row)))
+    messages.append_message(
+        db,
+        store.get_session(db, p, session_id),
+        "assistant",
+        response.model_dump(mode="json"),
+    )
+    db.commit()
+    return response

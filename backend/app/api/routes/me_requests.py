@@ -1,0 +1,230 @@
+from typing import Annotated, Literal
+from uuid import UUID
+
+from fastapi import APIRouter, Query
+
+from app.api.deps import SessionDep
+from app.authz.deps import OrgPrincipalDep
+from app.domains.capability.schemas import CapabilitiesPublic
+from app.domains.change_request import employee
+from app.domains.change_request.schemas import (
+    ChangeRequestPublic,
+    ChangeRequestsPublic,
+    CreateDraftInput,
+    DraftInput,
+    RequestPreview,
+    SubmitInput,
+)
+from app.domains.evidence.models import EvidenceKind
+from app.domains.evidence.schemas import EvidenceList
+from app.domains.inbox import service as inbox
+from app.domains.inbox.models import InboxKind
+from app.domains.inbox.schemas import (
+    AnswerInput,
+    InboxDetail,
+    InboxList,
+    InboxPublic,
+    InboxReadAllInput,
+    InboxReadAllResult,
+    QuestionPublic,
+    QuestionsList,
+)
+from app.domains.inbox.service import mark_read, my_inbox, read_inbox_detail
+from app.domains.profile.schemas import ProfileView
+from app.domains.review.routing import DirectReport, direct_reports
+from app.domains.source.identities import list_identities
+from app.domains.source.schemas import ExternalIdentitiesPublic
+
+router = APIRouter(prefix="/orgs/{org_id}/me", tags=["employee_requests"])
+
+
+@router.get("/direct-reports")
+def read_my_direct_reports(
+    principal: OrgPrincipalDep, session: SessionDep
+) -> list[DirectReport]:
+    return direct_reports(session, principal)
+
+
+@router.get("/external-identities")
+def read_my_external_identities(
+    principal: OrgPrincipalDep,
+    session: SessionDep,
+    skip: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> ExternalIdentitiesPublic:
+    return list_identities(
+        session,
+        principal.org_id,
+        status="linked",
+        employee_id=employee.employee_id(principal),
+        source=None,
+        q=None,
+        skip=skip,
+        limit=limit,
+    )
+
+
+@router.get("/questions")
+def read_questions(
+    principal: OrgPrincipalDep,
+    session: SessionDep,
+    skip: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> QuestionsList:
+    return inbox.get_pending_questions(principal, session, skip, limit)
+
+
+@router.get("/questions/{question_id}")
+def read_question(
+    principal: OrgPrincipalDep, session: SessionDep, question_id: UUID
+) -> QuestionPublic:
+    return inbox.read_question(principal, session, question_id)
+
+
+@router.post("/questions/{question_id}/answer")
+def answer_question(
+    principal: OrgPrincipalDep,
+    session: SessionDep,
+    question_id: UUID,
+    body: AnswerInput,
+) -> QuestionPublic:
+    result = inbox.answer_question(principal, session, question_id, body.answer)
+    session.commit()
+    return result
+
+
+@router.get("/profile")
+def read_my_profile(principal: OrgPrincipalDep, session: SessionDep) -> ProfileView:
+    return employee.my_profile(principal, session)
+
+
+@router.get("/evidence")
+def read_my_evidence(
+    principal: OrgPrincipalDep,
+    session: SessionDep,
+    kind: EvidenceKind | None = None,
+    include_inactive: bool = False,
+    skip: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> EvidenceList:
+    return employee.my_evidence(principal, session, kind, include_inactive, skip, limit)
+
+
+@router.get("/requests")
+def read_my_requests(
+    principal: OrgPrincipalDep,
+    session: SessionDep,
+    status: Literal["open", "all"] = "open",
+) -> ChangeRequestsPublic:
+    return employee.my_requests(principal, session, status)
+
+
+@router.get("/capabilities")
+def read_my_capabilities(
+    principal: OrgPrincipalDep, session: SessionDep
+) -> CapabilitiesPublic:
+    return employee.capability_dictionary(principal, session)
+
+
+@router.post("/requests", status_code=201)
+def create_draft(
+    principal: OrgPrincipalDep, session: SessionDep, body: CreateDraftInput
+) -> ChangeRequestPublic:
+    result = employee.save_draft(
+        principal,
+        session,
+        None,
+        body.items,
+        "web",
+        withdrawn_request_id=body.withdrawn_request_id,
+    )
+    session.commit()
+    return result
+
+
+@router.put("/requests/{request_id}/items")
+def update_items(
+    principal: OrgPrincipalDep, session: SessionDep, request_id: UUID, body: DraftInput
+) -> ChangeRequestPublic:
+    result = employee.save_draft(principal, session, request_id, body.items, "web")
+    session.commit()
+    return result
+
+
+@router.get("/requests/{request_id}/preview")
+def preview_request(
+    principal: OrgPrincipalDep, session: SessionDep, request_id: UUID
+) -> RequestPreview:
+    return employee.preview(principal, session, request_id)
+
+
+@router.post("/requests/{request_id}/submit")
+def submit_request(
+    principal: OrgPrincipalDep, session: SessionDep, request_id: UUID, body: SubmitInput
+) -> ChangeRequestPublic:
+    result = employee.submit(
+        principal,
+        session,
+        request_id,
+        body.revision,
+        "web",
+        base_revision=body.base_revision,
+        policy_version=body.policy_version,
+    )
+    session.commit()
+    return result
+
+
+@router.post("/requests/{request_id}/withdraw")
+def withdraw_request(
+    principal: OrgPrincipalDep, session: SessionDep, request_id: UUID
+) -> ChangeRequestPublic:
+    result = employee.withdraw(principal, session, request_id)
+    session.commit()
+    return result
+
+
+@router.get("/inbox")
+def read_inbox(
+    principal: OrgPrincipalDep,
+    session: SessionDep,
+    skip: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    pending_only: bool = False,
+    unread_only: bool = False,
+    kind: InboxKind | None = None,
+) -> InboxList:
+    return my_inbox(
+        principal,
+        session,
+        skip,
+        limit,
+        pending_only=pending_only,
+        unread_only=unread_only,
+        kind=kind,
+    )
+
+
+@router.post("/inbox/read-all")
+def read_all_inbox(
+    principal: OrgPrincipalDep, session: SessionDep, body: InboxReadAllInput
+) -> InboxReadAllResult:
+    result = inbox.mark_all_read(principal, session, body)
+    session.commit()
+    return result
+
+
+@router.get("/inbox/{inbox_id}")
+def read_inbox_item_detail(
+    principal: OrgPrincipalDep, session: SessionDep, inbox_id: UUID
+) -> InboxDetail:
+    return read_inbox_detail(principal, session, inbox_id)
+
+
+@router.post("/inbox/{inbox_id}/read")
+def read_inbox_item(
+    principal: OrgPrincipalDep, session: SessionDep, inbox_id: UUID
+) -> InboxPublic:
+    result = mark_read(principal, session, inbox_id)
+    session.commit()
+    return result

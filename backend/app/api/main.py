@@ -1,0 +1,104 @@
+from fastapi import APIRouter
+
+from app.api.routes import (
+    access_tokens,
+    accounts,
+    admin_assistant,
+    admin_overview,
+    appeals,
+    approval_policy,
+    audit,
+    bot,
+    bot_settings,
+    capabilities,
+    capability_templates,
+    capacity,
+    capacity_tracking,
+    change_requests,
+    drafting_settings,
+    employees,
+    evidence,
+    external_identities,
+    im_bindings,
+    im_settings,
+    initial_profiles,
+    login,
+    me,
+    me_requests,
+    model_setting,
+    oauth,
+    orgs,
+    people_search,
+    planning,
+    private,
+    profile_import,
+    profiles,
+    review_delegations,
+    reviews,
+    roles,
+    roster,
+    setup,
+    setup_steps,
+    sources,
+    users,
+    utils,
+)
+from app.core.config import settings
+
+api_router = APIRouter()
+api_router.include_router(capacity.router)
+api_router.include_router(capacity_tracking.router)
+api_router.include_router(planning.router)
+api_router.include_router(people_search.router)
+api_router.include_router(admin_assistant.router)
+api_router.include_router(admin_overview.router)
+api_router.include_router(review_delegations.router)
+api_router.include_router(appeals.router)
+api_router.include_router(approval_policy.router)
+api_router.include_router(im_bindings.router)
+api_router.include_router(im_settings.router)
+api_router.include_router(bot.router)
+api_router.include_router(access_tokens.router)
+api_router.include_router(oauth.router)
+api_router.include_router(bot_settings.router)
+api_router.include_router(login.router)
+api_router.include_router(admin_assistant.change_router)
+api_router.include_router(users.router)
+api_router.include_router(utils.router)
+api_router.include_router(me.router)
+api_router.include_router(me_requests.router)
+api_router.include_router(model_setting.router)
+api_router.include_router(sources.router)
+api_router.include_router(sources.sync_router)
+api_router.include_router(sources.work_records_router)
+api_router.include_router(external_identities.router)
+api_router.include_router(orgs.router)
+api_router.include_router(setup_steps.router)
+api_router.include_router(drafting_settings.router)
+api_router.include_router(employees.router)
+api_router.include_router(capabilities.router)
+api_router.include_router(capability_templates.router)
+api_router.include_router(profiles.router)
+api_router.include_router(reviews.router)
+api_router.include_router(profile_import.router)
+api_router.include_router(change_requests.router)
+api_router.include_router(evidence.router)
+api_router.include_router(initial_profiles.router)
+api_router.include_router(accounts.router)
+api_router.include_router(audit.router)
+api_router.include_router(roles.router)
+api_router.include_router(roster.router)
+api_router.include_router(setup.router)
+
+
+if settings.FASTAPI_ENV == "development":
+    api_router.include_router(private.router)
+
+
+def include_playwright_fixtures(router: APIRouter) -> None:
+    if settings.FASTAPI_ENV == "development" and settings.PLAYWRIGHT_FIXTURES_ENABLED:
+        router.include_router(appeals.playwright_router)
+        router.include_router(capacity.playwright_router)
+
+
+include_playwright_fixtures(api_router)

@@ -1,0 +1,88 @@
+services:
+  db:
+    ports:
+      - "5432:5432"
+
+  adminer:
+    image: adminer
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      ADMINER_DESIGN: pepa-linha-dark
+    ports:
+      - "8080:8080"
+
+  backend:
+    environment:
+      PLAYWRIGHT_FIXTURES_ENABLED: ${PLAYWRIGHT_FIXTURES_ENABLED:-false}
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    # command: sleep infinity  # Infinite loop to keep container alive doing nothing
+    command:
+      - fastapi
+      - dev
+      - --host
+      - "0.0.0.0"
+    develop:
+      watch:
+        - path: ./backend
+          action: sync
+          target: /app/backend
+          ignore:
+            - .venv
+        - path: ./backend/pyproject.toml
+          action: rebuild
+        - path: ./frontend
+          action: rebuild
+          ignore:
+            - ./frontend/node_modules
+            - ./frontend/dist
+            - ./frontend/blob-report
+            - ./frontend/test-results
+    # TODO: remove once coverage is done locally
+    volumes:
+      - ./backend/htmlcov:/app/backend/htmlcov
+
+  mock-jira:
+    image: ${COMPOSE_PROJECT_NAME:-employee-profile}-backend:latest
+    pull_policy: never
+    command: ["uvicorn", "app.connectors.jira.mock:app", "--host", "0.0.0.0", "--port", "8080"]
+    environment:
+      MOCK_JIRA_EMAIL: ${MOCK_JIRA_EMAIL:-jira-admin@example.com}
+      MOCK_JIRA_API_TOKEN: ${MOCK_JIRA_API_TOKEN:-mock-cloud-token}
+      MOCK_JIRA_PAT: ${MOCK_JIRA_PAT:-mock-dc-pat}
+      MOCK_JIRA_USERNAME: ${MOCK_JIRA_USERNAME:-jira-admin}
+      MOCK_JIRA_PASSWORD: ${MOCK_JIRA_PASSWORD:-mock-password}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  playwright:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile.playwright
+      args:
+        - NODE_ENV=production
+    ipc: host
+    depends_on:
+      - backend
+      - worker
+      - mock-jira
+    environment:
+      - FIRST_SUPERUSER=${FIRST_SUPERUSER:?Variable not set}
+      - FIRST_SUPERUSER_PASSWORD=${FIRST_SUPERUSER_PASSWORD:?Variable not set}
+      - DEMO_USER_PASSWORD=${DEMO_USER_PASSWORD:?Variable not set}
+      - PLAYWRIGHT_BASE_URL=http://backend:8000
+      - VITE_API_URL=http://backend:8000
+      # For the reports when run locally
+      - PLAYWRIGHT_HTML_HOST=0.0.0.0
+      - CI=${CI:-}
+    volumes:
+      - ./frontend/blob-report:/app/frontend/blob-report
+      - ./frontend/test-results:/app/frontend/test-results
+    ports:
+      - 9323:9323

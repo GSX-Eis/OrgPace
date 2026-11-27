@@ -1,0 +1,307 @@
+"""Material-derived personnel changes reuse complete-roster validation and application."""
+
+from datetime import date
+from typing import Annotated, Literal
+from uuid import UUID
+
+from pydantic import BaseModel, Field, RootModel
+from sqlmodel import Session, col, select
+
+from app.authz.principal import Principal
+from app.domains.account.service import require_admin
+from app.domains.admin_assistant.materials import Material, validate_attachments
+from app.domains.change_request.schemas import ToolInput
+from app.domains.org.employee_fields import FIELD_LABELS
+from app.domains.org.models import Employee, EmploymentStatus, Organization
+from app.domains.org.roster import service
+from app.domains.org.roster.rehire import previous_manager
+from app.domains.org.roster.schemas import (
+    HEADERS,
+    ApplyImport,
+    ParsedRoster,
+    RosterIssue,
+    RosterRow,
+)
+from app.domains.org.roster.single import PersonnelInput, current_roster
+from app.i18n import tr
+
+
+class Offboard(PersonnelInput):
+    action: Literal["offboard"]
+    employee_code: str = Field(min_length=1, max_length=255)
+
+
+class RosterFields(PersonnelInput):
+    employee_code: str = Field(min_length=1, max_length=255)
+    display_name: str | None = Field(default=None, min_length=1, max_length=255)
+    department: str | None = Field(default=None, min_length=1, max_length=1000)
+    email: str | None = Field(default=None, min_length=1, max_length=320)
+    title: str | None = Field(default=None, max_length=255)
+    manager_code: str | None = Field(default=None, max_length=255)
+    job_family: str | None = Field(default=None, max_length=50)
+    work_location: str | None = Field(default=None, max_length=50)
+    hire_date: date | None = None
+
+
+class Update(RosterFields):
+    action: Literal["update"]
+
+
+class Onboard(RosterFields):
+    action: Literal["onboard"]
+    display_name: str = Field(min_length=1, max_length=255)
+    department: str = Field(min_length=1, max_length=1000)
+    email: str = Field(min_length=1, max_length=320)
+
+
+class MaterialArgs(ToolInput):
+    materials: list[Material] = Field(min_length=1, max_length=20)
+    rows: list[
+        Annotated[Onboard | Update | Offboard, Field(discriminator="action")]
+    ] = Field(min_length=1, max_length=500)
+
+
+def prepare(db: Session, p: Principal, args: MaterialArgs) -> ParsedRoster:
+    roster = current_roster(db, p)
+    by_code = {r.employee_code.casefold(): r for r in roster.rows}
+    seen: set[str] = set()
+    departures: set[str] = set()
+    for change in args.rows:
+        code = change.employee_code.casefold()
+        row = by_code.get(code)
+        if code in seen or (
+            isinstance(change, Onboard) and row is not None and not row.inactive
+        ):
+            raise service.RosterError(
+                422, tr("工号重复：{code}", code=change.employee_code)
+            )
+        seen.add(code)
+        if isinstance(change, Onboard):
+            if row is None:
+                row = RosterRow(
+                    row_number=len(roster.rows) + 2,
+                    employee_code=change.employee_code,
+                    display_name=change.display_name,
+                    department_path=(),
+                    title=None,
+                    manager_code=None,
+                    email=change.email,
+                )
+                roster.rows.append(row)
+            row.inactive = False
+        elif row is None or row.inactive:
+            raise service.RosterError(404, "找不到该工号的在职员工")
+        if isinstance(change, Offboard):
+            departures.add(code)
+            continue
+        for field, label in FIELD_LABELS.items():
+            if field in change.model_fields_set and label not in roster.column_mapping:
+                raise service.RosterError(422, tr("「{label}」未开启", label=tr(label)))
+        values = change.model_dump(
+            exclude_unset=True, exclude={"action", "employee_code", "department"}
+        )
+        if any(values.get(f, "") is None for f in ("display_name", "email")):
+            raise service.RosterError(422, "姓名和邮箱不能为空")
+        for name, value in values.items():
+            setattr(row, name, value)
+        if "department" in change.model_fields_set:
+            row.department_path = tuple(
+                part.strip()
+                for part in (change.department or "").replace("／", "/").split("/")
+                if part.strip()
+            )
+    roster.rows = [
+        r for r in roster.rows if r.employee_code.casefold() not in departures
+    ]
+    for row in roster.rows:
+        if row.manager_code and row.manager_code.casefold() in departures:
+            row.manager_code = None
+    return roster
+
+
+def snapshot(db: Session, p: Principal, _args: MaterialArgs) -> BaseModel:
+    require_admin(p)
+    return RootModel(
+        {"roster_revision": db.get_one(Organization, p.org_id).roster_revision}
+    )
+
+
+def risk(args: MaterialArgs) -> Literal["normal", "high"]:
+    return (
+        "high"
+        if len(args.rows) >= 2 or any(isinstance(r, Offboard) for r in args.rows)
+        else "normal"
+    )
+
+
+def rehire_notices(
+    db: Session, p: Principal, roster: ParsedRoster
+) -> list[RosterIssue]:
+    inactive = {
+        e.employee_code.casefold(): e
+        for e in db.exec(
+            select(Employee).where(
+                Employee.org_id == p.org_id,
+                Employee.employment_status == EmploymentStatus.INACTIVE,
+                col(Employee.employee_code).is_not(None),
+            )
+        ).all()
+        if e.employee_code
+    }
+    notices = []
+    for row in roster.active().rows:
+        employee = inactive.get(row.employee_code.casefold())
+        if employee is None or row.manager_code:
+            continue
+        text = tr("{name}：直属上级未设置", name=row.display_name)
+        manager = previous_manager(db, p, employee.id, roster)
+        if manager and not manager.is_active:
+            text += tr("；原上级 {name} 已离职，请重新设置", name=manager.display_name)
+        elif manager and manager.can_restore:
+            text += tr(
+                "；原上级 {name} 仍在职，可让我恢复原上级", name=manager.display_name
+            )
+        else:
+            text += tr("，请重新设置")
+        notices.append(
+            RosterIssue(
+                severity="warning",
+                row_number=row.row_number,
+                column="上级工号",
+                message=text,
+            )
+        )
+    return notices
+
+
+def impact(db: Session, p: Principal, args: MaterialArgs) -> BaseModel:
+    roster = prepare(db, p, args)
+    preview = service.create_import(db, p, roster, "材料预览", persist=False)
+    field_labels = (
+        dict(
+            zip(
+                (
+                    "employee_code",
+                    "display_name",
+                    "department",
+                    "title",
+                    "manager",
+                    "email",
+                ),
+                HEADERS,
+                strict=True,
+            )
+        )
+        | FIELD_LABELS
+    )
+    changes = preview.changes
+    added = {c.employee_code for c in changes if c.kind == "added"}
+    reactivated = {c.employee_code for c in changes if c.kind == "reactivated"}
+    removed = {c.employee_code for c in changes if c.kind == "deactivated"}
+    adjusted = {c.employee_code for c in changes} - added - reactivated - removed
+    labels: dict[str, list[str]] = {}
+    for c in changes:
+        label = (
+            tr("新增")
+            if c.employee_code in added
+            else tr("恢复在职")
+            if c.employee_code in reactivated
+            else tr("离职")
+            if c.employee_code in removed
+            else tr("、").join(
+                tr(
+                    "{field}：{before} → {after}",
+                    field=tr(field_labels[f.field]),
+                    before=f.before or tr("空"),
+                    after=f.after or tr("空"),
+                )
+                for f in c.fields
+            )
+        )
+        labels.setdefault(
+            tr("{name}（{code}）", name=c.display_name, code=c.employee_code), []
+        ).append(label)
+    text = tr("新增 {count} 人", count=len(added))
+    if reactivated:
+        text += tr("、恢复在职 {count} 人", count=len(reactivated))
+    text += tr(
+        "、调整 {adjusted} 人、离职 {removed} 人",
+        adjusted=len(adjusted),
+        removed=len(removed),
+    )
+    text += tr("；") + tr("；").join(
+        tr("{name}：{parts}", name=name, parts=tr("；").join(parts))
+        for name, parts in list(labels.items())[:20]
+    )
+    if len(labels) > 20:
+        text += tr("；另外 {count} 人", count=len(labels) - 20)
+    departments = sorted(
+        {
+            row.department_path[:depth]
+            for row in roster.active().rows
+            for depth in range(1, len(row.department_path) + 1)
+        }
+    )
+    hierarchy = [path for path in departments if len(path) > 1]
+    if hierarchy:
+        text += tr("；部门层级：") + tr("；").join(
+            tr(
+                "{path} → 上级 {parent}",
+                path="/".join(path),
+                parent="/".join(path[:-1]),
+            )
+            for path in hierarchy[:20]
+        )
+        if len(hierarchy) > 20:
+            text += tr("；另外 {count} 个下级部门", count=len(hierarchy) - 20)
+    elif len(departments) > 1:
+        text += tr("；所有部门都会建在第一层，没有上下级")
+    text += "".join(
+        tr(
+            "；第 {row} 行 {column}：{message}",
+            row=i.row_number,
+            column=tr(i.column) if i.column else "",
+            message=tr(i.message),
+        )
+        for i in preview.issues
+    )
+    text += "".join(
+        tr("；{message}", message=i.message) for i in rehire_notices(db, p, roster)
+    )
+    return RootModel(
+        {"count": len(added | reactivated | adjusted | removed), "text": text}
+    )
+
+
+def apply(
+    db: Session, p: Principal, args: MaterialArgs, *, commit: bool = True
+) -> BaseModel:
+    context = db.info["audit_context"]
+    validate_attachments(db, p, args.materials, UUID(context["assistant_session_id"]))
+    roster = prepare(db, p, args)
+    notices = rehire_notices(db, p, roster)
+    record = service.create_import(
+        db,
+        p,
+        roster,
+        "、".join(m.label for m in args.materials),
+        commit=False,
+    )
+    db.info["audit_context"] = {
+        **context,
+        "material_names": [m.label for m in args.materials],
+    }
+    try:
+        result = service.apply_import(
+            db,
+            p,
+            record.id,
+            ApplyImport(
+                base_revision=record.base_revision, confirm_mass_deactivation=True
+            ),
+            commit=commit,
+        )
+        result.issues.extend(notices)
+        return result
+    finally:
+        db.info["audit_context"] = context

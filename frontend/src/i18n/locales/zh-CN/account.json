@@ -1,0 +1,31 @@
+{
+  "loginPageTitle": "登录 - 知程",
+  "loginTitle": "登录知程",
+  "loginSubtitle": "使用企业分配的邮箱与密码登录。",
+  "emailLabel": "邮箱",
+  "passwordLabel": "密码",
+  "loginButton": "登录",
+  "loginFailed": "登录失败",
+  "forgotPasswordHint": "忘记密码？请联系企业管理员重置",
+  "loggedOutNotice": "已退出登录。如使用公用电脑，请关闭浏览器。",
+  "notInitializedNotice": "系统尚未初始化，请使用部署时生成的初始化链接完成设置。",
+  "validation": {
+    "emailRequired": "请输入邮箱",
+    "passwordRequired": "请输入密码",
+    "passwordMin": "密码至少需要 8 个字符",
+    "passwordMax": "密码最多 128 个字符",
+    "confirmPasswordRequired": "请再次输入新密码",
+    "sameAsCurrent": "新密码不能与当前密码相同",
+    "sameAsEmail": "新密码不能与登录邮箱相同",
+    "mismatch": "两次输入的密码不一致"
+  },
+  "changePasswordPageTitle": "设置新密码 - 知程",
+  "changePasswordTitle": "设置新密码",
+  "changePasswordSubtitle": "首次登录，请将初始密码修改为个人密码。",
+  "changePasswordHint": "新密码须为 8–128 个字符，不能与当前密码或登录邮箱相同。",
+  "currentPasswordLabel": "当前密码",
+  "newPasswordLabel": "新密码",
+  "confirmPasswordLabel": "确认新密码",
+  "savePasswordButton": "保存密码",
+  "passwordUpdated": "密码修改成功"
+}

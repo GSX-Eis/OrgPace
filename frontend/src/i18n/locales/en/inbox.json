@@ -1,0 +1,128 @@
+{
+  "pageTitle": "Inbox - OrgPace",
+  "heading": "Inbox",
+  "kinds": {
+    "capacity": "Collaboration & Workload",
+    "profile_edited": "Profile updated",
+    "initial_review": "Initial profile confirmation",
+    "question": "Question",
+    "submitted": "Profile request submitted",
+    "status_changed": "Request status updated",
+    "admin_todos": "Admin to-dos",
+    "dictionary_changed": "Capability dictionary updated",
+    "review_requested": "Profile review requested",
+    "decided": "Profile review outcome"
+  },
+  "capacityLinks": {
+    "openPlans": "Open plans",
+    "openBorrows": "Open borrow requests",
+    "viewReviews": "View pending reviews",
+    "viewDetails": "View details"
+  },
+  "question": {
+    "answered": "Answered and saved as restricted self-report evidence",
+    "closed": "Question closed",
+    "reason": "Question reason: {{reason}}",
+    "quickRepliesAria": "Quick replies",
+    "quickReplies": {
+      "solo": "Accurate — I led and delivered this work independently",
+      "support": "I only supported the collaboration and was not the primary owner",
+      "later": "No additions right now; I will update it on my profile page later"
+    },
+    "answerLabel": "Your answer",
+    "restrictedHint": "Saved as restricted self-report evidence after submission.",
+    "submitting": "Saving...",
+    "submit": "Submit answer"
+  },
+  "requestStatus": {
+    "draft": "Draft",
+    "pending_owner": "Awaiting employee",
+    "pending_review": "Pending review",
+    "approved": "Approved",
+    "changes_requested": "Rejected",
+    "rejected": "Rejected",
+    "withdrawn": "Withdrawn"
+  },
+  "itemDecision": {
+    "approved": "Approved",
+    "rejected": "Rejected",
+    "pending": "Pending"
+  },
+  "capacityStatus": {
+    "approved": "Approved",
+    "returned": "Returned",
+    "pending": "Pending review"
+  },
+  "profileDetail": {
+    "noRecord": "No record",
+    "ungraded": "Ungraded",
+    "addedLevel": "New level: ",
+    "addedStatement": "New statement: ",
+    "beforeLabel": "Before",
+    "originalRecord": "Original",
+    "afterLabel": "→ After",
+    "retractPrefix": "Before: ",
+    "retractArrow": "→ Remove this claim",
+    "attachPrefix": "Existing claim: ",
+    "attachArrow": "→ Attach evidence only",
+    "managerReason": "Manager reason: ",
+    "reviewer": "Reviewer: {{name}}",
+    "time": "Time: {{time}}",
+    "decisionComment": "Review comment: "
+  },
+  "workloadDetail": {
+    "reviewer": "Reviewer: {{name}}",
+    "time": "Time: {{time}}",
+    "changeLabel": "Change: ",
+    "changeApproved": "Before {{before}} → After {{after}}",
+    "changeRequested": "Before {{before}} → Requested {{after}}",
+    "changeNew": "Requested {{after}}",
+    "weeksLabel": "Applicable weeks: ",
+    "approvedWeek": "Week of approval",
+    "reasonLabel": "Request reason: ",
+    "managerReason": "Manager reason: "
+  },
+  "extensionDetail": {
+    "reviewer": "Reviewer: {{name}}",
+    "time": "Time: {{time}}",
+    "capabilityLabel": "Capability: ",
+    "changeLabel": "Change: ",
+    "changeApproved": "Previous due {{before}} → New due {{after}}",
+    "changeRequested": "Previous due {{before}} → Requested {{after}}",
+    "reasonLabel": "Request reason: ",
+    "managerReason": "Manager reason: "
+  },
+  "approvalDetail": {
+    "summaryOnly": "Only the notification summary is visible under your current permissions",
+    "reviewAction": "View & review",
+    "viewDetails": "View details"
+  },
+  "toolbar": {
+    "markFilteredTitle": "Mark all unread messages matching current filters as read",
+    "markAllTitle": "Mark all unread messages in inbox as read",
+    "markFiltered": "Mark filtered as read",
+    "markAll": "Mark all as read",
+    "statusSummary": "{{unread}} unread · {{pending}} to-do"
+  },
+  "list": {
+    "ariaLabel": "Messages",
+    "viewLegend": "Inbox view",
+    "pendingTab": "To-do",
+    "allTab": "All",
+    "filterButton": "Filter",
+    "unreadOnly": "Unread only",
+    "byKind": "By message type",
+    "allKinds": "All types",
+    "empty": "No messages",
+    "unreadSr": "Unread",
+    "paginationAria": "Inbox pagination",
+    "prevPage": "Previous",
+    "nextPage": "Next",
+    "pageSummary": "Page {{page}} · {{count}} total"
+  },
+  "detailPane": {
+    "backToList": "Back to messages",
+    "ariaLabel": "Message details",
+    "markRead": "Mark as read"
+  }
+}

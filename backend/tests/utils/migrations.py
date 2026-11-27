@@ -1,0 +1,85 @@
+from collections.abc import Generator
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Literal
+
+import psycopg
+import pytest
+from alembic import command
+from alembic.config import Config
+from psycopg import sql
+from sqlalchemy import Engine, MetaData, Table, create_engine, inspect
+from sqlalchemy.engine import URL
+from sqlmodel import Session, SQLModel
+
+MIGRATION_TEMPLATE = pytest.StashKey[str]()
+
+
+@contextmanager
+def isolated_database(
+    url: URL, database: str, *, template: str | None = None
+) -> Generator[Engine]:
+    admin_url = url.set(drivername="postgresql", database="postgres")
+    with psycopg.connect(
+        admin_url.render_as_string(hide_password=False), autocommit=True
+    ) as admin:
+        statement = sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database))
+        if template is None:
+            admin.execute(statement)
+        else:
+            statement += sql.SQL(" TEMPLATE {}").format(sql.Identifier(template))
+            # CREATE DATABASE needs autocommit, so use a session lock and release it
+            # before handing the cloned database to the caller.
+            admin.execute(
+                "SELECT pg_advisory_lock(hashtextextended(%s, 0))", (template,)
+            )
+            try:
+                admin.execute(statement)
+            finally:
+                admin.execute(
+                    "SELECT pg_advisory_unlock(hashtextextended(%s, 0))", (template,)
+                )
+        isolated = create_engine(url.set(database=database))
+        try:
+            yield isolated
+        finally:
+            isolated.dispose()
+            admin.execute(
+                sql.SQL("DROP DATABASE {} WITH (FORCE)").format(
+                    sql.Identifier(database)
+                )
+            )
+
+
+def migrate(
+    engine: Engine, action: Literal["upgrade", "downgrade"], revision: str
+) -> None:
+    backend = Path(__file__).resolve().parents[2]
+    config = Config(str(backend / "alembic.ini"))
+    config.set_main_option("script_location", str(backend / "app/alembic"))
+    config.attributes["configure_logger"] = False
+    with engine.begin() as connection:
+        config.attributes["connection"] = connection
+        if action == "upgrade":
+            command.upgrade(config, revision)
+        else:
+            command.downgrade(config, revision)
+
+
+def insert_historical_rows(session: Session, *rows: SQLModel) -> None:
+    """Seed an older migration using only columns that existed at that revision."""
+    for row in rows:
+        table = Table(
+            inspect(type(row)).local_table.name,
+            MetaData(),
+            autoload_with=session.connection(),
+        )
+        session.execute(
+            table.insert().values(
+                {
+                    key: value
+                    for key, value in row.model_dump().items()
+                    if key in table.c
+                }
+            )
+        )

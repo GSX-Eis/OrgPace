@@ -1,0 +1,194 @@
+{
+  "appTitle": "OrgPace",
+  "orgFallback": "O",
+  "language": {
+    "label": "Interface language",
+    "zh": "中文",
+    "en": "EN"
+  },
+  "actions": {
+    "close": "Close",
+    "backHome": "Back to Home",
+    "retry": "Retry",
+    "copy": "Copy",
+    "save": "Save",
+    "cancel": "Cancel",
+    "previousPage": "Previous",
+    "nextPage": "Next",
+    "firstPage": "First page",
+    "lastPage": "Last page",
+    "morePages": "More pages"
+  },
+  "status": {
+    "loading": "Loading...",
+    "noData": "No data",
+    "copied": "Copied",
+    "copyFailed": "Copy failed, please try again",
+    "successToast": "Success",
+    "errorToast": "Error"
+  },
+  "theme": {
+    "label": "Appearance",
+    "toggle": "Toggle theme",
+    "light": "Light",
+    "dark": "Dark",
+    "system": "System"
+  },
+  "nav": {
+    "spaces": {
+      "collab": "Collab",
+      "org": "Org",
+      "plan": "Plan",
+      "settings": "Settings"
+    },
+    "groups": {
+      "membersAndOrg": "People & Org",
+      "capabilitiesAndRules": "Skills & Rules",
+      "personal": "Personal",
+      "orgAdmin": "Org Admin"
+    },
+    "items": {
+      "aiAssistant": "AI Assistant",
+      "inbox": "Inbox",
+      "reviews": "Reviews",
+      "myProfile": "My Profile",
+      "employees": "Employees",
+      "myTeam": "My Team",
+      "orgChart": "Org Chart",
+      "dictionary": "Capability Dictionary",
+      "approvalRules": "Approval Rules",
+      "reminders": "Reminders",
+      "capacityRules": "Capacity & Demand Rules",
+      "myWorkload": "My Workload",
+      "teamWorkload": "Team Workload",
+      "borrowRequests": "Borrow Requests",
+      "accountSecurity": "Account & Security",
+      "integrations": "Connections & Integrations",
+      "preferences": "Preferences & Delegation",
+      "sources": "Data Sources",
+      "workRecords": "Work Records",
+      "model": "Models",
+      "builtInBot": "Built-in Assistant",
+      "imChannels": "IM Channels",
+      "auditLogs": "Audit Logs"
+    },
+    "titles": {
+      "employeeDetail": "Employee Details",
+      "capacityAndWorkload": "Collaboration & Workload",
+      "findPeople": "Find People",
+      "oauthConsent": "App Authorization"
+    },
+    "aria": {
+      "openSpaceNav": "Open space navigation",
+      "spaceNav": "Space navigation",
+      "collapseSpaceNav": "Collapse space navigation",
+      "expandSpaceNav": "Expand space navigation",
+      "breadcrumb": "Breadcrumb",
+      "mainNav": "Main navigation",
+      "switchOrg": "Switch organization",
+      "organization": "Organization",
+      "userMenu": "User menu",
+      "navigation": "Navigation",
+      "mobileNavigation": "Mobile navigation",
+      "collapseSidebar": "Collapse navigation",
+      "expandSidebar": "Expand navigation",
+      "toggleSidebar": "Toggle navigation"
+    },
+    "userFallback": "User",
+    "logout": "Sign out",
+    "newConversation": "New conversation",
+    "recentConversations": "Recent conversations",
+    "noEmployeeOrAdmin": "Your account is not linked to an employee profile or admin role yet. Please contact your organization administrator.",
+    "orgState": {
+      "loading": "Loading organization details...",
+      "loadFailed": "Failed to load. Please try again.",
+      "noOrg": "Your account does not belong to any organization yet. Please contact your organization administrator."
+    }
+  },
+  "adminConversations": {
+    "ariaLabel": "Admin assistant conversations",
+    "loading": "Loading conversations...",
+    "retry": "Retry loading conversations",
+    "initialSetup": "Initial Setup",
+    "conversation": "Conversation",
+    "setupAriaLabel": "Initial Setup · {{count}} steps remaining",
+    "stepsRemaining": "{{count}} steps remaining",
+    "subtitleTurns": "Admin Assistant · {{count}} turns",
+    "empty": "No conversation history",
+    "retentionDays": "Retained for {{days}} days",
+    "ephemeralRetention": "Cleared automatically after 2 hours of inactivity"
+  },
+  "table": {
+    "rangeSummary": "Showing {{from}}–{{to}} of ",
+    "rangeSuffix": "",
+    "rowsPerPage": "Rows per page",
+    "pageLabel": "Page"
+  },
+  "errors": {
+    "network": "Unable to connect to the server. Please check your network.",
+    "validation": "Invalid input format. Please check and try again.",
+    "http400": "Invalid input. Please check and try again.",
+    "http401": "Session expired. Please sign in again.",
+    "http403": "You do not have permission to perform this action.",
+    "http404": "The requested content does not exist or you do not have access.",
+    "http409": "This item has been updated. Please refresh and try again.",
+    "http429": "Too many requests. Please try again later.",
+    "http500": "Service temporarily encountered an error. Please try again later.",
+    "http502": "Service temporarily unavailable. Please try again later.",
+    "http503": "Service temporarily unavailable. Please try again later.",
+    "fallback": "Operation failed. Please try again later."
+  },
+  "errorPage": {
+    "title": "Error - OrgPace",
+    "heading": "Error",
+    "subheading": "This page could not be displayed",
+    "description": "An error occurred while loading this page. Please refresh and try again."
+  },
+  "notFound": {
+    "title": "Page Not Found - OrgPace",
+    "heading": "Page not found",
+    "description": "This page does not exist or the link has expired."
+  },
+  "chat": {
+    "assistantTitleAdmin": "Admin Assistant",
+    "assistantTitlePersonal": "Work Assistant",
+    "projectDraft": "Project Draft",
+    "initialSetup": "Initial Setup",
+    "conversation": "Conversation",
+    "newConversation": "New conversation",
+    "assistantModeAria": "Assistant mode",
+    "modeAdmin": "Org Admin",
+    "modePersonal": "Personal & Team",
+    "attachmentAria": "Attachment: {{filename}}",
+    "attachmentCleaned": "Removed per retention policy",
+    "attachmentReading": "Loading...",
+    "attachmentDownload": "Download attachment",
+    "maxAttachments": "Up to 5 attachments per turn",
+    "unsupportedFileType": "Unsupported attachment file type",
+    "fileSizeLimit": "Attachments must be non-empty, up to 5 MB for images and 10 MB for files",
+    "selectAttachmentsAria": "Select chat attachments",
+    "pendingAttachmentsAria": "Pending attachments",
+    "uploading": "Uploading...",
+    "uploaded": "Uploaded",
+    "uploadedWithNotice": "Uploaded: {{notice}}",
+    "removeAttachmentAria": "Remove {{filename}}",
+    "addAttachmentAria": "Add attachment",
+    "stopAria": "Stop",
+    "sendAria": "Send",
+    "stopped": "Stopped",
+    "elapsedSeconds": "Took {{seconds}}s",
+    "runningTool": "Running {{name}}...",
+    "completedSteps": "Completed {{count}} steps",
+    "toolStatusRunning": "In progress",
+    "toolStatusOk": "Succeeded",
+    "toolStatusFailed": "Failed",
+    "toolStepLine": "{{name}}: {{status}}",
+    "cannotStartConversation": "Unable to start conversation. Please try again.",
+    "streamConnectionFailed": "Failed to connect to chat stream. Please try again.",
+    "streamInterrupted": "Chat connection was interrupted. Please try again."
+  },
+  "passwordInput": {
+    "hide": "Hide password",
+    "show": "Show password"
+  }
+}

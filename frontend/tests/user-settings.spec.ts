@@ -1,0 +1,227 @@
+import { expect, test } from "@playwright/test"
+import { firstSuperuser, firstSuperuserPassword } from "./config.ts"
+import { createUser } from "./utils/privateApi.ts"
+import { randomEmail, randomPassword } from "./utils/random"
+import { logInUser, logOutUser } from "./utils/user"
+
+test("personal information is read-only and account deletion is unavailable", async ({
+  page,
+}) => {
+  await page.goto("/settings")
+  await expect(page.getByRole("link", { name: "账号与安全" })).toHaveAttribute(
+    "aria-current",
+    "page",
+  )
+  const info = page.getByRole("region", { name: "个人信息" })
+  await expect(info).toContainText("登录邮箱")
+  await expect(info).toContainText(firstSuperuser)
+  await expect(info.locator("input, button")).toHaveCount(0)
+  await expect(page.getByRole("button", { name: "删除账号" })).toHaveCount(0)
+  await expect(
+    page.getByRole("region", { name: "外观", exact: true }),
+  ).toBeVisible()
+})
+
+test.describe("Change password", () => {
+  test.use({ storageState: { cookies: [], origins: [] } })
+
+  test("Update password successfully", async ({ page }) => {
+    const email = randomEmail()
+    const password = randomPassword()
+    const newPassword = randomPassword()
+
+    await createUser({ email, password })
+    await logInUser(page, email, password)
+
+    await page.goto("/settings")
+    await page.getByRole("button", { name: "修改密码", exact: true }).click()
+    const dialog = page.getByRole("dialog", { name: "修改密码", exact: true })
+    await expect(dialog).toBeVisible()
+    await page.getByTestId("current-password-input").fill(password)
+    await page.getByTestId("new-password-input").fill(newPassword)
+    await page.getByTestId("confirm-password-input").fill(newPassword)
+    await page.getByRole("button", { name: "保存密码" }).click()
+
+    await expect(dialog).toBeHidden()
+    await expect(page.getByText("密码修改成功")).toBeVisible()
+
+    await logOutUser(page)
+    await logInUser(page, email, newPassword)
+  })
+})
+
+test.describe("Change password validation", () => {
+  test.use({ storageState: { cookies: [], origins: [] } })
+  let email: string
+  let password: string
+
+  test.beforeAll(async () => {
+    email = randomEmail()
+    password = randomPassword()
+    await createUser({ email, password })
+  })
+
+  test.beforeEach(async ({ page }) => {
+    await logInUser(page, email, password)
+    await page.goto("/settings")
+    await page.getByRole("button", { name: "修改密码", exact: true }).click()
+  })
+
+  test("Password length and login email are validated while typing", async ({
+    page,
+  }) => {
+    const dialog = page.getByRole("dialog", { name: "修改密码" })
+    await expect(
+      dialog.getByText(
+        "新密码须为 8–128 个字符，不能与当前密码或登录邮箱相同。",
+      ),
+    ).toBeVisible()
+    await dialog.getByTestId("current-password-input").fill(password)
+    const newPassword = dialog.getByTestId("new-password-input")
+    await newPassword.fill("😀".repeat(7))
+    await expect(dialog.getByText("密码至少需要 8 个字符")).toBeVisible()
+    await newPassword.fill("长".repeat(129))
+    await expect(dialog.getByText("密码最多 128 个字符")).toBeVisible()
+    await newPassword.fill(` ${email.toUpperCase()} `)
+    await expect(dialog.getByText("新密码不能与登录邮箱相同")).toBeVisible()
+  })
+
+  test("New password and confirmation password do not match", async ({
+    page,
+  }) => {
+    await page.getByTestId("current-password-input").fill(password)
+    await page.getByTestId("new-password-input").fill(randomPassword())
+    await page.getByTestId("confirm-password-input").fill(randomPassword())
+    await page.getByRole("button", { name: "保存密码" }).click()
+
+    await expect(page.getByText("两次输入的密码不一致")).toBeVisible()
+  })
+
+  test("Current password and new password are the same", async ({ page }) => {
+    await page.getByTestId("current-password-input").fill(password)
+    await page.getByTestId("new-password-input").fill(password)
+    await expect(page.getByText("新密码不能与当前密码相同")).toBeVisible()
+    await page.getByTestId("current-password-input").fill(randomPassword())
+    await expect(page.getByText("新密码不能与当前密码相同")).toHaveCount(0)
+  })
+})
+
+test("Appearance is available in the user menu", async ({ page }) => {
+  await page.goto("/settings")
+  await page.getByTestId("user-menu").click()
+  await expect(page.getByRole("menu").getByTestId("theme-button")).toBeVisible()
+})
+
+test("User can switch between theme modes", async ({ page }) => {
+  await page.goto("/settings")
+
+  await page.getByTestId("user-menu").click()
+  await page.getByRole("menu").getByTestId("theme-button").click()
+  await page.getByTestId("dark-mode").click()
+  await expect(page.locator("html")).toHaveClass(/dark/)
+
+  await expect(page.getByTestId("dark-mode")).not.toBeVisible()
+
+  await page.getByTestId("user-menu").click()
+  await page.getByRole("menu").getByTestId("theme-button").click()
+  await page.getByTestId("light-mode").click()
+  await expect(page.locator("html")).toHaveClass(/light/)
+})
+
+test("Selected mode is preserved across sessions", async ({ page }) => {
+  await page.goto("/settings")
+
+  await page.getByTestId("user-menu").click()
+  await page.getByRole("menu").getByTestId("theme-button").click()
+  await page.getByTestId("light-mode").click()
+  await expect(page.locator("html")).toHaveClass(/light/)
+  await expect(page.getByTestId("light-mode")).not.toBeVisible()
+
+  await page.getByTestId("user-menu").click()
+  await page.getByRole("menu").getByTestId("theme-button").click()
+  await page.getByTestId("dark-mode").click()
+  await expect(page.locator("html")).toHaveClass(/dark/)
+  await expect(page.getByTestId("dark-mode")).not.toBeVisible()
+
+  await logOutUser(page)
+  await logInUser(page, firstSuperuser, firstSuperuserPassword)
+  await expect(page.locator("html")).toHaveClass(/dark/)
+})
+
+test.describe("employee settings", () => {
+  test.use({ storageState: { cookies: [], origins: [] } })
+
+  for (const email of [
+    "employee.platform@demo.example.com",
+    "manager.platform@demo.example.com",
+  ]) {
+    test(`${email} reads own fields, linked identities and downloads the skill`, async ({
+      page,
+    }) => {
+      await logInUser(page, email, process.env.DEMO_USER_PASSWORD!)
+      await page.getByRole("link", { name: "组织", exact: true }).click()
+      await page.getByRole("tab", { name: "档案", exact: true }).click()
+      const fields = page.getByRole("region", { name: "员工信息" })
+      for (const label of ["部门", "职位", "在职状态", "直属上级"])
+        await expect(fields.getByText(label, { exact: true })).toBeVisible()
+      await expect(fields.getByText("工号", { exact: true })).toBeVisible()
+      await expect(
+        fields.getByText(email.startsWith("employee") ? "E02" : "E01", {
+          exact: true,
+        }),
+      ).toBeVisible()
+      await expect(fields.locator("input, button")).toHaveCount(0)
+      await page.getByRole("link", { name: "设置", exact: true }).click()
+      await expect(
+        page.getByRole("region", { name: "个人信息" }),
+      ).toContainText(email)
+      await page.getByRole("link", { name: "连接与集成", exact: true }).click()
+      const identities = page.getByRole("region", { name: "本人关联账号" })
+      await expect(identities).toContainText(
+        email.startsWith("employee") ? "demo-jira-02" : "demo-jira-01",
+      )
+      await expect(
+        identities.getByRole("button", { name: /关联|解除/ }),
+      ).toHaveCount(0)
+      await page.getByRole("link", { name: "偏好与代理", exact: true }).click()
+      await expect(
+        page.getByRole("switch", {
+          name: "根据工作记录自动起草画像",
+        }),
+      ).toBeVisible()
+      await page.getByRole("link", { name: "连接与集成", exact: true }).click()
+      await expect(
+        page.getByRole("region", { name: "IM 绑定", exact: true }),
+      ).toBeVisible()
+      await expect(
+        page.getByRole("heading", { name: "外部 AI 工具", exact: true }),
+      ).toHaveCount(0)
+      await expect(
+        page.getByRole("button", { name: "查看 MCP 接入配置" }),
+      ).toHaveCount(0)
+      await expect(page.getByRole("button", { name: "生成令牌" })).toHaveCount(
+        0,
+      )
+    })
+  }
+
+  test("account without employee identity has no employee settings", async ({
+    page,
+  }) => {
+    await logInUser(
+      page,
+      "admin@demo.example.com",
+      process.env.DEMO_USER_PASSWORD!,
+    )
+    await page.goto("/settings")
+    await expect(page.getByRole("main").getByRole("tablist")).toHaveCount(0)
+    await page.getByRole("link", { name: "连接与集成", exact: true }).click()
+    await expect(
+      page.getByRole("heading", { name: "Jira 账号", exact: true }),
+    ).toHaveCount(0)
+    await page.getByRole("link", { name: "偏好与代理", exact: true }).click()
+    await expect(
+      page.getByRole("region", { name: "自动起草偏好" }),
+    ).toHaveCount(0)
+  })
+})

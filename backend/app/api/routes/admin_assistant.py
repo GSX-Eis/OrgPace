@@ -1,0 +1,204 @@
+import asyncio
+from typing import Annotated, Literal
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, Form, Request, Response, UploadFile
+from fastapi.responses import StreamingResponse
+
+from app.api.deps import SessionDep
+from app.api.secret_safe import SecretSafeRoute
+from app.authz.deps import OrgAdminDep, OrgPrincipalDep
+from app.domains.admin_assistant import change_set, core, files, store
+from app.domains.admin_assistant.files import FileKind
+from app.domains.admin_assistant.registry import ConnectionTestResult
+from app.domains.admin_assistant.schemas import (
+    AdminSessionMessage,
+    AdminTurnInput,
+    AdminTurnResponse,
+    ApplyChanges,
+    Availability,
+    ChangeSetApplied,
+    ChangeSetPublic,
+    SecretInput,
+    TestConnection,
+)
+from app.domains.bot import attachments, streaming
+from app.domains.bot.schemas import SessionCreated, TextMessage
+from app.domains.bot.store import BotSessionNotFound, SessionList, messages_for
+from app.domains.bot.store import list_sessions as recent_sessions
+from app.i18n import tr
+
+
+def require_admin(principal: OrgPrincipalDep) -> None:
+    # Conceal private assistant sessions from non-administrators as well.
+    if not principal.is_org_admin:
+        raise BotSessionNotFound()
+
+
+router = APIRouter(
+    route_class=SecretSafeRoute,
+    prefix="/admin-assistant",
+    tags=["admin-assistant"],
+    dependencies=[Depends(require_admin)],
+)
+
+
+@router.get("/sessions")
+def list_sessions(principal: OrgAdminDep, session: SessionDep) -> SessionList:
+    store.ensure_setup_session(session, principal)
+    return recent_sessions(session, principal, administrator=True)
+
+
+@router.post("/sessions", status_code=201)
+def create_session(principal: OrgAdminDep, session: SessionDep) -> SessionCreated:
+    return SessionCreated(session_id=store.create_session(session, principal).id)
+
+
+@router.get("/sessions/{session_id}/messages", response_model_exclude_unset=True)
+def list_messages(
+    principal: OrgAdminDep, session: SessionDep, session_id: UUID
+) -> list[AdminSessionMessage]:
+    row = store.get_session(session, principal, session_id)
+    messages = messages_for(session, row)
+    if not messages and row.turn_count:
+        raise BotSessionNotFound()
+    return [AdminSessionMessage.model_validate(m.model_dump()) for m in messages]
+
+
+@router.post(
+    "/sessions/{session_id}/turns",
+    status_code=200,
+    response_class=streaming.TurnStreamingResponse,
+    response_model=streaming.TextEvent
+    | streaming.ToolEvent
+    | streaming.ErrorEvent
+    | streaming.FinalEvent[AdminTurnResponse],
+)
+def turn(
+    principal: OrgAdminDep,
+    session: SessionDep,
+    session_id: UUID,
+    body: AdminTurnInput,
+    request: Request,
+) -> StreamingResponse:
+    store.get_session(session, principal, session_id)
+    attachments.prepare(
+        session, principal, "admin", session_id, body.attachment_ids, body.text
+    )
+    session.close()
+    return streaming.response(
+        lambda db, stream: core.turn(db, principal, session_id, body, stream=stream),
+        request,
+    )
+
+
+@router.get("/availability")
+def availability(principal: OrgAdminDep, session: SessionDep) -> Availability:
+    return core.availability(session, principal)
+
+
+@router.post("/sessions/{session_id}/files")
+def upload_file(
+    principal: OrgAdminDep,
+    session: SessionDep,
+    session_id: UUID,
+    kind: Annotated[FileKind, Form()],
+    file: UploadFile,
+) -> AdminTurnResponse:
+    return files.upload(session, principal, session_id, kind, file)
+
+
+change_router = APIRouter(
+    route_class=SecretSafeRoute,
+    prefix="/orgs/{org_id}/admin-assistant/change-sets",
+    tags=["admin-assistant"],
+    dependencies=[Depends(require_admin)],
+)
+
+
+@change_router.get("")
+def list_change_sets(
+    principal: OrgAdminDep,
+    session: SessionDep,
+    function: str,
+    status: Literal["draft"],
+    session_id: UUID | None = None,
+) -> list[ChangeSetPublic]:
+    return change_set.list_drafts(session, principal, function, status, session_id)
+
+
+@change_router.put("/{id}/secrets/{field}")
+def save_change_set_secret(
+    principal: OrgAdminDep, session: SessionDep, id: UUID, field: str, body: SecretInput
+) -> TextMessage:
+    change_set.save_secret(session, principal, id, field, body.value.get_secret_value())
+    return TextMessage(text=tr("已填写"))
+
+
+@change_router.get("/{id}")
+def get_change_set(
+    principal: OrgAdminDep, session: SessionDep, id: UUID
+) -> ChangeSetPublic:
+    return change_set.public(change_set.get(session, principal, id))
+
+
+@change_router.post("/{id}/apply")
+def apply_change_set(
+    principal: OrgAdminDep,
+    session: SessionDep,
+    id: UUID,
+    body: ApplyChanges,
+    response: Response,
+) -> ChangeSetApplied:
+    response.headers["Cache-Control"] = "no-store"
+    return change_set.apply(session, principal, id, body.revision)
+
+
+@change_router.post("/{id}/test")
+def test_change_set(
+    principal: OrgAdminDep, session: SessionDep, id: UUID, body: TestConnection
+) -> ConnectionTestResult:
+    return asyncio.run(change_set.test_connection(session, principal, id, body.item))
+
+
+@change_router.post("/{id}/discard")
+def discard_change_set(
+    principal: OrgAdminDep, session: SessionDep, id: UUID
+) -> ChangeSetPublic:
+    return change_set.discard(session, principal, id)
+
+
+@change_router.post("/{id}/undo")
+def undo_change_set(
+    principal: OrgAdminDep, session: SessionDep, id: UUID
+) -> ChangeSetPublic:
+    return change_set.undo(session, principal, id)
+
+
+@router.post("/sessions/{session_id}/attachments")
+def upload_attachment(
+    principal: OrgPrincipalDep, session: SessionDep, session_id: UUID, file: UploadFile
+) -> attachments.AttachmentPublic:
+    return attachments.upload(session, principal, "admin", session_id, file)
+
+
+@router.get(
+    "/sessions/{session_id}/attachments/{attachment_id}",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {
+                "application/octet-stream": {
+                    "schema": {"type": "string", "format": "binary"}
+                }
+            }
+        }
+    },
+)
+def download_attachment(
+    principal: OrgPrincipalDep,
+    session: SessionDep,
+    session_id: UUID,
+    attachment_id: UUID,
+) -> Response:
+    return attachments.download(session, principal, "admin", session_id, attachment_id)

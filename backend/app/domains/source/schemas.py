@@ -1,0 +1,166 @@
+import re
+from calendar import monthrange
+from datetime import date, datetime
+from typing import Literal, Self
+from uuid import UUID
+
+from pydantic import (
+    BaseModel,
+    Field,
+    HttpUrl,
+    SecretStr,
+    TypeAdapter,
+    field_validator,
+    model_validator,
+)
+
+from app.domains.org.models import EmploymentStatus
+from app.domains.org.schemas import DepartmentSummary
+from app.domains.source.models import SyncSchedule
+from app.domains.work.ingest import IngestCounts
+from app.i18n import tr
+
+
+class IdentityEmployee(BaseModel):
+    id: UUID
+    employee_code: str | None
+    display_name: str
+    department: DepartmentSummary | None
+    employment_status: EmploymentStatus
+
+
+class IdentityCandidate(IdentityEmployee):
+    reason: Literal["email", "name"]
+
+
+class ExternalIdentityPublic(BaseModel):
+    id: UUID
+    source: str
+    source_label: str
+    external_id: str
+    display_name: str | None
+    email: str | None
+    record_count: int
+    linked_at: datetime | None
+    linked_by: str | None
+    employee: IdentityEmployee | None
+    candidate: IdentityCandidate | None
+
+
+class ExternalIdentitiesPublic(BaseModel):
+    data: list[ExternalIdentityPublic]
+    count: int
+
+
+class IdentityLink(BaseModel):
+    identity_id: UUID
+    employee_id: UUID
+
+
+class IdentityLinks(BaseModel):
+    links: list[IdentityLink] = Field(min_length=1, max_length=200)
+
+
+class IdentityLinkResult(BaseModel):
+    linked: int
+    counts: IngestCounts
+
+
+class IdentityUnlinkResult(BaseModel):
+    evidence_retracted: int
+
+
+def default_start_date() -> date:
+    today = date.today()
+    year = today.year - 1
+    return today.replace(
+        year=year, day=min(today.day, monthrange(year, today.month)[1])
+    )
+
+
+class JiraConfig(BaseModel):
+    deployment: Literal["cloud", "data_center"]
+    base_url: str = Field(max_length=500)
+    auth_type: Literal["api_token", "pat", "basic"]
+    username: str | None = Field(default=None, max_length=255)
+    start_date: date = Field(default_factory=default_start_date)
+    include_description: bool = False
+    project_keys: list[str] = Field(default_factory=list, max_length=50)
+
+    @field_validator("project_keys")
+    @classmethod
+    def validate_project_keys(cls, keys: list[str]) -> list[str]:
+        keys = [key.upper() for key in keys]
+        if any(not re.fullmatch(r"[A-Z][A-Z0-9_]{0,49}", key) for key in keys):
+            raise ValueError(
+                tr("项目标识须以字母开头，只含英文字母、数字和下划线，最多 50 位")
+            )
+        return list(dict.fromkeys(keys))
+
+    @model_validator(mode="after")
+    def validate_config(self) -> Self:
+        url = TypeAdapter(HttpUrl).validate_python(self.base_url)
+        if (
+            url.username is not None
+            or url.password is not None
+            or url.query
+            or url.fragment
+        ):
+            raise ValueError(tr("Jira 地址不能带用户名、密码、查询参数或片段"))
+        self.base_url = str(url).rstrip("/")
+        if self.deployment == "cloud" and self.auth_type != "api_token":
+            raise ValueError(tr("Jira Cloud 请使用邮箱和 API token"))
+        if self.deployment == "data_center" and self.auth_type not in ("pat", "basic"):
+            raise ValueError(tr("Data Center 请使用个人访问令牌或用户名和密码"))
+        if self.auth_type != "pat" and not self.username:
+            raise ValueError(tr("请填写 Jira 账号"))
+        if self.auth_type == "pat":
+            self.username = None
+        return self
+
+
+class JiraConnectionUpdate(JiraConfig):
+    sync_schedule: SyncSchedule = "off"
+    secret: SecretStr | None = Field(default=None, min_length=1)
+
+
+class JiraConnectionPublic(BaseModel):
+    sync_schedule: SyncSchedule = "off"
+    next_sync_at: datetime | None = None
+    configured: bool = False
+    config: JiraConfig | None = None
+    has_secret: bool = False
+    synced_until: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class JiraProject(BaseModel):
+    key: str
+    name: str
+
+
+class JiraConnectionTest(BaseModel):
+    ok: bool
+    message: str
+    account_name: str | None = None
+    projects: list[JiraProject] = Field(default_factory=list)
+
+
+class SyncRunPublic(BaseModel):
+    id: UUID
+    kind: Literal["jira", "csv"]
+    status: Literal["queued", "running", "succeeded", "failed"]
+    trigger: Literal["manual", "retry", "schedule"]
+    attempts: int
+    counts: dict[str, int]
+    error: str | None
+    filename: str | None
+    project_keys: list[str] | None = None
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+
+class SyncRunsPublic(BaseModel):
+    data: list[SyncRunPublic]
+    count: int

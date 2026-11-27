@@ -1,0 +1,392 @@
+import hashlib
+import json
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from datetime import timedelta
+from typing import Any
+from urllib.parse import urlsplit
+
+import jwt
+from fastapi import FastAPI, HTTPException
+from mcp import types
+from mcp.server import Server
+from mcp.server.context import ServerRequestContext
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+from mcp.server.transport_security import (
+    RequestBodyLimitMiddleware,
+    TransportSecuritySettings,
+)
+from pydantic import ValidationError
+from sqlmodel import Session, select
+from starlette.concurrency import run_in_threadpool
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.types import Message, Receive, Scope, Send
+
+from app.authz.principal import Principal
+from app.core.config import settings
+from app.core.db import engine
+from app.core.security import ALGORITHM
+from app.domains.access_token.auth import token_principal
+from app.domains.access_token.models import PersonalAccessToken
+from app.domains.access_token.service import get_setting
+from app.domains.audit.service import record_audit
+from app.domains.base import utc_now
+from app.domains.capacity.models import RequesterPolicy
+from app.domains.capacity.proposal import ProposalFailed
+from app.domains.capacity.settings import read_settings
+from app.domains.capacity.tools import CAPACITY_TOOLS
+from app.domains.change_request.models import ReviewVia
+from app.domains.change_request.schemas import validation_message
+from app.domains.employee_tools import EMPLOYEE_TOOLS, EmployeeTool
+from app.domains.manager_tools import MANAGER_TOOLS
+from app.domains.org.employee_fields import FIELD_LABELS
+from app.domains.planning.tools import COORDINATION_TOOLS
+from app.mcp.oauth import resource_url
+
+TOOLS = {tool.name: tool for tool in (*EMPLOYEE_TOOLS, *MANAGER_TOOLS)}
+
+
+def available_tools(principal: Principal, session: Session) -> dict[str, EmployeeTool]:
+    tools = TOOLS.copy()
+    setting = read_settings(principal, session)
+    if setting.enabled:
+        can_request = (
+            setting.requester_policy == RequesterPolicy.EVERYONE
+            or principal.is_org_admin
+            or bool(principal.managed_department_ids)
+        )
+        tools.update(
+            (tool.name, tool)
+            for tool in CAPACITY_TOOLS
+            if can_request
+            or tool.name
+            not in ("list_capacity_departments", "capacity_reference", "submit_demand")
+        )
+        tools.update(
+            (tool.name, tool)
+            for tool in COORDINATION_TOOLS
+            if tool.name not in {"simulate_plan", "compare_plan_options"}
+            or principal.is_org_admin
+            or principal.managed_department_ids
+        )
+    return tools
+
+
+class McpRequestError(HTTPException):
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(status, message)
+
+
+def _http_error_message(tool_name: str, exc: HTTPException) -> str:
+    if tool_name in {t.name for t in COORDINATION_TOOLS}:
+        return "操作未完成，请检查权限或参数"
+    return json.dumps(
+        {"status": exc.status_code, "detail": exc.detail},
+        ensure_ascii=False,
+    )
+
+
+async def list_tools(
+    ctx: ServerRequestContext[Any, Request],
+    _params: types.PaginatedRequestParams | None,
+) -> types.ListToolsResult:
+    assert ctx.request is not None
+    principal, _ = ctx.request.scope["mcp_identity"]
+
+    def listing() -> types.ListToolsResult:
+        with Session(engine) as session:
+            tools = []
+            for tool in available_tools(principal, session).values():
+                description = tool.description
+                if tool in CAPACITY_TOOLS:
+                    description += "。参考不是承诺。"
+                    if tool.writes:
+                        description += (
+                            "先向用户复述内容，用户明确同意后才调用；"
+                            "答复只写部门层面的结论，不写人名。"
+                            "不要写个人负荷，只写能否承接、时间和条件。"
+                            "答复和承诺说明不写任何负荷说法，也不能换说法。"
+                        )
+                if tool in COORDINATION_TOOLS:
+                    description += "。方案不是承诺；只按当前用户权限返回结果。"
+                schema = tool.input_model.model_json_schema()
+                if tool.name == "reply_demand":
+                    for field in ("option_id", "outside_basis"):
+                        schema["properties"].pop(field, None)
+                tools.append(
+                    types.Tool(
+                        name=tool.name,
+                        description=description,
+                        input_schema=schema,
+                    )
+                )
+            return types.ListToolsResult(tools=tools)
+
+    return await run_in_threadpool(listing)
+
+
+def invoke(
+    ctx: ServerRequestContext[Any, Request], params: types.CallToolRequestParams
+) -> types.CallToolResult:
+    assert ctx.request is not None
+    principal, client_name = ctx.request.scope["mcp_identity"]
+    with Session(engine) as session:
+        try:
+            tools = available_tools(principal, session)
+            tool = tools.get(params.name)
+            record_audit(
+                session,
+                org_id=principal.org_id,
+                actor_type=principal.actor_type,
+                actor_id=str(principal.user_id),
+                action="mcp.tool_called",
+                target_type="mcp_tool",
+                target_id=params.name if tool is not None else None,
+                details={
+                    "request_id": str(ctx.request_id),
+                    "client_name": client_name,
+                },
+            )
+            session.commit()
+            if tool is None:
+                raise McpRequestError(404, "工具不存在")
+            if params.name == "reply_demand" and {
+                "option_id",
+                "outside_basis",
+            }.intersection(params.arguments or {}):
+                raise McpRequestError(
+                    400, "MCP 不能提议方案或预占人员，请在网页或助手确认卡里操作"
+                )
+            body = tool.input_model.model_validate(params.arguments or {})
+            arguments = {key: getattr(body, key) for key in type(body).model_fields}
+            if tool.name in ("draft_update_request", "submit_request"):
+                arguments.update(via="mcp", client_name=client_name)
+            if tool.name == "decide_review_items":
+                arguments.update(via=ReviewVia.MCP, client_name=client_name)
+            if tool in CAPACITY_TOOLS and tool.writes:
+                arguments.update(via="mcp", client_name=client_name)
+            result = (
+                tool.handler(principal, session, body)
+                if tool in COORDINATION_TOOLS
+                else tool.handler(principal=principal, session=session, **arguments)
+            )
+            if tool in COORDINATION_TOOLS and result.model_dump().get("error"):
+                session.rollback()
+                return types.CallToolResult(
+                    is_error=True,
+                    content=[types.TextContent(type="text", text="无权查看方案")],
+                )
+            session.commit()
+            data = result.model_dump(
+                mode="json",
+                exclude={
+                    "employee": {str(f) for f in FIELD_LABELS},
+                    "department_capabilities_configured": True,
+                    "items": {"__all__": {"in_department"}},
+                }
+                if tool.name == "get_my_profile"
+                else None,
+            )
+            return types.CallToolResult(
+                content=[
+                    types.TextContent(
+                        type="text", text=json.dumps(data, ensure_ascii=False)
+                    )
+                ],
+                structured_content=data,
+            )
+        except ValidationError as exc:
+            message = (
+                "工具参数不正确"
+                if params.name in {t.name for t in COORDINATION_TOOLS}
+                else validation_message(exc)
+            )
+        except ProposalFailed as exc:
+            # Commit legitimate domain state transitions (e.g. proposal expiry) before returning the error.
+            try:
+                session.commit()
+                return types.CallToolResult(
+                    is_error=True,
+                    content=[
+                        types.TextContent(
+                            type="text", text=_http_error_message(params.name, exc)
+                        )
+                    ],
+                )
+            except Exception:
+                # Never let SDK exception logging include SQL, credentials or input text.
+                message = "操作失败，请稍后重试"
+        except HTTPException as exc:
+            message = _http_error_message(params.name, exc)
+        except Exception:
+            # Never let SDK exception logging include SQL, credentials or input text.
+            message = "操作失败，请稍后重试"
+        session.rollback()
+    return types.CallToolResult(
+        is_error=True, content=[types.TextContent(type="text", text=message)]
+    )
+
+
+async def call_tool(
+    ctx: ServerRequestContext[Any, Request], params: types.CallToolRequestParams
+) -> types.CallToolResult:
+    return await run_in_threadpool(invoke, ctx, params)
+
+
+server: Server[dict[str, Any]] = Server(
+    "employee-profile",
+    version="0.1.0",
+    on_list_tools=list_tools,
+    on_call_tool=call_tool,
+)
+
+
+class McpEndpoint:
+    def __init__(self, manager: StreamableHTTPSessionManager) -> None:
+        self.manager = manager
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        request = Request(scope, receive)
+        try:
+            authorization = request.headers.get("authorization", "")
+            scheme, _, plaintext = authorization.partition(" ")
+            if scheme.lower() != "bearer":
+                plaintext = ""
+            ip = request.client.host if request.client else "unknown"
+
+            fingerprint = hashlib.sha256(plaintext.encode()).hexdigest()
+
+            def authenticate() -> tuple[Principal, list[str], str | None]:
+                with Session(engine) as session:
+                    principal = token_principal(session, plaintext, ip)
+                    oauth_name = session.exec(
+                        select(PersonalAccessToken.name).where(
+                            PersonalAccessToken.org_id == principal.org_id,
+                            PersonalAccessToken.user_id == principal.user_id,
+                            PersonalAccessToken.token_hash == fingerprint,
+                            PersonalAccessToken.client_kind == "oauth",
+                        )
+                    ).one_or_none()
+                    return (
+                        principal,
+                        get_setting(session, principal).allowed_clients,
+                        oauth_name,
+                    )
+
+            principal, allowed_clients, oauth_name = await run_in_threadpool(
+                authenticate
+            )
+            session_id = request.headers.get("mcp-session-id")
+            if session_id:
+                try:
+                    claims = jwt.decode(
+                        session_id,
+                        settings.SECRET_KEY,
+                        algorithms=[ALGORITHM],
+                        audience="mcp-session",
+                        options={"require": ["exp", "sub", "client_name"]},
+                    )
+                except jwt.InvalidTokenError:
+                    raise McpRequestError(404, "会话已失效，请重新连接")
+                if claims["sub"] != fingerprint:
+                    raise McpRequestError(404, "会话已失效，请重新连接")
+                client_name = claims["client_name"]
+            else:
+                if request.method != "POST":
+                    raise McpRequestError(400, "请先初始化 MCP 会话")
+                try:
+                    message = await request.json()
+                    if (
+                        not isinstance(message, dict)
+                        or message.get("method") != "initialize"
+                    ):
+                        raise ValueError
+                    params = types.InitializeRequestParams.model_validate(
+                        message.get("params")
+                    )
+                    client_name = oauth_name or params.client_info.name
+                    if not 1 <= len(client_name) <= 100:
+                        raise ValueError
+                except ValueError, ValidationError:
+                    raise McpRequestError(400, "初始化参数无效，请重新连接")
+                session_id = jwt.encode(
+                    {
+                        "aud": "mcp-session",
+                        "sub": fingerprint,
+                        "client_name": client_name,
+                        "exp": utc_now() + timedelta(hours=1),
+                    },
+                    settings.SECRET_KEY,
+                    algorithm=ALGORITHM,
+                )
+            if allowed_clients and client_name not in allowed_clients:
+                raise McpRequestError(403, "企业未允许此客户端")
+            scope["mcp_identity"] = principal, client_name
+
+            async def send_response(message: Message) -> None:
+                if message["type"] == "http.response.start":
+                    message["headers"].extend(
+                        [
+                            (b"mcp-session-id", session_id.encode()),
+                            (b"cache-control", b"no-store"),
+                        ]
+                    )
+                await send(message)
+
+            cached_body = (
+                await request.body()
+                if not request.headers.get("mcp-session-id")
+                else None
+            )
+
+            async def replay_body() -> Message:
+                nonlocal cached_body
+                if cached_body is not None:
+                    body, cached_body = cached_body, None
+                    return {"type": "http.request", "body": body, "more_body": False}
+                return await receive()
+
+            await self.manager.handle_request(scope, replay_body, send_response)
+        except HTTPException as exc:
+            if exc.status_code == 401:
+                exc.headers = {
+                    "WWW-Authenticate": f'Bearer resource_metadata="{resource_url().removesuffix("/mcp")}/.well-known/oauth-protected-resource"'
+                }
+            await JSONResponse(
+                {"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers
+            )(scope, receive, send)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    manager = StreamableHTTPSessionManager(
+        server,
+        stateless=True,
+        json_response=True,
+        security_settings=TransportSecuritySettings(
+            allowed_hosts=[
+                urlsplit(resource_url()).netloc,
+                "localhost:*",
+                "127.0.0.1:*",
+                "testserver",
+            ],
+            allowed_origins=[resource_url().removesuffix("/mcp")],
+        ),
+    )
+    app.state.mcp = RequestBodyLimitMiddleware(McpEndpoint(manager), 4 * 1024 * 1024)
+    async with manager.run():
+        yield
+
+
+class McpApplication:
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if not settings.EXTERNAL_MCP_ENABLED:
+            await JSONResponse({"detail": "Not Found"}, status_code=404)(
+                scope, receive, send
+            )
+            return
+        await scope["app"].state.mcp(scope, receive, send)
+
+
+endpoint = McpApplication()

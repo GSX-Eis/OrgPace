@@ -1,0 +1,99 @@
+from uuid import UUID
+
+from fastapi import APIRouter
+from sqlmodel import col, select
+
+from app.api.deps import SessionDep
+from app.authz.deps import OrgAdminDep, OrgPrincipalDep
+from app.domains.capability import department as capabilities
+from app.domains.org import departments as edits
+from app.domains.org import service
+from app.domains.org.employee_fields import EmployeeFields, save_employee_fields
+from app.domains.org.models import Department
+from app.domains.org.schemas import (
+    DepartmentPublic,
+    DepartmentsPublic,
+    OrganizationPublic,
+    OrganizationUpdate,
+    OrgChartPublic,
+)
+from app.domains.profile.coverage import CoveragePublic, read_coverage
+from app.models import Message
+
+router = APIRouter(prefix="/orgs/{org_id}", tags=["orgs"])
+
+
+@router.get("/coverage")
+def get_coverage(session: SessionDep, principal: OrgPrincipalDep) -> CoveragePublic:
+    return read_coverage(session, principal)
+
+
+@router.patch("/departments/{id}")
+def update_department(
+    id: UUID, body: edits.DepartmentUpdate, session: SessionDep, principal: OrgAdminDep
+) -> DepartmentPublic:
+    return edits.update_department(session, principal, id, body)
+
+
+@router.delete("/departments/{id}")
+def delete_department(id: UUID, session: SessionDep, principal: OrgAdminDep) -> Message:
+    return edits.delete_department(
+        session, principal, capabilities.DepartmentArgs(department_id=id)
+    )
+
+
+@router.get("/departments/{id}/capabilities")
+def read_department_capabilities(
+    id: UUID, session: SessionDep, principal: OrgPrincipalDep
+) -> capabilities.DepartmentCapabilitiesPublic:
+    return capabilities.read_department_capabilities(
+        session, principal, capabilities.DepartmentArgs(department_id=id)
+    )
+
+
+@router.put("/departments/{id}/capabilities")
+def update_department_capabilities(
+    id: UUID,
+    body: capabilities.DepartmentCapabilitiesInput,
+    session: SessionDep,
+    principal: OrgAdminDep,
+) -> capabilities.DepartmentCapabilitiesPublic:
+    return capabilities.set_department_capabilities(
+        session,
+        principal,
+        capabilities.SetDepartmentCapabilities(department_id=id, **body.model_dump()),
+    )
+
+
+@router.get("/org-chart", response_model=OrgChartPublic)
+def read_org_chart(session: SessionDep, principal: OrgPrincipalDep) -> OrgChartPublic:
+    return service.read_org_chart(session, principal)
+
+
+@router.patch("", response_model=OrganizationPublic)
+def rename_organization(
+    body: OrganizationUpdate, session: SessionDep, principal: OrgAdminDep
+) -> OrganizationPublic:
+    return service.rename_organization(session, principal, body.name)
+
+
+@router.get("/departments", response_model=DepartmentsPublic)
+def read_departments(
+    session: SessionDep, principal: OrgPrincipalDep
+) -> DepartmentsPublic:
+    departments = session.exec(
+        select(Department)
+        .where(Department.org_id == principal.org_id)
+        .order_by(Department.name, col(Department.id))
+    ).all()
+    return DepartmentsPublic(
+        data=[DepartmentPublic.model_validate(d) for d in departments],
+        count=len(departments),
+    )
+
+
+@router.put("/employee-fields", response_model=EmployeeFields)
+def update_employee_fields(
+    body: EmployeeFields, session: SessionDep, principal: OrgAdminDep
+) -> EmployeeFields:
+    return save_employee_fields(session, principal, body)
