@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 from pydantic import JsonValue
-from sqlalchemy import Column, DateTime, UniqueConstraint
+from sqlalchemy import Column, DateTime, Index, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field
 
@@ -14,6 +14,7 @@ class Task(TenantRecord, table=True):
     __table_args__ = (
         UniqueConstraint("org_id", "id"),
         UniqueConstraint("org_id", "source", "external_key"),
+        Index("ix_task_attributes_gin", "attributes", postgresql_using="gin"),
     )
     source: str
     external_key: str

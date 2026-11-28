@@ -158,43 +158,50 @@ def test_m10_downgrade_waits_for_in_flight_reason(migration_engine: Engine) -> N
 
     with Session(migration_engine) as session:
         _, event, _ = seed_m9(session)
+        event_id = event.id
         session.commit()
+    migrate(migration_engine, "downgrade", "c832001bc001")
     inserted, release = Event(), Event()
 
     def write_reason() -> None:
         with Session(migration_engine) as session:
-            row = session.get_one(CapacityDemandEvent, event.id)
+            row = session.get_one(CapacityDemandEvent, event_id)
             row.reason_code = "timing"
             session.flush()
             inserted.set()
             assert release.wait(timeout=10)
             session.commit()
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        writer = pool.submit(write_reason)
-        assert inserted.wait(timeout=10)
-        downgrade = pool.submit(migrate, migration_engine, "downgrade", PREVIOUS)
-        try:
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline:
-                with migration_engine.connect() as connection:
-                    waiting = connection.scalar(
-                        text(
-                            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
-                            "WHERE datname = current_database() AND wait_event_type = 'Lock' "
-                            "AND query LIKE 'LOCK TABLE capacity_approval,%')"
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            writer = pool.submit(write_reason)
+            assert inserted.wait(timeout=10)
+            downgrade = pool.submit(migrate, migration_engine, "downgrade", PREVIOUS)
+            try:
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    with migration_engine.connect() as connection:
+                        waiting = connection.scalar(
+                            text(
+                                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
+                                "WHERE datname = current_database() AND wait_event_type = 'Lock' "
+                                "AND query LIKE 'LOCK TABLE capacity_approval,%')"
+                            )
                         )
-                    )
-                if waiting:
-                    break
-                time.sleep(0.02)
-            else:
-                pytest.fail("Downgrade did not wait for the in-flight reason write")
-        finally:
-            release.set()
-        writer.result(timeout=10)
-        with pytest.raises(RuntimeError, match="无法降级"):
-            downgrade.result(timeout=10)
+                    if waiting:
+                        break
+                    time.sleep(0.02)
+                else:
+                    pytest.fail("Downgrade did not wait for the in-flight reason write")
+            finally:
+                release.set()
+            writer.result(timeout=10)
+            with pytest.raises(RuntimeError, match="无法降级"):
+                downgrade.result(timeout=10)
 
-    with Session(migration_engine) as session:
-        assert session.get_one(CapacityDemandEvent, event.id).reason_code == "timing"
+        with Session(migration_engine) as session:
+            assert (
+                session.get_one(CapacityDemandEvent, event_id).reason_code == "timing"
+            )
+    finally:
+        migrate(migration_engine, "upgrade", "head")

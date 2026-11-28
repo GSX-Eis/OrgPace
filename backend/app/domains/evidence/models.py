@@ -3,7 +3,7 @@ from datetime import datetime
 from enum import StrEnum
 
 from pydantic import JsonValue
-from sqlalchemy import Column, DateTime, UniqueConstraint
+from sqlalchemy import Column, DateTime, Index, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field
 
@@ -49,6 +49,13 @@ class Evidence(TenantRecord, table=True):
         tenant_fk("subject_employee_id", "employee"),
         tenant_fk("event_id", "work_event"),
         tenant_fk("supersedes_evidence_id", "evidence"),
+        Index(
+            "ix_evidence_org_subject_status",
+            "org_id",
+            "subject_employee_id",
+            "status",
+        ),
+        Index("ix_evidence_org_occurred_at", "org_id", "occurred_at"),
     )
     subject_employee_id: uuid.UUID
     kind: EvidenceKind = Field(sa_type=enum_type(EvidenceKind))
