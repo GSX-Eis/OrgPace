@@ -703,7 +703,12 @@ def load_state(
     db: Session, session: BotSession | AdminAssistantSession, *, scoped: bool = False
 ) -> dict[str, JsonValue] | None:
     days = read_settings(db, session.org_id).retention_days
-    if not days and session.last_activity_at <= utc_now() - timedelta(hours=2):
+    protected = setup_in_progress(db, session)
+    if (
+        not protected
+        and not days
+        and session.last_activity_at <= utc_now() - timedelta(hours=2)
+    ):
         return None
     message_type = (
         AdminAssistantMessage
@@ -711,7 +716,8 @@ def load_state(
         else BotMessage
     )
     if (
-        days
+        not protected
+        and days
         and db.exec(
             select(message_type.id)
             .where(
@@ -729,7 +735,8 @@ def load_state(
         else BotAttachment
     )
     if (
-        session.state_ciphertext
+        not protected
+        and session.state_ciphertext
         and db.exec(
             select(attachment_type.id)
             .where(
@@ -774,6 +781,11 @@ def cleanup_messages(db: Session, now: datetime) -> None:
 
             days = read_settings(db, org_id).retention_days
             pending_setup = not read_setup(db, org_id).completed
+            protected = select(AdminAssistantSession.id).where(
+                AdminAssistantSession.org_id == org_id,
+                AdminAssistantSession.purpose == "setup",
+                pending_setup,
+            )
             for session_type, message_type, attachment_type in (
                 (BotSession, BotMessage, BotAttachment),
                 (
@@ -782,11 +794,18 @@ def cleanup_messages(db: Session, now: datetime) -> None:
                     AdminAssistantAttachment,
                 ),
             ):
+                eligible = select(session_type.id).where(
+                    session_type.org_id == org_id,
+                    ~col(session_type.id).in_(protected)
+                    if session_type is AdminAssistantSession
+                    else true(),
+                )
                 # Extracted file text can also exist in encrypted model context.
                 db.exec(
                     update(session_type)
                     .where(
                         col(session_type.org_id) == org_id,
+                        col(session_type.id).in_(eligible),
                         col(session_type.id).in_(
                             select(attachment_type.session_id).where(
                                 attachment_type.org_id == org_id,
@@ -803,12 +822,12 @@ def cleanup_messages(db: Session, now: datetime) -> None:
                 db.exec(
                     delete(attachment_type).where(
                         col(attachment_type.org_id) == org_id,
+                        col(attachment_type.session_id).in_(eligible),
                         col(attachment_type.created_at)
                         <= now - (timedelta(days=days) if days else timedelta(hours=2)),
                     )
                 )
-                expired = select(session_type.id).where(
-                    session_type.org_id == org_id,
+                expired = eligible.where(
                     session_type.last_activity_at <= now - timedelta(hours=2),
                 )
                 expired_messages = select(message_type.session_id).where(
@@ -819,6 +838,7 @@ def cleanup_messages(db: Session, now: datetime) -> None:
                     update(session_type)
                     .where(
                         col(session_type.org_id) == org_id,
+                        col(session_type.id).in_(eligible),
                         col(session_type.id).in_(expired_messages if days else expired),
                     )
                     .values(state_ciphertext=None)
@@ -829,8 +849,7 @@ def cleanup_messages(db: Session, now: datetime) -> None:
                         .where(
                             col(AdminChangeSet.org_id) == org_id,
                             col(AdminChangeSet.session_id).in_(
-                                select(AdminAssistantSession.id).where(
-                                    AdminAssistantSession.org_id == org_id,
+                                eligible.where(
                                     AdminAssistantSession.last_activity_at
                                     <= now
                                     - (
@@ -849,16 +868,9 @@ def cleanup_messages(db: Session, now: datetime) -> None:
                             updated_at=now,
                         )
                     )
-                protected = select(AdminAssistantSession.id).where(
-                    AdminAssistantSession.org_id == org_id,
-                    AdminAssistantSession.purpose == "setup",
-                    pending_setup,
-                )
                 db.exec(
                     delete(message_type).where(
-                        ~col(message_type.session_id).in_(protected)
-                        if session_type is AdminAssistantSession
-                        else true(),
+                        col(message_type.session_id).in_(eligible),
                         col(message_type.org_id) == org_id,
                         col(message_type.created_at) <= now - timedelta(days=days)
                         if days
