@@ -14,6 +14,10 @@ APP = Path(__file__).resolve().parents[1] / "app"
 ENTRYPOINTS = {
     "api/main.py",
     "api/routes/capacity.py",
+    "api/routes/capacity_assignments.py",
+    "api/routes/capacity_demands.py",
+    "api/routes/capacity_forecast.py",
+    "api/routes/capacity_workload.py",
     "domains/__init__.py",
     "mcp/server.py",
 }
