@@ -16,7 +16,7 @@ import {
 } from "./shared"
 import {
   segmentKinds,
-  taskSegmentsFor,
+  useTaskSegments,
   type WorkloadSelection,
 } from "./WorkloadGanttShared"
 
@@ -28,7 +28,7 @@ export function WorkloadDetails({
   defaultAllocationCapPercent?: number
 }) {
   const { t } = useTranslation()
-  const allSegments = useMemo(() => taskSegmentsFor(row), [row])
+  const allSegments = useTaskSegments(row)
   const segments = useMemo(
     () => allSegments.filter((segment) => overlaps(segment, range)),
     [allSegments, range],

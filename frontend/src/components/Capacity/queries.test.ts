@@ -1,6 +1,8 @@
 import { deepEqual, equal } from "node:assert/strict"
 import { test } from "node:test"
 import { QueryObserver } from "@tanstack/react-query"
+import type { WorkloadPublic } from "@/client"
+import i18n from "@/i18n"
 import {
   createLocaleQueryClient,
   isLocaleReadOnlyPlanningQuery,
@@ -11,6 +13,7 @@ import {
   invalidateDemandMutation,
   invalidateWorkloadMutation,
 } from "./queries"
+import { taskSegmentsFor } from "./WorkloadGanttShared"
 
 test("capacityKeys keeps localeQuerySync-compatible prefix structure", () => {
   const planningKey = capacityKeys.planning("org-1", "dem-1", "case=c1")
@@ -139,4 +142,84 @@ test("capacityDepartmentsQueryOptions shares the capacity departments cache key"
     capacityDepartmentsQueryOptions("org-1").queryKey,
     capacityKeys.departments("org-1"),
   )
+})
+
+test("taskSegmentsFor updates borrow/hold copy when locale changes across identical QueryClient structural-sharing refetches", async () => {
+  const makeRow = (): WorkloadPublic => ({
+    employee_id: "e",
+    employee_name: "Alice",
+    department_id: "d",
+    department_name: "Eng",
+    jira_task_count: 0,
+    base_percent: 0,
+    platform_percent: 35,
+    confirmed_percent: 35,
+    band: "available",
+    correction_pending: {},
+    last_confirmed: null,
+    weeks: [],
+    unavailabilities: [],
+    assignments: [
+      {
+        id: "a1",
+        demand_id: "dem-1",
+        title: "Synthetic",
+        capability_name: "Delivery",
+        requesting_department_name: "Sales",
+        kind: "borrow",
+        allocation_percent: 25,
+        start_date: "2027-01-04",
+        due_date: "2027-01-08",
+        legacy_start: true,
+      },
+    ],
+    holds: [
+      {
+        proposal_id: "p",
+        demand_id: "dem-2",
+        title: "Synthetic hold",
+        capability_name: "Delivery",
+        requesting_department_name: "Ops",
+        is_borrow: false,
+        allocation_percent: 10,
+        start_date: "2027-01-04",
+        end_date: "2027-01-08",
+        expires_at: "2027-01-08T10:00:00Z",
+      },
+    ],
+  })
+  const { queryClient } = createLocaleQueryClient(() => {})
+  const key = capacityKeys.workloadTeam("org-1")
+  const previous = i18n.language
+  try {
+    await i18n.changeLanguage("zh-CN")
+    queryClient.setQueryData(key, makeRow())
+    const before = queryClient.getQueryData<WorkloadPublic>(key)!
+    const zhSegs = taskSegmentsFor(before, i18n.getFixedT("zh-CN"))
+    equal(zhSegs[0].label, "借调 · Synthetic · 25%")
+    equal(zhSegs[0].note, "开始日期未确认")
+    equal(zhSegs[1].label, "暂留 · Synthetic hold · 10%")
+    equal(zhSegs[1].note?.startsWith("待确认，到期："), true)
+
+    await i18n.changeLanguage("en")
+    queryClient.setQueryData(key, makeRow())
+    const afterEn = queryClient.getQueryData<WorkloadPublic>(key)!
+    equal(before === afterEn, true)
+    const enSegs = taskSegmentsFor(afterEn, i18n.getFixedT("en"))
+    equal(enSegs[0].label, "Borrow · Synthetic · 25%")
+    equal(enSegs[0].note, "Start date unconfirmed")
+    equal(enSegs[1].label, "Hold · Synthetic hold · 10%")
+    equal(enSegs[1].note?.startsWith("Pending confirmation, expires:"), true)
+
+    await i18n.changeLanguage("zh-CN")
+    queryClient.setQueryData(key, makeRow())
+    const afterZh = queryClient.getQueryData<WorkloadPublic>(key)!
+    equal(before === afterZh, true)
+    const zhAgain = taskSegmentsFor(afterZh, i18n.getFixedT("zh-CN"))
+    equal(zhAgain[0].label, "借调 · Synthetic · 25%")
+    equal(zhAgain[1].label, "暂留 · Synthetic hold · 10%")
+  } finally {
+    await i18n.changeLanguage(previous)
+    queryClient.clear()
+  }
 })

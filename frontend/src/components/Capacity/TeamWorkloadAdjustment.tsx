@@ -15,10 +15,10 @@ import { weekLabel } from "./shared"
 
 const WEEKDAY_KEYS = ["mon", "tue", "wed", "thu", "fri"] as const
 
-function weekdaysOf(mondayIso: string) {
+function weekdaysOf(mondayIso: string, locale: string = getLocale()) {
   const days = weekdaysIso(mondayIso)
   if (!days.length) return []
-  const locale = getLocale()
+  const translate = i18n.getFixedT(locale)
   return days.map((iso, index) => {
     const key = WEEKDAY_KEYS[index]
     const datePart =
@@ -27,7 +27,7 @@ function weekdaysOf(mondayIso: string) {
         : iso.slice(5).replace("-", "/")
     return {
       date: iso,
-      label: `${i18n.t(`capacity.team.weekdays.${key}`)} ${datePart}`,
+      label: `${translate(`capacity.team.weekdays.${key}`)} ${datePart}`,
     }
   })
 }
@@ -55,7 +55,8 @@ export function Adjustment({
   initialPercent?: number
   close: () => void
 }) {
-  const { t } = useTranslation()
+  const { t, i18n: activeI18n } = useTranslation()
+  const locale = activeI18n.resolvedLanguage ?? activeI18n.language
   const client = useQueryClient()
   const [start, setStart] = useState(week)
   const [end, setEnd] = useState(week)
@@ -63,7 +64,10 @@ export function Adjustment({
   const currentWeekLoad = workload.weeks.find(
     (item) => item.week_start === activeWeek,
   )
-  const weekDays = useMemo(() => weekdaysOf(activeWeek), [activeWeek])
+  const weekDays = useMemo(
+    () => weekdaysOf(activeWeek, locale),
+    [activeWeek, locale],
+  )
   const initialLeaveDates = useMemo(
     () => weekLeaveDates(workload, activeWeek),
     [workload, activeWeek],

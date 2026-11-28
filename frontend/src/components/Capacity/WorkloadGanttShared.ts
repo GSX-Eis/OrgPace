@@ -1,3 +1,6 @@
+import type { TFunction } from "i18next"
+import { useMemo } from "react"
+import { useTranslation } from "react-i18next"
 import type { WorkloadPublic } from "@/client"
 import i18n from "@/i18n"
 import { formatDate } from "@/i18n/format"
@@ -36,20 +39,25 @@ export type WorkloadSelection = {
   week: string
 }
 
-export function taskSegmentsFor(row: WorkloadPublic) {
+export function taskSegmentsFor(
+  row: WorkloadPublic,
+  translate: TFunction = i18n.t,
+) {
   return [
     ...(row.assignments ?? []).map((item) => ({
       ...item,
       end_date: item.due_date,
-      label: `${item.kind === "borrow" ? i18n.t("capacity.gantt.borrowPrefix") : ""}${item.title} · ${formatCapacityPercent(item.allocation_percent)}`,
-      note: item.legacy_start ? i18n.t("capacity.workload.legacyStart") : null,
+      label: `${item.kind === "borrow" ? translate("capacity.gantt.borrowPrefix") : ""}${item.title} · ${formatCapacityPercent(item.allocation_percent)}`,
+      note: item.legacy_start
+        ? translate("capacity.workload.legacyStart")
+        : null,
     })),
     ...(row.holds ?? []).map((item, index) => ({
       ...item,
       id: `hold-${item.proposal_id}-${index}`,
       kind: "hold" as const,
-      label: `${i18n.t("capacity.gantt.holdPrefix")}${item.title} · ${formatCapacityPercent(item.allocation_percent)}`,
-      note: i18n.t("capacity.gantt.holdPendingExpiry", {
+      label: `${translate("capacity.gantt.holdPrefix")}${item.title} · ${formatCapacityPercent(item.allocation_percent)}`,
+      note: translate("capacity.gantt.holdPendingExpiry", {
         date: formatDate(item.expires_at, {
           dateStyle: "short",
           timeStyle: "medium",
@@ -57,4 +65,13 @@ export function taskSegmentsFor(row: WorkloadPublic) {
       }),
     })),
   ]
+}
+
+export function useTaskSegments(row: WorkloadPublic) {
+  const { i18n: activeI18n } = useTranslation()
+  const locale = activeI18n.resolvedLanguage ?? activeI18n.language
+  return useMemo(
+    () => taskSegmentsFor(row, activeI18n.getFixedT(locale)),
+    [row, activeI18n, locale],
+  )
 }

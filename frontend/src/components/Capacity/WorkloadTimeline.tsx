@@ -29,7 +29,7 @@ import {
 import {
   baseline,
   segmentKinds,
-  taskSegmentsFor,
+  useTaskSegments,
   type WorkloadSelection,
 } from "./WorkloadGanttShared"
 
@@ -121,7 +121,7 @@ export function Timeline({
   const firstMs = useMemo(() => Date.parse(first), [first])
   const end = addWeeks(first, weeks.length)
   const dayIndex = (date: string) => (Date.parse(date) - firstMs) / DAY_MS
-  const segments = useMemo(() => taskSegmentsFor(row), [row])
+  const segments = useTaskSegments(row)
   const sep = t("capacity.common.listSeparator")
 
   return (

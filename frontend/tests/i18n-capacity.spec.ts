@@ -4,7 +4,7 @@ import {
   type Page,
   test,
 } from "@playwright/test"
-import type { EmployeeAccount } from "../src/client"
+import type { EmployeeAccount, WorkloadPublic } from "../src/client"
 import { expectEnglishCopy } from "./utils/copy"
 import { seedLegacyAcceptedDemand } from "./utils/legacyCapacity"
 
@@ -829,4 +829,136 @@ test("demands, projects, assignments, task tracking, feedback, extensions, and i
     page.getByRole("complementary", { name: "Project properties" }),
   ).toContainText("Requester · Client")
   await expectEnglishCopy(page)
+})
+
+test("team workload gantt timeline and details update borrow/hold labels on live locale switch without remount", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(120000)
+  const fixture = await setupEnglishCapacityOrg(
+    page,
+    request,
+    "Synthetic Live Locale Org",
+    [{ code: "M", name: "Alice Lead", dept: "Engineering" }],
+    { enabled: true, managerCodes: ["M"] },
+  )
+  const manager = fixture.accounts.find((a) => a.employee_code === "M")!
+  const weeks = Array.from({ length: 8 }, (_, index) => {
+    const date = new Date(Date.UTC(2027, 0, 4 + index * 7))
+    return {
+      week_start: date.toISOString().slice(0, 10),
+      capacity_percent: 100,
+      other_percent: 0,
+      platform_percent: index === 0 ? 35 : 0,
+      hold_percent: index === 0 ? 10 : 0,
+      holds: [],
+      status: "confirmed" as const,
+      confirmed_at: "2027-01-01T00:00:00Z",
+      legacy_start: false,
+    }
+  })
+  const identicalWorkloadPayload: { data: WorkloadPublic[]; count: number } = {
+    count: 1,
+    data: [
+      {
+        employee_id: manager.id,
+        employee_name: "Alice Lead",
+        department_id: manager.department!.id,
+        department_name: manager.department!.name,
+        jira_task_count: 0,
+        base_percent: 0,
+        platform_percent: 35,
+        confirmed_percent: 35,
+        band: "available",
+        correction_pending: {},
+        last_confirmed: null,
+        weeks,
+        unavailabilities: [],
+        assignments: [
+          {
+            id: "a-synth",
+            demand_id: "d-1",
+            title: "Synthetic",
+            capability_name: "Delivery",
+            requesting_department_name: "Sales",
+            kind: "borrow",
+            allocation_percent: 25,
+            start_date: "2027-01-04",
+            due_date: "2027-01-08",
+            legacy_start: true,
+          },
+        ],
+        holds: [
+          {
+            proposal_id: "p-synth",
+            demand_id: "d-2",
+            title: "Synthetic hold",
+            capability_name: "Delivery",
+            requesting_department_name: "Ops",
+            is_borrow: false,
+            allocation_percent: 10,
+            start_date: "2027-01-04",
+            end_date: "2027-01-08",
+            expires_at: "2027-01-08T10:00:00Z",
+          },
+        ],
+      },
+    ],
+  }
+
+  await page.route(
+    `**/api/v1/orgs/${fixture.admin.org_id}/capacity/workloads*`,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(identicalWorkloadPayload),
+      }),
+  )
+
+  await fixture.open(fixture.tokens.get("M")!, "/capacity?tab=team")
+  await page.getByTestId("language-switch-zh-CN").click()
+  await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN")
+
+  const ganttZh = page.getByRole("table", {
+    name: "团队负荷，按部门、姓名排序",
+  })
+  await expect(ganttZh).toContainText("借调 · Synthetic · 25%")
+  await expect(ganttZh).toContainText("暂留 · Synthetic hold · 10%")
+
+  await ganttZh.getByRole("button", { name: /借调 · Synthetic/ }).click()
+  const drawerZh = page.getByRole("dialog", {
+    name: "负荷明细 · Alice Lead",
+  })
+  await expect(drawerZh).toContainText("开始日期未确认")
+  await expect(drawerZh).toContainText("待确认，到期：")
+
+  // Switch zh-CN -> en without page reload; backend returns the exact same JSON payload.
+  await page.getByTestId("language-switch-en").click()
+  await expect(page.locator("html")).toHaveAttribute("lang", "en")
+
+  const ganttEn = page.getByRole("table", {
+    name: "Team workload, sorted by department and name",
+  })
+  await expect(ganttEn).toContainText("Borrow · Synthetic · 25%")
+  await expect(ganttEn).toContainText("Hold · Synthetic hold · 10%")
+  await expect(ganttEn).not.toContainText("借调 ·")
+  await expect(ganttEn).not.toContainText("暂留 ·")
+
+  const drawerEn = page.getByRole("dialog", {
+    name: "Workload Details · Alice Lead",
+  })
+  await expect(drawerEn).toContainText("Start date unconfirmed")
+  await expect(drawerEn).toContainText("Pending confirmation, expires:")
+  await expect(drawerEn).not.toContainText("开始日期未确认")
+  await expect(drawerEn).not.toContainText("待确认，到期：")
+
+  // Switch en -> zh-CN without reload to verify bidirectional updates.
+  await page.getByTestId("language-switch-zh-CN").click()
+  await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN")
+  await expect(ganttZh).toContainText("借调 · Synthetic · 25%")
+  await expect(ganttZh).toContainText("暂留 · Synthetic hold · 10%")
+  await expect(drawerZh).toContainText("开始日期未确认")
+  await expect(drawerZh).toContainText("待确认，到期：")
 })
