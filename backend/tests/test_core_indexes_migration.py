@@ -167,15 +167,62 @@ def _assert_preserved_schema(engine: Engine) -> None:
     }
 
 
+def _assert_single_head_chain(
+    script: ScriptDirectory, *, revision: str, previous: str
+) -> None:
+    heads = script.get_heads()
+    assert len(heads) == 1, f"Expected single Alembic head, got {heads}"
+    rev = script.get_revision(revision)
+    assert rev is not None
+    assert rev.down_revision == previous
+    assert revision in {r.revision for r in script.walk_revisions(head=heads[0])}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("extra_revisions", "should_pass"),
+    [
+        pytest.param((), True, id="no-successor"),
+        pytest.param((("e58a1b2c3d4f", REVISION),), True, id="valid-successor"),
+        pytest.param((("e58a1b2c3d4f", PREVIOUS),), False, id="divergent-heads"),
+    ],
+)
+def test_single_head_invariant_allows_successor_and_rejects_fork(
+    tmp_path: Path,
+    extra_revisions: tuple[tuple[str, str | None], ...],
+    should_pass: bool,
+) -> None:
+    versions = tmp_path / "versions"
+    versions.mkdir()
+    revisions: tuple[tuple[str, str | None], ...] = (
+        (PREVIOUS, None),
+        (REVISION, PREVIOUS),
+        *extra_revisions,
+    )
+    for rev_id, parent in revisions:
+        (versions / f"{rev_id}.py").write_text(
+            f"revision = {rev_id!r}\n"
+            f"down_revision = {parent!r}\n"
+            "branch_labels = None\n"
+            "depends_on = None\n",
+            encoding="utf-8",
+        )
+    script = ScriptDirectory(str(tmp_path))
+    if should_pass:
+        _assert_single_head_chain(script, revision=REVISION, previous=PREVIOUS)
+    else:
+        with pytest.raises(AssertionError, match="Expected single Alembic head"):
+            _assert_single_head_chain(script, revision=REVISION, previous=PREVIOUS)
+
+
 @pytest.mark.unit
 def test_core_indexes_migration_metadata_and_safety() -> None:
     import app.models  # noqa: F401
 
     script = ScriptDirectory.from_config(_alembic_config())
-    assert script.get_heads() == [REVISION]
+    _assert_single_head_chain(script, revision=REVISION, previous=PREVIOUS)
     rev = script.get_revision(REVISION)
     assert rev is not None
-    assert rev.down_revision == PREVIOUS
 
     tree = ast.parse(Path(rev.path).read_text(encoding="utf-8"))
     op_calls = {
