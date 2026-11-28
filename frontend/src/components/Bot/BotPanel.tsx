@@ -13,6 +13,7 @@ import {
   type TurnResponse,
   type UserMessage,
 } from "@/client"
+import { invalidateCapacityAll } from "@/components/Capacity/queries"
 import {
   getAssistantTurn,
   selectAssistantSession,
@@ -181,7 +182,7 @@ export function BotConversation({
         ],
       )
       refreshProfileQueries()
-      void client.invalidateQueries({ queryKey: ["capacity", orgId] })
+      void invalidateCapacityAll(client, orgId)
     },
   })
   const sendTurn = useMutation({
@@ -221,7 +222,7 @@ export function BotConversation({
         input.action === "confirm_project_draft" ||
         input.action === "confirm_capacity"
       )
-        void client.invalidateQueries({ queryKey: ["capacity", orgId] })
+        void invalidateCapacityAll(client, orgId)
       if (initialization.current !== startedAt) return
       if (input.action === "confirm_review") {
         const resultText =

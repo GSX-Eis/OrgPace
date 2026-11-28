@@ -4,6 +4,7 @@ import {
   useExtensions,
   useMyAssignments,
 } from "@/components/Capacity/AssignmentFields"
+import { capacityKeys } from "@/components/Capacity/queries"
 import { useCapacitySettings } from "@/components/Capacity/shared"
 import { useOrg } from "./useOrg"
 import { useReviews } from "./useReviews"
@@ -14,7 +15,7 @@ export function useBorrowRequests(
   enabled = true,
 ) {
   return useQuery({
-    queryKey: ["capacity", orgId, "borrows", mine],
+    queryKey: capacityKeys.borrows(orgId, mine),
     queryFn: async ({ signal }) =>
       (
         await CapacityService.listBorrowRequests({
@@ -31,7 +32,7 @@ export const PENDING_DEMAND_PAGE_SIZE = 100
 
 export function pendingDemandPageOptions(orgId: string, skip = 0) {
   return queryOptions({
-    queryKey: ["capacity", orgId, "demands", "incoming", "actionable", skip],
+    queryKey: capacityKeys.incomingActionableDemands(orgId, skip),
     queryFn: async ({ signal }) =>
       (
         await CapacityService.listDemands({
@@ -56,7 +57,7 @@ export function usePendingApprovals() {
   const enabled = capacity.data?.enabled === true
   const profile = useReviews()
   const workloads = useQuery({
-    queryKey: ["capacity", orgId, "requests"],
+    queryKey: capacityKeys.workloadRequests(orgId),
     queryFn: async ({ signal }) =>
       (
         await CapacityService.listWorkloadRequests({

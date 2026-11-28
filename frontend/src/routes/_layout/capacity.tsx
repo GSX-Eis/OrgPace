@@ -17,6 +17,7 @@ import {
 } from "@/components/Capacity/PlanningWorkbench"
 import { ProjectCreate } from "@/components/Capacity/ProjectCreate"
 import { ProjectList, Projects } from "@/components/Capacity/ProjectDetail"
+import { capacityKeys } from "@/components/Capacity/queries"
 import {
   useCapacityDisabled,
   useCapacitySettings,
@@ -237,7 +238,7 @@ function CreateDrawer({
   const [open, setOpen] = useState(false)
   const navigate = Route.useNavigate()
   const saving =
-    useIsMutating({ mutationKey: ["capacity", orgId, "create", kind] }) > 0
+    useIsMutating({ mutationKey: capacityKeys.createMutation(orgId, kind) }) > 0
   const isProject = kind === "projects"
   const Form = isProject ? ProjectCreate : DemandsCreate
   const Icon = isProject ? FolderPlus : Plus

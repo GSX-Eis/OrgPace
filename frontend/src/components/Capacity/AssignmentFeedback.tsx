@@ -9,10 +9,11 @@ import {
 } from "@/client"
 import { Button } from "@/components/ui/button"
 import { CapacityError, useCapacityRefresh } from "./AssignmentFields"
+import { capacityKeys } from "./queries"
 
 export function useFeedbackAssignments(orgId: string, demandId?: string) {
   return useQuery({
-    queryKey: ["capacity", orgId, "feedback-assignments", demandId],
+    queryKey: capacityKeys.feedbackAssignments(orgId, demandId),
     queryFn: async () =>
       (
         await CapacityTrackingService.trackingListFeedbackAssignments({

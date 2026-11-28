@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { DemandScheduleSummary, demandStatusLabel } from "./DemandSchedule"
 import { detailAside, detailColumns } from "./PlanningWorkbench"
+import { capacityKeys } from "./queries"
 import {
   formatDateOptional,
   formatIsoDate,
@@ -25,7 +26,7 @@ const impactKeys: Record<ProjectImpactReason, string> = {
 export function ProjectList({ orgId }: { orgId: string }) {
   const { t } = useTranslation()
   const query = useQuery({
-    queryKey: ["capacity", orgId, "projects"],
+    queryKey: capacityKeys.projects(orgId),
     queryFn: async () =>
       (await CapacityService.listProjects({ path: { org_id: orgId } })).data,
   })
@@ -72,7 +73,7 @@ export function Projects({
 }) {
   const { t } = useTranslation()
   const query = useQuery({
-    queryKey: ["capacity", orgId, "project", projectId],
+    queryKey: capacityKeys.project(orgId, projectId),
     retry: (count, error) => !isCapacityAccessDenied(error) && count < 3,
     queryFn: async () =>
       (

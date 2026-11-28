@@ -5,13 +5,13 @@ import { useTranslation } from "react-i18next"
 import { CapacityService } from "@/client"
 import { SetupError } from "@/components/Setup/SetupError"
 import { Input } from "@/components/ui/input"
+import { capacityKeys, invalidateCapacityAssignments } from "./queries"
 import { formatCapacityPercent } from "./shared"
 
 export function useCapacityRefresh(orgId: string) {
   const cache = useQueryClient()
   return () => {
-    cache.invalidateQueries({ queryKey: ["capacity", orgId] })
-    cache.invalidateQueries({ queryKey: ["inbox", orgId] })
+    void invalidateCapacityAssignments(cache, orgId)
   }
 }
 
@@ -146,7 +146,7 @@ export function NoteField({
 
 export function useMyAssignments(orgId: string, enabled = true) {
   return useQuery({
-    queryKey: ["capacity", orgId, "assignments-me"],
+    queryKey: capacityKeys.assignmentsMe(orgId),
     queryFn: async () =>
       (await CapacityService.listMyAssignments({ path: { org_id: orgId } }))
         .data,
@@ -156,7 +156,7 @@ export function useMyAssignments(orgId: string, enabled = true) {
 
 export function useExtensions(orgId: string, enabled = true) {
   return useQuery({
-    queryKey: ["capacity", orgId, "extensions"],
+    queryKey: capacityKeys.extensions(orgId),
     queryFn: async () =>
       (await CapacityService.listExtensionRequests({ path: { org_id: orgId } }))
         .data,

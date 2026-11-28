@@ -6,6 +6,7 @@ import {
   type ProjectDraftAction,
   type ProjectDraftCard,
 } from "@/client"
+import { invalidateCapacityAll } from "@/components/Capacity/queries"
 import { SetupError } from "@/components/Setup/SetupError"
 import { Button } from "@/components/ui/button"
 import { useOrg } from "@/hooks/useOrg"
@@ -91,8 +92,7 @@ export function FeishuProjectDraft({
   const confirm = useMutation({
     mutationFn: async () =>
       (await BotService.confirmFeishuProjectDraft({ query })).data,
-    onSuccess: () =>
-      client.invalidateQueries({ queryKey: ["capacity", orgId] }),
+    onSuccess: () => invalidateCapacityAll(client, orgId),
   })
   const result = confirm.data?.messages[0]
   const card = result?.type === "project_draft_card" ? result : preview.data

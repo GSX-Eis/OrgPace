@@ -8,6 +8,9 @@ import { Badge } from "@/components/ui/badge"
 import i18n, { getLocale } from "@/i18n"
 import { formatDate, formatDateRange, formatPercent } from "@/i18n/format"
 import { cn } from "@/lib/utils"
+import { capacityKeys } from "./queries"
+
+export { addWeeks } from "./dateUtils"
 
 export function isCapacityAccessDenied(error: unknown) {
   return (
@@ -18,7 +21,7 @@ export function isCapacityAccessDenied(error: unknown) {
 
 export function useCapacitySettings(orgId?: string) {
   return useQuery({
-    queryKey: ["capacity-settings", orgId],
+    queryKey: capacityKeys.settings(orgId),
     queryFn: async () =>
       (await CapacityService.getCapacitySettings({ path: { org_id: orgId! } }))
         .data,
@@ -52,7 +55,7 @@ export function useCapacityDisabled(orgId?: string) {
     const handleError = (error: unknown) => {
       if (!isCapacityDisabled(error, orgId)) return
       setDisabledOrgId(orgId)
-      client.invalidateQueries({ queryKey: ["capacity-settings", orgId] })
+      client.invalidateQueries({ queryKey: capacityKeys.settings(orgId) })
     }
     const unsubscribeQueries = client.getQueryCache().subscribe((event) => {
       if (
@@ -244,12 +247,6 @@ export function weekLabel(start: string) {
       ? formatDate(start, { month: "numeric", day: "numeric" })
       : start.slice(5).replace("-", "/")
   return i18n.t("capacity.workload.weekLabel", { date })
-}
-
-export function addWeeks(start: string, weeks: number) {
-  const date = new Date(`${start}T00:00:00Z`)
-  date.setUTCDate(date.getUTCDate() + weeks * 7)
-  return date.toISOString().slice(0, 10)
 }
 
 export function weekLoadLabel(week: WeekLoad) {

@@ -11,8 +11,8 @@ import { useIsMobile } from "@/hooks/useMobile"
 import i18n from "@/i18n"
 import { formatDate } from "@/i18n/format"
 import { cn } from "@/lib/utils"
+import { addWeeks, type DateRange, overlaps, weekRange } from "./dateUtils"
 import {
-  addWeeks,
   forecastOccupiedPercent,
   forecastSourceLabel,
   forecastSurface,
@@ -29,6 +29,8 @@ import {
   weekLabel,
   weekLoadLabel,
 } from "./shared"
+
+export { type DateRange, overlaps, weekRange }
 
 const timelineWidth = "min-w-[52rem]"
 const segmentKinds = {
@@ -77,23 +79,11 @@ function taskSegmentsFor(row: WorkloadPublic) {
   ]
 }
 
-type Segment = ReturnType<typeof taskSegmentsFor>[number]
-export type DateRange = Pick<Segment, "start_date" | "end_date">
 export type WorkloadSelection = {
   row: WorkloadPublic
   range: DateRange
   title: string
   week: string
-}
-
-export function weekRange(start: string): DateRange {
-  const sunday = new Date(start)
-  sunday.setUTCDate(sunday.getUTCDate() + 6)
-  return { start_date: start, end_date: sunday.toISOString().slice(0, 10) }
-}
-
-export function overlaps(a: DateRange, b: DateRange) {
-  return a.start_date <= b.end_date && b.start_date <= a.end_date
 }
 
 function otherWork(week: WeekLoad) {

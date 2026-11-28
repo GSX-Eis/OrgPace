@@ -26,6 +26,7 @@ import {
   type PlanningView,
   shortRequestNumber,
 } from "./PlanningWorkbench"
+import { capacityKeys } from "./queries"
 import {
   formatCapacityPercent,
   formatIsoDate,
@@ -132,7 +133,7 @@ function BorrowWorkbench({
 }) {
   const { t } = useTranslation()
   const assignments = useQuery({
-    queryKey: ["capacity", orgId, "active-borrow-assignments"],
+    queryKey: capacityKeys.activeBorrowAssignments(orgId),
     queryFn: async () =>
       (
         await CapacityTrackingService.trackingListActiveBorrowAssignments({

@@ -24,6 +24,7 @@ import {
   type PlanningView,
   shortRequestNumber,
 } from "./PlanningWorkbench"
+import { capacityKeys, useCapacityDepartments } from "./queries"
 
 const pageSize = 50
 const demandColumns: readonly [DemandStatusKey, string][] = [
@@ -55,7 +56,7 @@ export function DemandList({
   const [skip, setSkip] = useState(0)
   const path = { org_id: orgId }
   const demands = useQuery({
-    queryKey: ["capacity", orgId, "outgoing-demands", skip],
+    queryKey: capacityKeys.outgoingDemands(orgId, skip),
     queryFn: async () =>
       (
         await CapacityService.listDemands({
@@ -64,13 +65,7 @@ export function DemandList({
         })
       ).data,
   })
-  const departments = useQuery({
-    queryKey: ["capacity", orgId, "departments"],
-    enabled: canRequest,
-    queryFn: async () =>
-      (await CapacityService.listCapacityDepartments({ path })).data,
-    select: (result) => result.data,
-  })
+  const departments = useCapacityDepartments(orgId, canRequest)
   if (demands.isPending) return <ProfileLoading />
   if (demands.isError) return <ProfileError retry={() => demands.refetch()} />
   const render = (demand: DemandPublic) => {
@@ -217,7 +212,7 @@ function Demands({
 }) {
   const navigate = useNavigate()
   const risk = useQuery({
-    queryKey: ["capacity", orgId, "tracking-risk", demand],
+    queryKey: capacityKeys.trackingRisk(orgId, demand),
     enabled: side === "outgoing",
     retry: false,
     queryFn: async () =>

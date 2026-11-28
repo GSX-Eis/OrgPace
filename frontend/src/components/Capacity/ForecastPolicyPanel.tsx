@@ -9,7 +9,6 @@ import {
   type ForecastModifierKind,
   type ForecastPolicyInput,
   type ForecastPolicyPublic,
-  OrgsService,
 } from "@/client"
 import { SectionCard } from "@/components/Common/WorkbenchPrimitives"
 import { ProfileError } from "@/components/Profile/QueryState"
@@ -30,6 +29,12 @@ import { useOrg } from "@/hooks/useOrg"
 import i18n from "@/i18n"
 import { formatNumber } from "@/i18n/format"
 import { cn } from "@/lib/utils"
+import { currentMondayIso, isMondayIso } from "./dateUtils"
+import {
+  capacityKeys,
+  invalidateWorkloadMutation,
+  useOrgDepartments,
+} from "./queries"
 import { formatIsoDateRange, weekLabel } from "./shared"
 
 const ORG_SCOPE_VALUE = "__org__"
@@ -96,27 +101,6 @@ type EventDraft = {
   modifierKind: ForecastModifierKind
   modifierValue: string
   reason: string
-}
-
-function currentMondayIso(): string {
-  const now = new Date()
-  const day = now.getDay()
-  const diff = day === 0 ? -6 : 1 - day
-  const monday = new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate() + diff,
-  )
-  const y = monday.getFullYear()
-  const m = String(monday.getMonth() + 1).padStart(2, "0")
-  const d = String(monday.getDate()).padStart(2, "0")
-  return `${y}-${m}-${d}`
-}
-
-function isMondayIso(iso: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return false
-  const parsed = new Date(`${iso}T00:00:00Z`)
-  return !Number.isNaN(parsed.getTime()) && parsed.getUTCDay() === 1
 }
 
 function formatEventModifier(
@@ -227,7 +211,7 @@ export function ForecastPolicyPanel({
   >(null)
 
   const configQuery = useQuery({
-    queryKey: ["capacity", orgId, "forecast-policies"],
+    queryKey: capacityKeys.forecastPolicies(orgId),
     queryFn: async () =>
       (
         await CapacityService.listCapacityForecastPolicies({
@@ -236,7 +220,7 @@ export function ForecastPolicyPanel({
       ).data,
   })
   const eventsQuery = useQuery({
-    queryKey: ["capacity", orgId, "forecast-events"],
+    queryKey: capacityKeys.forecastEvents(orgId),
     queryFn: async () =>
       (
         await CapacityService.listCapacityForecastEvents({
@@ -245,24 +229,11 @@ export function ForecastPolicyPanel({
         })
       ).data,
   })
-  const departmentsQuery = useQuery({
-    queryKey: ["org-departments", orgId],
-    queryFn: async () =>
-      (await OrgsService.readDepartments({ path: { org_id: orgId } })).data
-        .data,
-  })
+  const departmentsQuery = useOrgDepartments(orgId)
 
   const refreshCapacityData = async (message: string) => {
     setStatusMessage(message)
-    await Promise.all([
-      client.invalidateQueries({ queryKey: ["capacity", orgId] }),
-      client.invalidateQueries({
-        queryKey: ["capacity", orgId, "forecast-policies"],
-      }),
-      client.invalidateQueries({
-        queryKey: ["capacity", orgId, "forecast-events"],
-      }),
-    ])
+    await invalidateWorkloadMutation(client, orgId, { forecastConfig: true })
   }
 
   const upsertPolicy = useMutation({
