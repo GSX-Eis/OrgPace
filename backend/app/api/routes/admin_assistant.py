@@ -22,17 +22,16 @@ from app.domains.admin_assistant.schemas import (
     SecretInput,
     TestConnection,
 )
-from app.domains.bot import attachments, streaming
-from app.domains.bot.schemas import SessionCreated, TextMessage
-from app.domains.bot.store import BotSessionNotFound, SessionList, messages_for
-from app.domains.bot.store import list_sessions as recent_sessions
+from app.domains.chat_runtime import attachments, streaming
+from app.domains.chat_runtime.schemas import SessionCreated, SessionList, TextMessage
+from app.domains.chat_runtime.store import SessionNotFound, messages_for
 from app.i18n import tr
 
 
 def require_admin(principal: OrgPrincipalDep) -> None:
     # Conceal private assistant sessions from non-administrators as well.
     if not principal.is_org_admin:
-        raise BotSessionNotFound()
+        raise SessionNotFound()
 
 
 router = APIRouter(
@@ -46,7 +45,7 @@ router = APIRouter(
 @router.get("/sessions")
 def list_sessions(principal: OrgAdminDep, session: SessionDep) -> SessionList:
     store.ensure_setup_session(session, principal)
-    return recent_sessions(session, principal, administrator=True)
+    return store.list_sessions(session, principal)
 
 
 @router.post("/sessions", status_code=201)
@@ -61,7 +60,7 @@ def list_messages(
     row = store.get_session(session, principal, session_id)
     messages = messages_for(session, row)
     if not messages and row.turn_count:
-        raise BotSessionNotFound()
+        raise SessionNotFound()
     return [AdminSessionMessage.model_validate(m.model_dump()) for m in messages]
 
 

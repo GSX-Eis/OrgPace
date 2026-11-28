@@ -1,17 +1,46 @@
 from uuid import UUID
 
+from sqlalchemy import false
 from sqlalchemy.dialects.postgresql import insert
 from sqlmodel import Session, col, select
 
 from app.authz.principal import Principal
-from app.domains.admin_assistant.models import AdminAssistantSession
-from app.domains.bot import store as messages
+from app.domains.admin_assistant.models import (
+    AdminAssistantMessage,
+    AdminAssistantSession,
+)
+from app.domains.chat_runtime import store as messages
+from app.domains.chat_runtime.schemas import SessionList, TextMessage
+from app.domains.chat_runtime.store import (
+    SessionNotFound,
+    list_session_summaries,
+    register_session_getter,
+)
+from app.domains.setup import wizard
 from app.i18n import tr
+
+
+def list_sessions(db: Session, principal: Principal) -> SessionList:
+    if not principal.is_org_admin or principal.user_id is None:
+        raise SessionNotFound()
+    owner = col(AdminAssistantSession.user_id) == principal.user_id
+    pending_setup = not wizard.read_setup(db, principal.org_id).completed
+    pinned = (
+        (col(AdminAssistantSession.purpose) == "setup") if pending_setup else false()
+    )
+    return list_session_summaries(
+        db,
+        principal,
+        AdminAssistantSession,
+        AdminAssistantMessage,
+        owner,
+        pinned=pinned,
+    )
 
 
 def create_session(db: Session, principal: Principal) -> AdminAssistantSession:
     if not principal.is_org_admin or principal.user_id is None:
-        raise messages.BotSessionNotFound()
+        raise SessionNotFound()
     row = AdminAssistantSession(org_id=principal.org_id, user_id=principal.user_id)
     db.add(row)
     db.commit()
@@ -33,8 +62,11 @@ def get_session(
     )
     row = db.exec(query.with_for_update() if lock else query).one_or_none()
     if row is None or not principal.is_org_admin:
-        raise messages.BotSessionNotFound()
+        raise SessionNotFound()
     return row
+
+
+register_session_getter("admin", get_session)
 
 
 def ensure_setup_session(db: Session, principal: Principal) -> None:
@@ -43,12 +75,10 @@ def ensure_setup_session(db: Session, principal: Principal) -> None:
         SetupChecklistCard,
         SetupFormCard,
     )
-    from app.domains.bot.schemas import TextMessage
-    from app.domains.setup.wizard import read_setup
 
     if not principal.is_org_admin or principal.user_id is None:
-        raise messages.BotSessionNotFound()
-    setup = read_setup(db, principal.org_id)
+        raise SessionNotFound()
+    setup = wizard.read_setup(db, principal.org_id)
     if setup.completed:
         return
     row = AdminAssistantSession(

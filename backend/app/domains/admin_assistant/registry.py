@@ -48,7 +48,6 @@ from app.domains.admin_assistant.rules import (
 from app.domains.admin_assistant.sources import register_sources
 from app.domains.audit import service as audit
 from app.domains.base import utc_now
-from app.domains.bot import settings as bot
 from app.domains.capability import department as department_capabilities
 from app.domains.capability import search
 from app.domains.capability.service import read_editor
@@ -64,6 +63,7 @@ from app.domains.capacity.settings import CapacityNotFound
 from app.domains.capacity.settings import read_settings as read_capacity_settings
 from app.domains.capacity.tools import list_projects
 from app.domains.change_request.handover import withdraw_deactivated_requests
+from app.domains.chat_runtime import settings as bot
 from app.domains.drafting import settings as drafting
 from app.domains.drafting import update_settings as updates
 from app.domains.drafting.note import read_note

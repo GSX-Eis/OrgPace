@@ -1,0 +1,190 @@
+import asyncio
+import json
+import logging
+from collections.abc import AsyncGenerator, Callable
+from contextlib import AbstractAsyncContextManager
+from threading import Event
+from typing import Literal
+from uuid import uuid4
+
+import anyio
+import httpx
+from fastapi import Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, JsonValue
+from sqlalchemy import Engine
+from sqlmodel import Session
+from starlette.types import Send
+
+from app.core.db import engine
+from app.domains.chat_runtime.admission import (
+    BotBusy,
+    BotDraftingPriority,
+    BotQuotaPaused,
+    BotRateLimited,
+)
+from app.domains.chat_runtime.presentation import DEADLINE_MESSAGE, retry_time
+from app.domains.chat_runtime.store import SessionNotFound
+from app.domains.model.client import (
+    ModelRateLimited,
+    ModelServiceError,
+    ModelUnavailable,
+)
+from app.domains.model.pi_client import PiSessionInvalid, TurnStream, cancel_run
+from app.i18n import current_locale, tr, use_locale
+
+logger = logging.getLogger(__name__)
+
+
+class TextEvent(BaseModel):
+    type: Literal["text"]
+    text: str
+
+
+class ToolEvent(BaseModel):
+    type: Literal["tool"]
+    name: str
+    phase: Literal["start", "end"]
+    ok: bool
+
+
+class FinalEvent[T: BaseModel](BaseModel):
+    type: Literal["final"]
+    response: T
+
+
+class ErrorEvent(BaseModel):
+    type: Literal["error"]
+    message: str
+
+
+def _error_message(error: Exception) -> str:
+    if isinstance(error, (SessionNotFound, PiSessionInvalid)):
+        return tr("会话已过期，请重新开始对话")
+    if isinstance(error, BotRateLimited):
+        return tr(
+            "对话次数已达上限，请在 {retry_time} 后重试",
+            retry_time=retry_time(error.retry_at),
+        )
+    if isinstance(error, (BotQuotaPaused, ModelRateLimited)):
+        return tr("模型额度暂时用完，请稍后重试")
+    if isinstance(error, BotDraftingPriority):
+        return tr("正在起草画像，请稍后再试")
+    if isinstance(error, BotBusy):
+        return tr("系统正忙，请稍后重试")
+    if isinstance(error, (TimeoutError, httpx.TimeoutException)):
+        return tr("对话处理超时，请稍后重试")
+    if isinstance(error, ModelUnavailable):
+        if error.code == "deadline":
+            return tr(DEADLINE_MESSAGE)
+        if isinstance(error, ModelServiceError):
+            return tr(str(error))
+        return tr("模型服务暂时不可用，请稍后重试")
+    return tr("对话暂时出错，请稍后重试")
+
+
+class TurnStreamingResponse(StreamingResponse):
+    media_type = "application/x-ndjson"
+
+    def __init__(self, content: AsyncGenerator[str]) -> None:
+        super().__init__(
+            content, headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"}
+        )
+        self.events = content
+
+    async def stream_response(self, send: Send) -> None:
+        try:
+            await super().stream_response(send)
+        finally:
+            await self.events.aclose()
+
+
+def response(
+    run: Callable[[Session, TurnStream], BaseModel],
+    request: Request,
+    *,
+    deliver_final: Callable[[Engine, BaseModel], AbstractAsyncContextManager[BaseModel]]
+    | None = None,
+    db_engine: Engine | None = None,
+    cancel_fn: Callable[[str], None] | None = None,
+) -> StreamingResponse:
+    locale = current_locale.get()
+    active_engine = db_engine or engine
+    active_cancel = cancel_fn or cancel_run
+
+    async def events() -> AsyncGenerator[str]:
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue[dict[str, JsonValue] | BaseModel | None] = asyncio.Queue()
+
+        def emit(event: dict[str, JsonValue] | BaseModel | None) -> None:
+            loop.call_soon_threadsafe(queue.put_nowait, event)
+
+        stream = TurnStream(
+            run_id=str(uuid4()),
+            on_text=lambda delta: emit({"type": "text", "text": delta}),
+            on_tool=lambda name, phase, ok: emit(
+                {"type": "tool", "name": name, "phase": phase, "ok": ok}
+            ),
+            cancelled=Event(),
+        )
+
+        def work() -> None:
+            with use_locale(locale):
+                try:
+                    with Session(active_engine) as db:
+                        result = run(db, stream)
+                    if not stream.cancelled.is_set():
+                        emit(result)
+                except Exception as error:
+                    logger.warning(
+                        "Streaming turn failed error_type=%s", type(error).__name__
+                    )
+                    if not stream.cancelled.is_set():
+                        emit({"type": "error", "message": _error_message(error)})
+                finally:
+                    emit(None)
+
+        worker = asyncio.create_task(asyncio.to_thread(work))
+        finished = False
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=0.1)
+                except TimeoutError:
+                    if await request.is_disconnected():
+                        break
+                    continue
+                if event is None:
+                    await asyncio.shield(worker)
+                    finished = True
+                    break
+                if isinstance(event, BaseModel):
+                    if deliver_final is not None:
+                        async with deliver_final(active_engine, event) as result:
+                            yield (
+                                FinalEvent(
+                                    type="final", response=result
+                                ).model_dump_json()
+                                + "\n"
+                            )
+                    else:
+                        yield (
+                            FinalEvent(type="final", response=event).model_dump_json()
+                            + "\n"
+                        )
+                else:
+                    yield json.dumps(event, ensure_ascii=False) + "\n"
+        finally:
+            # Starlette cancels this generator on disconnect; join before releasing it.
+            with anyio.CancelScope(shield=True):
+                if not finished:
+                    stream.cancelled.set()
+                    try:
+                        await asyncio.to_thread(active_cancel, stream.run_id)
+                    except httpx.HTTPError:
+                        logger.warning(
+                            "Pi cancellation failed; waiting for turn cleanup"
+                        )
+                await asyncio.shield(worker)
+
+    return TurnStreamingResponse(events())

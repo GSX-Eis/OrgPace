@@ -15,7 +15,6 @@ from app.domains.admin_assistant.models import (
 )
 from app.domains.admin_assistant.store import ensure_setup_session
 from app.domains.base import utc_now
-from app.domains.bot import attachments
 from app.domains.bot.models import BotSetting
 from app.domains.bot.store import (
     append_message,
@@ -24,6 +23,7 @@ from app.domains.bot.store import (
     messages_for,
     save_state,
 )
+from app.domains.chat_runtime import attachments
 from app.domains.setup import wizard
 from app.domains.setup.models import SetupStatus, SetupStepState
 from app.models import User

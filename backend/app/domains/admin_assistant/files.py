@@ -13,7 +13,7 @@ from app.authz.principal import Principal
 from app.core.secrets import encrypt_secret
 from app.domains.admin_assistant import store
 from app.domains.admin_assistant.models import AdminAssistantSession
-from app.domains.bot import store as messages
+from app.domains.chat_runtime import store as messages
 from app.domains.org.roster import service as roster
 from app.domains.org.roster.schemas import RosterImportPreview
 from app.domains.org.timezone import read_timezone

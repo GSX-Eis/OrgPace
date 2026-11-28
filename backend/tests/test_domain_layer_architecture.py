@@ -46,31 +46,8 @@ LAYER_BY_DOMAIN: dict[str, int] = {
 # All cross-layer upward edges have been eliminated.
 UPWARD_WHITELIST: set[tuple[str, str]] = set()
 
-# Temporary whitelist strictly reserved for D9a (bot <-> admin_assistant L3 cycle).
-# Remove entries immediately once chat_runtime is extracted.
-L3_BOT_ADMIN_ASSISTANT_WHITELIST: set[tuple[str, str]] = {
-    ("admin_assistant/change_set.py", "app.domains.bot.store"),
-    ("admin_assistant/core.py", "app.domains.bot.admission.BotBusy"),
-    ("admin_assistant/core.py", "app.domains.bot.admission.BotDraftingPriority"),
-    ("admin_assistant/core.py", "app.domains.bot.admission.BotQuotaPaused"),
-    ("admin_assistant/core.py", "app.domains.bot.admission.BotRateLimited"),
-    ("admin_assistant/core.py", "app.domains.bot.admission.begin_turn"),
-    ("admin_assistant/core.py", "app.domains.bot.attachments"),
-    ("admin_assistant/core.py", "app.domains.bot.presentation.DEADLINE_MESSAGE"),
-    ("admin_assistant/core.py", "app.domains.bot.presentation.retry_time"),
-    ("admin_assistant/core.py", "app.domains.bot.store"),
-    ("admin_assistant/files.py", "app.domains.bot.store"),
-    ("admin_assistant/materials.py", "app.domains.bot.attachments.AttachmentError"),
-    (
-        "admin_assistant/materials.py",
-        "app.domains.bot.attachments.get_session_attachment",
-    ),
-    ("admin_assistant/registry.py", "app.domains.bot.settings"),
-    ("admin_assistant/store.py", "app.domains.bot.store"),
-    ("admin_assistant/tools.py", "app.domains.bot.attachments"),
-    ("bot/admission.py", "app.domains.admin_assistant.store"),
-    ("bot/attachments.py", "app.domains.admin_assistant.store"),
-}
+# Permanently empty after NERE-1561 extracted domains/chat_runtime/.
+L3_BOT_ADMIN_ASSISTANT_WHITELIST: set[tuple[str, str]] = set()
 
 
 @dataclass(frozen=True)
@@ -254,10 +231,27 @@ def test_domain_4layer_architecture_and_scc_convergence() -> None:
     assert (DOMAINS / "drafting" / "department_defaults.py").exists()
 
     # Largest SCC converged from 21 (d49cc80) / 13 (1544ab8) down to <= 5,
-    # and access_token is completely outside any multi-node cycle.
+    # and access_token / chat_runtime are completely outside any multi-node cycle.
     multi_sccs = [scc for scc in result.sccs if len(scc) > 1]
     assert max((len(scc) for scc in result.sccs), default=0) <= 5
     assert all("access_token" not in scc for scc in multi_sccs)
+    assert all("chat_runtime" not in scc for scc in multi_sccs)
+    assert "admin_assistant" not in result.edges.get("bot", set())
+    assert "bot" not in result.edges.get("admin_assistant", set())
+    # admin_assistant/ must not import any domains/bot/ module (even models/schemas).
+    for path in sorted((DOMAINS / "admin_assistant").rglob("*.py")):
+        rel_parts = [
+            "app",
+            "domains",
+            "admin_assistant",
+            *path.relative_to(DOMAINS / "admin_assistant").parts[:-1],
+        ]
+        bot_imports = [
+            imp
+            for imp in _iter_runtime_imports(ast.parse(path.read_text()), rel_parts)
+            if imp == "app.domains.bot" or imp.startswith("app.domains.bot.")
+        ]
+        assert bot_imports == [], f"{path.name} imports bot: {bot_imports}"
 
 
 @pytest.mark.parametrize(

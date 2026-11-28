@@ -278,18 +278,24 @@ def test_admin_hourly_limit_and_availability(demo: tuple, db: Session) -> None:
 
 
 @pytest.mark.parametrize(
-    "error",
+    "error,expected",
     [
-        ModelUnavailable(),
-        admission.BotDraftingPriority(),
-        PiBusy(),
-        ModelRateLimited(None),
-        ModelServiceError("upstream_unavailable"),
-        None,
+        (ModelUnavailable(), "模型暂时不可用"),
+        (admission.BotDraftingPriority(), "正在起草画像"),
+        (PiBusy(), "系统正忙"),
+        (ModelRateLimited(None), "暂时无法对话"),
+        (ModelServiceError("model_not_found"), "这个模型不可用，请换一个模型"),
+        (ModelServiceError("upstream_rejected"), "模型服务拒绝了请求，请检查模型设置"),
+        (ModelServiceError("upstream_unavailable"), "模型服务暂时不可用，请稍后重试"),
+        (None, "模型暂时不可用"),
     ],
 )
 def test_failed_turn_releases_lease(
-    demo: tuple, db: Session, monkeypatch: pytest.MonkeyPatch, error: Exception | None
+    demo: tuple,
+    db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception | None,
+    expected: str,
 ) -> None:
     _, people, _ = demo
     p = admin(db, people["E02"].org_id)
@@ -314,10 +320,9 @@ def test_failed_turn_releases_lease(
         response.messages[0].type == "text"
         and "未完成" not in response.messages[0].text
     )
+    assert expected in response.messages[0].text
     assert response.messages[1].type == "link"
     assert response.messages[1].page == "/employees"
-    if isinstance(error, admission.BotDraftingPriority):
-        assert "正在起草画像" in response.messages[0].text
     db.refresh(row)
     assert row.lease_until is None
     assert len(messages.messages_for(db, row)) == 2
@@ -345,9 +350,7 @@ def test_model_failure_logs_only_metadata(
     )
     assert response.messages[0].type == "text"
     assert response.messages[0].text == (
-        DEADLINE_MESSAGE
-        if code == "deadline"
-        else "模型暂时不可用，请稍后重试，你也可以直接在对应页面操作。"
+        DEADLINE_MESSAGE if code == "deadline" else "模型服务暂时不可用，请稍后重试"
     )
     records = [r for r in caplog.records if r.name == core.__name__]
     assert len(records) == 1

@@ -10,7 +10,8 @@ from sqlmodel import Session
 
 from app.core.db import engine
 from app.domains.base import utc_now
-from app.domains.bot import admission, core
+from app.domains.bot import core
+from app.domains.chat_runtime import admission
 from app.domains.im import actions, binding, gateway
 from app.domains.im.adapters.base import Adapter, Attachment, Event, ImError
 from app.domains.im.gateway import Gateway

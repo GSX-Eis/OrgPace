@@ -16,7 +16,8 @@ from sqlmodel import Session
 
 from app.core.config import settings
 from app.domains.base import utc_now
-from app.domains.bot import admission, core, store, tools
+from app.domains.bot import core, store, tools
+from app.domains.chat_runtime import admission
 from app.domains.model import pi_client
 from app.domains.model.client import ModelUnavailable
 from app.main import app

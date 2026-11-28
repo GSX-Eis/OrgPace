@@ -21,7 +21,7 @@ from app.domains.admin_assistant.models import (
     AdminChangeSet,
 )
 from app.domains.base import utc_now
-from app.domains.bot import admission, store
+from app.domains.bot import store
 from app.domains.bot.admission import (
     BotBusy,
     BotDraftingPriority,
@@ -31,6 +31,7 @@ from app.domains.bot.admission import (
 )
 from app.domains.bot.models import BotAttachment, BotMessage, BotSession, BotSetting
 from app.domains.bot.settings import BotSettings
+from app.domains.chat_runtime import admission
 from app.domains.model.client import ModelRateLimited
 from app.domains.model.models import ModelSetting
 from app.domains.model.pi_client import PiBusy
