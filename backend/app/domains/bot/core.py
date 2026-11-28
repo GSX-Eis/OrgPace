@@ -20,6 +20,7 @@ from app.domains.bot.prompts import system_prompt
 from app.domains.capacity import assistant as capacity
 from app.domains.change_request import employee
 from app.domains.change_request.models import ReviewVia
+from app.domains.chat_runtime.presentation import DEADLINE_MESSAGE as DEADLINE_MESSAGE
 from app.domains.chat_runtime.turn import PiTurnSpec, TurnErrorCopy, execute_turn
 from app.domains.inbox import service as inbox
 from app.domains.model import pi_client

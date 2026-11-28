@@ -19,10 +19,11 @@ from sqlmodel import Session, select
 from app.core.db import engine
 from app.core.observability import before_breadcrumb
 from app.core.secrets import decrypt_secret, encrypt_secret
-from app.domains.bot import attachments, core, store
+from app.domains.bot import core, store
 from app.domains.bot import schemas as s
 from app.domains.bot.models import BotAttachment
 from app.domains.change_request.models import ProfileChangeRequest, ReviewDecision
+from app.domains.chat_runtime import attachments
 from app.domains.im import actions, binding, gateway
 from app.domains.im.adapters import feishu
 from app.domains.im.adapters.base import Event
