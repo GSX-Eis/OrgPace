@@ -26,6 +26,7 @@ from app.domains.capacity.schemas import (
     WorkloadWeeksInput,
 )
 from app.domains.capacity.settings import require_enabled
+from app.domains.capacity.tracking import notify_unavailability
 from app.domains.capacity.workload_views import views, workload_reviewers
 from app.domains.inbox.models import InboxItem, InboxKind
 from app.domains.inbox.service import add_item
@@ -186,8 +187,6 @@ def _sync_week_unavailability(
     via: Via,
     client_name: str | None,
 ) -> None:
-    from app.domains.capacity.tracking import notify_unavailability
-
     if requested_capacity is None and on_leave is None and leave_dates is None:
         return
     if principal.user_id is None:
@@ -437,8 +436,6 @@ def register_unavailability(
     via: Via = "web",
     client_name: str | None = None,
 ) -> UnavailabilityPublic:
-    from app.domains.capacity.tracking import notify_unavailability
-
     require_enabled(principal, session)
     subject = employee(principal, session, body.employee_id, lock=True)
     if not can_view_employee(principal, subject):

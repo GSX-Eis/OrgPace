@@ -16,9 +16,9 @@ from app.domains.capacity.common import (
     CapacityForbidden,
     CapacityNotFound,
     employee,
+    open_jira_task_counts,
     user_names,
 )
-from app.domains.capacity.forecast import open_jira_task_counts
 from app.domains.capacity.models import (
     AssignmentStatus,
     CapacityApproval,

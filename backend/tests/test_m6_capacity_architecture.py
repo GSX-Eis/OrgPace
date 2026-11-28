@@ -318,3 +318,71 @@ def test_foreign_key_counterexample() -> None:
         Column("capacity_id", Integer, ForeignKey("capacity_probe.id")),
     )
     assert foreign_key_violations(metadata) == ["profile_probe"]
+
+
+def test_workload_split_has_no_delayed_cycle_imports_and_keeps_facade() -> None:
+    from app.domains.capacity import workload
+
+    targets = (
+        "app.domains.capacity.workload",
+        "app.domains.capacity.forecast",
+        "app.domains.capacity.tracking",
+        "app.domains.capacity.extension",
+    )
+    checked = [
+        APP / "domains" / "capacity" / name
+        for name in (
+            "forecast.py",
+            "workload.py",
+            "workload_views.py",
+            "workload_weeks.py",
+            "workload_carry_over.py",
+            "workload_requests.py",
+        )
+    ]
+    delayed: list[str] = []
+    for path in checked:
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for inner in ast.walk(node):
+                    if isinstance(inner, ast.Import):
+                        for alias in inner.names:
+                            if alias.name.startswith(targets):
+                                delayed.append(f"{path.name}: {alias.name}")
+                    elif isinstance(inner, ast.ImportFrom) and inner.module:
+                        if inner.module.startswith(targets):
+                            delayed.append(f"{path.name}: {inner.module}")
+    assert delayed == []
+    for name in workload.__all__:
+        assert getattr(workload, name) is not None
+    assert set(workload.__all__) >= {
+        "AVAILABLE_BELOW",
+        "EXTENSION_REVIEW_NOTICE",
+        "WORKLOAD_REVIEW_NOTICE",
+        "ReversibleBatch",
+        "WorkloadSegments",
+        "WorkloadWeekExpired",
+        "commit_carry_over",
+        "decide_workload_request",
+        "delete_unavailability",
+        "employee",
+        "get_my_workload",
+        "list_unavailability",
+        "list_workload_requests",
+        "list_workloads",
+        "notify_employee",
+        "preview_carry_over",
+        "preview_carry_over_revert",
+        "register_unavailability",
+        "request_workload_change",
+        "revert_carry_over",
+        "set_week",
+        "set_weeks",
+        "unavailability_public",
+        "validate_request_week",
+        "views",
+        "workload_reviewer_names",
+        "workload_reviewers",
+        "workload_segments",
+    }

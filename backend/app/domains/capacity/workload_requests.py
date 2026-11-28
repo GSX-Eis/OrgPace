@@ -8,6 +8,12 @@ from app.authz.principal import Principal
 from app.domains.base import utc_now
 from app.domains.capacity import calendar
 from app.domains.capacity.common import (
+    EXTENSION_REVIEW_NOTICE as EXTENSION_REVIEW_NOTICE,
+)
+from app.domains.capacity.common import (
+    WORKLOAD_REVIEW_NOTICE as WORKLOAD_REVIEW_NOTICE,
+)
+from app.domains.capacity.common import (
     CapacityConflict,
     CapacityNotFound,
     audit,
@@ -40,9 +46,6 @@ from app.domains.inbox.service import add_item
 from app.domains.org.models import Employee, EmploymentStatus
 from app.domains.review.routing import can_review, reviewable_employees, reviewers_for
 from app.i18n import bilingual, tr, use_locale
-
-WORKLOAD_REVIEW_NOTICE = "有负荷调整申请等你审批"
-EXTENSION_REVIEW_NOTICE = "有延期申请等你审批"
 
 
 class WorkloadWeekExpired(HTTPException):

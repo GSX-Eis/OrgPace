@@ -1,46 +1,19 @@
 """Thin facade re-exporting capacity workload submodules."""
 
+from importlib import import_module
+from typing import TYPE_CHECKING
+
+from app.domains.capacity.common import (
+    EXTENSION_REVIEW_NOTICE as EXTENSION_REVIEW_NOTICE,
+)
+from app.domains.capacity.common import (
+    WORKLOAD_REVIEW_NOTICE as WORKLOAD_REVIEW_NOTICE,
+)
 from app.domains.capacity.common import (
     employee as employee,
 )
 from app.domains.capacity.common import (
     notify_employee as notify_employee,
-)
-from app.domains.capacity.workload_carry_over import (
-    ReversibleBatch as ReversibleBatch,
-)
-from app.domains.capacity.workload_carry_over import (
-    commit_carry_over as commit_carry_over,
-)
-from app.domains.capacity.workload_carry_over import (
-    preview_carry_over as preview_carry_over,
-)
-from app.domains.capacity.workload_carry_over import (
-    preview_carry_over_revert as preview_carry_over_revert,
-)
-from app.domains.capacity.workload_carry_over import (
-    revert_carry_over as revert_carry_over,
-)
-from app.domains.capacity.workload_requests import (
-    EXTENSION_REVIEW_NOTICE as EXTENSION_REVIEW_NOTICE,
-)
-from app.domains.capacity.workload_requests import (
-    WORKLOAD_REVIEW_NOTICE as WORKLOAD_REVIEW_NOTICE,
-)
-from app.domains.capacity.workload_requests import (
-    WorkloadWeekExpired as WorkloadWeekExpired,
-)
-from app.domains.capacity.workload_requests import (
-    decide_workload_request as decide_workload_request,
-)
-from app.domains.capacity.workload_requests import (
-    list_workload_requests as list_workload_requests,
-)
-from app.domains.capacity.workload_requests import (
-    request_workload_change as request_workload_change,
-)
-from app.domains.capacity.workload_requests import (
-    validate_request_week as validate_request_week,
 )
 from app.domains.capacity.workload_views import (
     AVAILABLE_BELOW as AVAILABLE_BELOW,
@@ -66,24 +39,75 @@ from app.domains.capacity.workload_views import (
 from app.domains.capacity.workload_views import (
     workload_segments as workload_segments,
 )
-from app.domains.capacity.workload_weeks import (
-    delete_unavailability as delete_unavailability,
-)
-from app.domains.capacity.workload_weeks import (
-    list_unavailability as list_unavailability,
-)
-from app.domains.capacity.workload_weeks import (
-    register_unavailability as register_unavailability,
-)
-from app.domains.capacity.workload_weeks import (
-    set_week as set_week,
-)
-from app.domains.capacity.workload_weeks import (
-    set_weeks as set_weeks,
-)
-from app.domains.capacity.workload_weeks import (
-    unavailability_public as unavailability_public,
-)
+
+if TYPE_CHECKING:
+    from app.domains.capacity.workload_carry_over import (
+        ReversibleBatch as ReversibleBatch,
+    )
+    from app.domains.capacity.workload_carry_over import (
+        commit_carry_over as commit_carry_over,
+    )
+    from app.domains.capacity.workload_carry_over import (
+        preview_carry_over as preview_carry_over,
+    )
+    from app.domains.capacity.workload_carry_over import (
+        preview_carry_over_revert as preview_carry_over_revert,
+    )
+    from app.domains.capacity.workload_carry_over import (
+        revert_carry_over as revert_carry_over,
+    )
+    from app.domains.capacity.workload_requests import (
+        WorkloadWeekExpired as WorkloadWeekExpired,
+    )
+    from app.domains.capacity.workload_requests import (
+        decide_workload_request as decide_workload_request,
+    )
+    from app.domains.capacity.workload_requests import (
+        list_workload_requests as list_workload_requests,
+    )
+    from app.domains.capacity.workload_requests import (
+        request_workload_change as request_workload_change,
+    )
+    from app.domains.capacity.workload_requests import (
+        validate_request_week as validate_request_week,
+    )
+    from app.domains.capacity.workload_weeks import (
+        delete_unavailability as delete_unavailability,
+    )
+    from app.domains.capacity.workload_weeks import (
+        list_unavailability as list_unavailability,
+    )
+    from app.domains.capacity.workload_weeks import (
+        register_unavailability as register_unavailability,
+    )
+    from app.domains.capacity.workload_weeks import (
+        set_week as set_week,
+    )
+    from app.domains.capacity.workload_weeks import (
+        set_weeks as set_weeks,
+    )
+    from app.domains.capacity.workload_weeks import (
+        unavailability_public as unavailability_public,
+    )
+
+_LAZY_SUBMODULES: dict[str, str] = {
+    "ReversibleBatch": "app.domains.capacity.workload_carry_over",
+    "WorkloadWeekExpired": "app.domains.capacity.workload_requests",
+    "commit_carry_over": "app.domains.capacity.workload_carry_over",
+    "decide_workload_request": "app.domains.capacity.workload_requests",
+    "delete_unavailability": "app.domains.capacity.workload_weeks",
+    "list_unavailability": "app.domains.capacity.workload_weeks",
+    "list_workload_requests": "app.domains.capacity.workload_requests",
+    "preview_carry_over": "app.domains.capacity.workload_carry_over",
+    "preview_carry_over_revert": "app.domains.capacity.workload_carry_over",
+    "register_unavailability": "app.domains.capacity.workload_weeks",
+    "request_workload_change": "app.domains.capacity.workload_requests",
+    "revert_carry_over": "app.domains.capacity.workload_carry_over",
+    "set_week": "app.domains.capacity.workload_weeks",
+    "set_weeks": "app.domains.capacity.workload_weeks",
+    "unavailability_public": "app.domains.capacity.workload_weeks",
+    "validate_request_week": "app.domains.capacity.workload_requests",
+}
 
 __all__ = [
     "AVAILABLE_BELOW",
@@ -115,3 +139,17 @@ __all__ = [
     "workload_reviewers",
     "workload_segments",
 ]
+
+
+def __getattr__(name: str) -> object:
+    # Keep demand->workload->tracking acyclic at import time; load mutation submodules on demand.
+    module_name = _LAZY_SUBMODULES.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(module_name), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted({*globals(), *__all__})
