@@ -1,5 +1,6 @@
 """Calendar schedules and atomic dispatch for Jira connections."""
 
+import logging
 from calendar import monthrange
 from datetime import datetime
 
@@ -10,6 +11,8 @@ from app.domains.source.models import SourceConnection, SyncRun
 from app.domains.source.schemas import JiraConfig
 from app.domains.source.sync import _enqueue, active_sync
 from app.domains.work.ingest import IngestCounts
+
+logger = logging.getLogger(__name__)
 
 
 def add_period(anchor: datetime, schedule: str) -> datetime:
@@ -49,26 +52,37 @@ def dispatch_due_syncs(session: Session, now: datetime) -> None:
             SourceConnection.sync_schedule != "off",
             col(SourceConnection.next_sync_at) <= now,
         )
+        .order_by(col(SourceConnection.id))
         .with_for_update(skip_locked=True)
     ).all()
     for connection in connections:
-        assert connection.next_sync_at is not None
-        due = connection.next_sync_at
-        while due <= now:
-            due = add_period(due, connection.sync_schedule)
-        connection.next_sync_at = due
-        session.add(connection)
-        if not active_sync(session, connection):
-            run = SyncRun(
-                org_id=connection.org_id,
-                connection_id=connection.id,
-                requested_by_user_id=connection.updated_by_user_id,
-                trigger="schedule",
-                input=JiraConfig.model_validate(connection.config).model_dump(
-                    mode="json", include={"project_keys"}
-                ),
-                counts={"records": 0, **IngestCounts().model_dump()},
+        org_id = connection.org_id
+        try:
+            # The run, job enqueue and due-time update must roll back together.
+            with session.begin_nested():
+                assert connection.next_sync_at is not None
+                due = connection.next_sync_at
+                while due <= now:
+                    due = add_period(due, connection.sync_schedule)
+                connection.next_sync_at = due
+                session.add(connection)
+                if not active_sync(session, connection):
+                    run = SyncRun(
+                        org_id=connection.org_id,
+                        connection_id=connection.id,
+                        requested_by_user_id=connection.updated_by_user_id,
+                        trigger="schedule",
+                        input=JiraConfig.model_validate(connection.config).model_dump(
+                            mode="json", include={"project_keys"}
+                        ),
+                        counts={"records": 0, **IngestCounts().model_dump()},
+                    )
+                    session.add(run)
+                    _enqueue(session, run)
+        except Exception as exc:
+            logger.error(
+                "Scheduled sync dispatch failed for org %s (%s)",
+                org_id,
+                type(exc).__name__,
             )
-            session.add(run)
-            _enqueue(session, run)
     session.commit()

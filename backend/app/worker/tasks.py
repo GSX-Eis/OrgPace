@@ -81,18 +81,23 @@ def expire_proposals(timestamp: int) -> None:  # noqa: ARG001
 @app.task(name="capacity.refresh_tracking", queueing_lock="capacity_refresh_tracking")
 def refresh_tracking(timestamp: int) -> None:  # noqa: ARG001
     with Session(engine) as session:
-        org_ids = session.exec(select(Organization.id)).all()
+        org_ids = session.exec(
+            select(Organization.id).order_by(col(Organization.id))
+        ).all()
     for org_id in org_ids:
-        try:
-            with Session(engine) as session:
-                recompute(session, org_id)
+        with Session(engine) as session:
+            try:
+                tenant_task(
+                    org_id, lambda principal: recompute(session, principal.org_id)
+                )
                 session.commit()
-        except Exception as exc:
-            logger.warning(
-                "Daily tracking refresh failed for org %s (%s)",
-                org_id,
-                type(exc).__name__,
-            )
+            except Exception as exc:
+                session.rollback()
+                logger.warning(
+                    "Daily tracking refresh failed for org %s (%s)",
+                    org_id,
+                    type(exc).__name__,
+                )
 
 
 @app.periodic(cron="0 * * * *")
@@ -103,16 +108,20 @@ def refresh_forecasts(timestamp: int) -> None:  # noqa: ARG001
             select(Organization.id).order_by(col(Organization.id))
         ).all()
     for org_id in org_ids:
-        try:
-            with Session(engine) as session:
-                refresh_org_forecasts(session, org_id)
+        with Session(engine) as session:
+            try:
+                tenant_task(
+                    org_id,
+                    lambda principal: refresh_org_forecasts(session, principal.org_id),
+                )
                 session.commit()
-        except Exception as exc:
-            logger.warning(
-                "Hourly forecast refresh failed for org %s (%s)",
-                org_id,
-                type(exc).__name__,
-            )
+            except Exception as exc:
+                session.rollback()
+                logger.warning(
+                    "Hourly forecast refresh failed for org %s (%s)",
+                    org_id,
+                    type(exc).__name__,
+                )
 
 
 @app.periodic(cron="*/5 * * * *")
@@ -168,9 +177,18 @@ def dispatch_reminders(timestamp: int) -> None:  # noqa: ARG001
 )
 def fill_defaults(timestamp: int) -> None:  # noqa: ARG001
     with Session(engine) as session:
-        org_ids = session.exec(select(Organization.id)).all()
+        org_ids = session.exec(
+            select(Organization.id).order_by(col(Organization.id))
+        ).all()
     for org_id in org_ids:
-        tenant_task(org_id, fill_department_defaults)
+        try:
+            tenant_task(org_id, fill_department_defaults)
+        except Exception as exc:
+            logger.error(
+                "Department defaults failed for org %s (%s)",
+                org_id,
+                type(exc).__name__,
+            )
 
 
 @app.periodic(cron="0 * * * *")

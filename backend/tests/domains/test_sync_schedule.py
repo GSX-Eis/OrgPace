@@ -286,29 +286,74 @@ def test_scheduled_sync_queues_incremental_for_manual_records(
     assert job.lock == f"initial-profiles:{org}"
 
 
+@pytest.mark.parametrize("failure", ["config", "enqueue"])
 def test_dispatch_rolls_back_queue_and_due_time(
-    request: pytest.FixtureRequest, db: Session, monkeypatch: pytest.MonkeyPatch
+    request: pytest.FixtureRequest,
+    db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    failure: str,
 ) -> None:
-    org = request.getfixturevalue("context")[0]
-    make_due(db, org)
+    orgs, _, _, users = request.getfixturevalue("tenant_data")
+    old = datetime(2020, 1, 15, tzinfo=UTC)
+    now = datetime(2030, 4, 20, tzinfo=UTC)
+    connections = [
+        SourceConnection(
+            org_id=org.id,
+            kind="jira",
+            updated_by_user_id=user.id,
+            config={
+                "deployment": "cloud",
+                "base_url": "https://jira.example.com",
+                "auth_type": "api_token",
+                "username": "synthetic@example.com",
+                "project_keys": ["PLAT"],
+                "start_date": "2000-01-01",
+            },
+            sync_schedule="monthly",
+            next_sync_at=old,
+        )
+        for org, user in zip(orgs, [users[0], users[3]], strict=True)
+    ]
+    # Match the dispatcher's stable connection ordering.
+    bad, good = sorted(connections, key=lambda c: c.id)
+    if failure == "config":
+        bad.config = {"deployment": "synthetic-invalid-config"}
+    db.add_all(connections)
+    db.commit()
+    bad_org, good_org = bad.org_id, good.org_id
     original = schedule._enqueue
 
     def unavailable(session: Session, run: SyncRun) -> None:
         original(session, run)
-        raise RuntimeError("synthetic queue failure")
+        if run.org_id == bad_org and failure == "enqueue":
+            raise RuntimeError("synthetic queue failure")
 
     monkeypatch.setattr(schedule, "_enqueue", unavailable)
-    with pytest.raises(RuntimeError, match="synthetic queue failure"):
-        schedule.dispatch_due_syncs(db, datetime.now(UTC))
-    db.rollback()
-    assert connection_for(db, org).next_sync_at == datetime(2020, 1, 15, tzinfo=UTC)
-    assert not db.exec(select(SyncRun).where(SyncRun.org_id == org)).all()
-    assert (
+    query = text(
+        "SELECT args FROM procrastinate_jobs WHERE task_name = 'sources.sync_run' "
+        "AND args->>'org_id' = :org"
+    )
+    try:
+        schedule.dispatch_due_syncs(db, now)
+        db.expire_all()
+        assert connection_for(db, bad_org).next_sync_at == old
+        assert not db.exec(select(SyncRun).where(SyncRun.org_id == bad_org)).all()
+        assert not db.execute(query, {"org": str(bad_org)}).all()
+        assert connection_for(db, good_org).next_sync_at > now
+        run = db.exec(select(SyncRun).where(SyncRun.org_id == good_org)).one()
+        assert run.trigger == "schedule" and run.input == {"project_keys": ["PLAT"]}
+        job = db.execute(query, {"org": str(good_org)}).scalar_one()
+        assert job["run_id"] == str(run.id)
+        assert str(bad_org) in caplog.text
+        assert "synthetic queue failure" not in caplog.text
+        assert "synthetic-invalid-config" not in caplog.text
+    finally:
+        db.rollback()
         db.execute(
             text(
-                "SELECT count(*) FROM procrastinate_jobs WHERE args->>'org_id' = :org"
+                "DELETE FROM procrastinate_jobs WHERE args->>'org_id' IN (:bad, :good)"
             ),
-            {"org": str(org)},
-        ).scalar_one()
-        == 0
-    )
+            {"bad": str(bad_org), "good": str(good_org)},
+        )
+        db.commit()

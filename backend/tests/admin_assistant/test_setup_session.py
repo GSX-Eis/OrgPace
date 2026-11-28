@@ -8,13 +8,22 @@ from sqlmodel import Session, select
 
 from app.authz.deps import get_org_principal
 from app.domains.admin_assistant.models import (
+    AdminAssistantAttachment,
     AdminAssistantMessage,
     AdminAssistantSession,
+    AdminChangeSet,
 )
 from app.domains.admin_assistant.store import ensure_setup_session
 from app.domains.base import utc_now
+from app.domains.bot import attachments
 from app.domains.bot.models import BotSetting
-from app.domains.bot.store import append_message, cleanup_messages, messages_for
+from app.domains.bot.store import (
+    append_message,
+    cleanup_messages,
+    load_state,
+    messages_for,
+    save_state,
+)
 from app.domains.setup import wizard
 from app.domains.setup.models import SetupStatus, SetupStepState
 from app.models import User
@@ -144,6 +153,13 @@ def test_setup_retention(
         )
     ).one()
     db.add(BotSetting(org_id=tenant.org_id, retention_days=days))
+    db.commit()
+    principal = get_org_principal(tenant.org_id, db.get(User, tenant.admin_id), db)
+    uploaded = attachments.save_bytes(
+        db, principal, "admin", row.id, "sample.txt", b"synthetic setup material"
+    )
+    attachment = db.get(AdminAssistantAttachment, uploaded.id)
+    assert attachment is not None
     old = utc_now() - timedelta(days=8)
     row.last_activity_at = old
     db.add(row)
@@ -154,8 +170,50 @@ def test_setup_retention(
     ).one()
     message.created_at = old
     db.add(message)
+    state = {"version": 1, "messages": ["synthetic context"]}
+    save_state(db, row, state)
+    attachment.created_at = old
+    draft = AdminChangeSet(
+        org_id=row.org_id,
+        session_id=row.id,
+        created_by_user_id=row.user_id,
+        items=[{"synthetic": True}],
+        secrets="synthetic",
+        confirmed_once_at=old,
+    )
+    db.add_all([attachment, draft])
     db.commit()
+    attachment_id, draft_id = attachment.id, draft.id
+    assert not wizard.read_setup(db, tenant.org_id).completed
+    assert load_state(db, row) == state
     cleanup_messages(db, utc_now())
+    db.refresh(row)
+    db.refresh(draft)
+    assert load_state(db, row) == state
+    assert db.get(AdminAssistantAttachment, attachment_id) is not None
+    assert str(attachment_id) in attachments.manifest(db, principal, "admin", row.id)
+    assert "synthetic setup material" in str(
+        attachments.read_attachment(db, principal, "admin", row.id, attachment_id)
+    )
+    url = f"/api/v1/admin-assistant/sessions/{row.id}/attachments/{attachment_id}"
+    response = client.get(
+        url, params={"org_id": str(tenant.org_id)}, headers=tenant.auth["admin"]
+    )
+    assert (
+        response.status_code == 200 and response.content == b"synthetic setup material"
+    )
+    for role in ("manager", "employee", "foreign"):
+        assert (
+            client.get(
+                url, params={"org_id": str(tenant.org_id)}, headers=tenant.auth[role]
+            ).status_code
+            == 404
+        )
+    assert (draft.status, draft.secrets, draft.confirmed_once_at) == (
+        "draft",
+        "synthetic",
+        old,
+    )
     assert sessions(client, tenant)["data"][0]["id"] == str(row.id)
     assert len(messages_for(db, row)) == 1
     append_message(db, row, "user", {"text": "回来继续"})
@@ -179,9 +237,79 @@ def test_setup_retention(
         )
     )
     db.commit()
+    assert wizard.read_setup(db, tenant.org_id).completed
+    assert load_state(db, row) is None
+    assert attachments.manifest(db, principal, "admin", row.id) == ""
+    response = client.get(
+        url, params={"org_id": str(tenant.org_id)}, headers=tenant.auth["admin"]
+    )
+    assert response.status_code == 404
     cleanup_messages(db, utc_now())
+    db.expire_all()
+    assert row.state_ciphertext is None
+    assert db.get(AdminAssistantAttachment, attachment_id) is None
+    stale = db.get(AdminChangeSet, draft_id)
+    assert stale is not None
+    assert (stale.status, stale.secrets, stale.confirmed_once_at) == (
+        "stale",
+        None,
+        None,
+    )
     assert messages_for(db, row) == []
     assert sessions(client, tenant)["data"] == []
+
+
+@pytest.mark.parametrize("days", [0, 7])
+def test_setup_attachments_count_toward_user_limit(
+    client: TestClient,
+    db: Session,
+    tenant: SetupTenant,
+    days: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sessions(client, tenant)
+    setup = db.exec(
+        select(AdminAssistantSession).where(
+            AdminAssistantSession.org_id == tenant.org_id,
+            AdminAssistantSession.purpose == "setup",
+        )
+    ).one()
+    principal = get_org_principal(tenant.org_id, db.get(User, tenant.admin_id), db)
+    normal = AdminAssistantSession(org_id=tenant.org_id, user_id=tenant.admin_id)
+    db.add_all([normal, BotSetting(org_id=tenant.org_id, retention_days=days)])
+    db.commit()
+    monkeypatch.setattr(attachments, "USER_LIMIT", 10)
+    uploaded = attachments.save_bytes(
+        db, principal, "admin", setup.id, "old.txt", b"123456"
+    )
+    old = db.get(AdminAssistantAttachment, uploaded.id)
+    assert old is not None
+    old.created_at = utc_now() - timedelta(days=8)
+    db.add(old)
+    db.commit()
+    cleanup_messages(db, utc_now())
+    assert attachments.save_bytes(
+        db, principal, "admin", normal.id, "fresh.txt", b"1234"
+    )
+    with pytest.raises(attachments.AttachmentError, match="附件总量已达上限"):
+        attachments.save_bytes(db, principal, "admin", normal.id, "excess.txt", b"1")
+    with pytest.raises(attachments.AttachmentError):
+        attachments.get_session_attachment(
+            db, principal, "admin", normal.id, uploaded.id
+        )
+    db.add(
+        SetupStepState(
+            org_id=tenant.org_id,
+            step_key="model",
+            status=SetupStatus.SKIPPED,
+            updated_by_user_id=tenant.admin_id,
+        )
+    )
+    db.commit()
+    assert wizard.read_setup(db, tenant.org_id).completed
+    assert attachments.save_bytes(
+        db, principal, "admin", normal.id, "after.txt", b"123456"
+    )
 
 
 def test_completed_no_setup(
