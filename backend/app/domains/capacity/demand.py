@@ -69,7 +69,7 @@ from app.domains.capacity.models import (
 )
 from app.domains.capacity.schemas import REASON_LABELS, ReasonCode, Via
 from app.domains.capacity.settings import read_settings, require_enabled
-from app.domains.capacity.workload import views
+from app.domains.capacity.workload_views import views
 from app.domains.inbox.models import InboxItem, InboxKind
 from app.domains.inbox.service import add_item
 from app.domains.org.models import (

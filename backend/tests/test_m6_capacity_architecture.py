@@ -1,6 +1,7 @@
 """Keep capacity independent from profile publication and ingestion."""
 
 import ast
+from graphlib import TopologicalSorter
 from pathlib import Path
 
 import pytest
@@ -321,16 +322,25 @@ def test_foreign_key_counterexample() -> None:
 
 
 def test_workload_split_has_no_delayed_cycle_imports_and_keeps_facade() -> None:
-    from app.domains.capacity import workload
+    from app.domains.capacity import (
+        common,
+        workload,
+        workload_carry_over,
+        workload_requests,
+        workload_views,
+        workload_weeks,
+    )
 
+    capacity_dir = APP / "domains" / "capacity"
+    prefix = "app.domains.capacity."
     targets = (
-        "app.domains.capacity.workload",
-        "app.domains.capacity.forecast",
-        "app.domains.capacity.tracking",
-        "app.domains.capacity.extension",
+        f"{prefix}workload",
+        f"{prefix}forecast",
+        f"{prefix}tracking",
+        f"{prefix}extension",
     )
     checked = [
-        APP / "domains" / "capacity" / name
+        capacity_dir / name
         for name in (
             "forecast.py",
             "workload.py",
@@ -354,35 +364,88 @@ def test_workload_split_has_no_delayed_cycle_imports_and_keeps_facade() -> None:
                         if inner.module.startswith(targets):
                             delayed.append(f"{path.name}: {inner.module}")
     assert delayed == []
-    for name in workload.__all__:
-        assert getattr(workload, name) is not None
-    assert set(workload.__all__) >= {
-        "AVAILABLE_BELOW",
-        "EXTENSION_REVIEW_NOTICE",
-        "WORKLOAD_REVIEW_NOTICE",
-        "ReversibleBatch",
-        "WorkloadSegments",
-        "WorkloadWeekExpired",
-        "commit_carry_over",
-        "decide_workload_request",
-        "delete_unavailability",
-        "employee",
-        "get_my_workload",
-        "list_unavailability",
-        "list_workload_requests",
-        "list_workloads",
-        "notify_employee",
-        "preview_carry_over",
-        "preview_carry_over_revert",
-        "register_unavailability",
-        "request_workload_change",
-        "revert_carry_over",
-        "set_week",
-        "set_weeks",
-        "unavailability_public",
-        "validate_request_week",
-        "views",
-        "workload_reviewer_names",
-        "workload_reviewers",
-        "workload_segments",
+
+    # Forbid dynamic __getattr__ / import_module indirection on the workload facade.
+    workload_tree = ast.parse((capacity_dir / "workload.py").read_text())
+    workload_funcs = {
+        n.name for n in workload_tree.body if isinstance(n, ast.FunctionDef)
     }
+    assert "__getattr__" not in workload_funcs
+    assert "import_module" not in {
+        alias.name
+        for n in ast.walk(workload_tree)
+        if isinstance(n, ast.ImportFrom) and n.module == "importlib"
+        for alias in n.names
+    }
+
+    # Verify the actual top-level static dependency graph across workload/capacity modules is a strict DAG.
+    dag_names = {
+        "common",
+        "workload",
+        "workload_views",
+        "workload_weeks",
+        "workload_carry_over",
+        "workload_requests",
+        "forecast",
+        "extension",
+        "tracking",
+        "demand",
+    }
+    dag: dict[str, set[str]] = {}
+    for mod_name in dag_names:
+        mod_tree = ast.parse((capacity_dir / f"{mod_name}.py").read_text())
+        deps: set[str] = set()
+        for stmt in mod_tree.body:
+            if isinstance(stmt, ast.ImportFrom) and stmt.module:
+                if stmt.module == "app.domains.capacity":
+                    deps.update(
+                        alias.name for alias in stmt.names if alias.name in dag_names
+                    )
+                elif stmt.module.startswith(prefix):
+                    target = stmt.module.removeprefix(prefix).split(".", 1)[0]
+                    if target in dag_names:
+                        deps.add(target)
+            elif isinstance(stmt, ast.Import):
+                for alias in stmt.names:
+                    if alias.name.startswith(prefix):
+                        target = alias.name.removeprefix(prefix).split(".", 1)[0]
+                        if target in dag_names:
+                            deps.add(target)
+        dag[mod_name] = deps
+    assert len(list(TopologicalSorter(dag).static_order())) == len(dag_names)
+
+    expected_sources = {
+        "AVAILABLE_BELOW": workload_views,
+        "WorkloadSegments": workload_views,
+        "get_my_workload": workload_views,
+        "list_workloads": workload_views,
+        "views": workload_views,
+        "workload_reviewer_names": workload_views,
+        "workload_reviewers": workload_views,
+        "workload_segments": workload_views,
+        "set_week": workload_weeks,
+        "set_weeks": workload_weeks,
+        "unavailability_public": workload_weeks,
+        "list_unavailability": workload_weeks,
+        "register_unavailability": workload_weeks,
+        "delete_unavailability": workload_weeks,
+        "ReversibleBatch": workload_carry_over,
+        "preview_carry_over": workload_carry_over,
+        "preview_carry_over_revert": workload_carry_over,
+        "commit_carry_over": workload_carry_over,
+        "revert_carry_over": workload_carry_over,
+        "WorkloadWeekExpired": workload_requests,
+        "validate_request_week": workload_requests,
+        "request_workload_change": workload_requests,
+        "list_workload_requests": workload_requests,
+        "decide_workload_request": workload_requests,
+        "employee": common,
+        "notify_employee": common,
+        "WORKLOAD_REVIEW_NOTICE": common,
+        "EXTENSION_REVIEW_NOTICE": common,
+    }
+    facade_dict = vars(workload)
+    assert set(workload.__all__) == set(expected_sources)
+    for name, source_mod in expected_sources.items():
+        assert name in facade_dict
+        assert facade_dict[name] is getattr(source_mod, name)
