@@ -143,10 +143,18 @@ def test_conftest_shared_template_toggle(monkeypatch: pytest.MonkeyPatch) -> Non
     assert not isolated_calls and not cleaned
 
     monkeypatch.setenv("PYTEST_SHARED_TEMPLATE", "0")
+    monkeypatch.delenv("PYTEST_DB_PREFIX", raising=False)
     with ExitStack() as stack:
         tpl_legacy = root_conftest._create_template(stack, url)
         assert tpl_legacy.startswith("migration_template_") and not cleaned
-    assert isolated_calls == [tpl_legacy] and cleaned == [tpl_legacy]
+    monkeypatch.setenv("PYTEST_DB_PREFIX", "r1579")
+    with ExitStack() as stack:
+        tpl_prefixed = root_conftest._create_template(stack, url)
+        assert tpl_prefixed.startswith("r1579_tpl_")
+    assert isolated_calls == [tpl_legacy, tpl_prefixed] and cleaned == [
+        tpl_legacy,
+        tpl_prefixed,
+    ]
 
 
 def test_shared_template_race_failure_readonly_cloning_and_pruning(
