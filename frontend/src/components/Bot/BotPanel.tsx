@@ -14,12 +14,12 @@ import {
   type UserMessage,
 } from "@/client"
 import {
-  discardAssistantTurn,
   getAssistantTurn,
   selectAssistantSession,
 } from "@/components/Chat/assistantTurnStore"
 import { ChatComposer, readChatDraft } from "@/components/Chat/ChatComposer"
 import { ChatMessages } from "@/components/Chat/ChatMessages"
+import { useSessionPanelSync } from "@/components/Chat/useSessionPanelSync"
 import { useStreamingTurn } from "@/components/Chat/useStreamingTurn"
 import { SetupError } from "@/components/Setup/SetupError"
 import { Button } from "@/components/ui/button"
@@ -69,9 +69,7 @@ export function BotConversation({
   const [conflict, setConflict] = useState<
     "preview" | "withdraw" | "review" | "profile_edit" | null
   >(null)
-  const bottom = useRef<HTMLDivElement>(null)
   const initialization = useRef(0)
-  const preserveText = useRef(false)
   const query = { org_id: orgId }
   const history = useQuery<BotEntry[]>({
     queryKey: messageKey(storageKey, sessionId),
@@ -320,26 +318,22 @@ export function BotConversation({
         setMessages(refreshed.data)
     },
   })
+  const busy = initialize.isPending || send.isPending || stream.isPending
+  const messages = stream.pendingUserMessage
+    ? [...(history.data ?? []), stream.pendingUserMessage]
+    : (history.data ?? [])
+  const { bottom, preserveText } = useSessionPanelSync({
+    storageKey,
+    mode,
+    selectedSession,
+    replaceOnStorageSync: true,
+    scroll: {
+      messageCount: messages.length,
+      streamText: stream.text,
+      tools: stream.tools,
+    },
+  })
   useEffect(() => {
-    const follow = (event: StorageEvent) => {
-      if (event.key === storageKey && event.newValue) {
-        preserveText.current = true
-        navigate({
-          to: "/assistant",
-          search: { mode, session: event.newValue || undefined },
-          replace: true,
-        })
-      }
-    }
-    window.addEventListener("storage", follow)
-    return () => window.removeEventListener("storage", follow)
-  }, [mode, storageKey, navigate])
-  useEffect(() => {
-    if (
-      selectedSession &&
-      getAssistantTurn(storageKey)?.sessionId !== selectedSession
-    )
-      discardAssistantTurn(storageKey)
     if (restart) replacementSession.current = ""
     setSessionId("")
     if (!preserveText.current) setText(prompt ?? "")
@@ -347,15 +341,7 @@ export function BotConversation({
     return () => {
       initialization.current++
     }
-  }, [initialize.mutate, selectedSession, restart, prompt, storageKey])
-  const busy = initialize.isPending || send.isPending || stream.isPending
-  const messages = stream.pendingUserMessage
-    ? [...(history.data ?? []), stream.pendingUserMessage]
-    : (history.data ?? [])
-  useEffect(() => {
-    if (messages.length || stream.text || stream.tools.length)
-      bottom.current?.scrollIntoView({ block: "end" })
-  }, [messages.length, stream.text, stream.tools])
+  }, [initialize.mutate, selectedSession, restart, prompt, preserveText])
   async function sendText(value: string, attachments: AttachmentPublic[] = []) {
     setText("")
     const result = await sendTurn.mutateAsync({

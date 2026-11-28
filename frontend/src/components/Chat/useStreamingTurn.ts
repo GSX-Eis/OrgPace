@@ -2,7 +2,8 @@ import { AxiosError, AxiosHeaders } from "axios"
 import { useSyncExternalStore } from "react"
 import type { ErrorEvent, TextEvent, ToolEvent, UserMessage } from "@/client"
 import { rememberConversation } from "@/hooks/useCurrentConversation"
-import i18n, { getLocale } from "@/i18n"
+import i18n from "@/i18n"
+import { buildClientRequest } from "@/lib/clientRequest"
 import {
   getAssistantTurn,
   type PendingUserMessage,
@@ -74,19 +75,15 @@ export function useStreamingTurn<Input, Response>({
         })
         rememberConversation(storageKey, id)
       }
-      const response = await fetch(
-        `${import.meta.env.VITE_API_URL ?? ""}${url(id)}`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${localStorage.getItem("access_token") ?? ""}`,
-            "Content-Type": "application/json",
-            "Accept-Language": getLocale(),
-          },
-          body: JSON.stringify(body),
-          signal: abort.signal,
-        },
-      )
+      const request = await buildClientRequest(url(id), {
+        "Content-Type": "application/json",
+      })
+      const response = await fetch(request.url, {
+        method: "POST",
+        headers: request.headers,
+        body: JSON.stringify(body),
+        signal: abort.signal,
+      })
       if (!response.ok)
         throw new AxiosError(
           i18n.t("common.chat.streamConnectionFailed"),
