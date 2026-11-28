@@ -2,21 +2,49 @@ import { useQuery } from "@tanstack/react-query"
 import { useTranslation } from "react-i18next"
 import {
   CapabilitiesService,
-  CapacityService,
+  type CapabilityPublic,
+  type DepartmentPublic,
   EmployeesService,
 } from "@/client"
 import { record } from "@/components/Profile/fields"
 import { Input } from "@/components/ui/input"
 import { useOrg } from "@/hooks/useOrg"
-import { capacityKeys } from "./queries"
+import { capacityKeys, useCapacityDepartments } from "./queries"
 
-export function useDemandOptions(orgId: string) {
+export type DemandOptionsData = {
+  departments: DepartmentPublic[]
+  capabilities: CapabilityPublic[]
+  ownDepartment: string | undefined
+  requesting: DepartmentPublic[]
+}
+
+type DemandOptionsResult =
+  | {
+      isPending: true
+      isError: false
+      data: undefined
+      refetch: () => Promise<unknown>
+    }
+  | {
+      isPending: false
+      isError: true
+      data: undefined
+      refetch: () => Promise<unknown>
+    }
+  | {
+      isPending: false
+      isError: false
+      data: DemandOptionsData
+      refetch: () => Promise<unknown>
+    }
+
+export function useDemandOptions(orgId: string): DemandOptionsResult {
   const { roles, employeeId, managedDepartmentIds } = useOrg()
-  return useQuery({
+  const departments = useCapacityDepartments(orgId)
+  const meta = useQuery({
     queryKey: capacityKeys.demandOptions(orgId),
     queryFn: async () => {
-      const [departments, capabilities, self] = await Promise.all([
-        CapacityService.listCapacityDepartments({ path: { org_id: orgId } }),
+      const [capabilities, self] = await Promise.all([
         CapabilitiesService.readCapabilities({ path: { org_id: orgId } }),
         employeeId
           ? EmployeesService.readEmployee({
@@ -25,22 +53,40 @@ export function useDemandOptions(orgId: string) {
           : null,
       ])
       return {
-        departments: departments.data.data,
         capabilities: capabilities.data.data,
         ownDepartment: self?.data.department?.id,
       }
     },
-    select: (options) => ({
-      ...options,
-      requesting: options.departments.filter(
+  })
+  const refetch = () => Promise.all([departments.refetch(), meta.refetch()])
+  if (departments.isError || meta.isError) {
+    return { isPending: false, isError: true, data: undefined, refetch }
+  }
+  if (
+    departments.isPending ||
+    meta.isPending ||
+    !departments.data ||
+    !meta.data
+  ) {
+    return { isPending: true, isError: false, data: undefined, refetch }
+  }
+  return {
+    isPending: false,
+    isError: false,
+    refetch,
+    data: {
+      departments: departments.data,
+      capabilities: meta.data.capabilities,
+      ownDepartment: meta.data.ownDepartment,
+      requesting: departments.data.filter(
         (d) =>
           roles.includes("org_admin") ||
           (managedDepartmentIds.length
             ? managedDepartmentIds.includes(d.id)
-            : d.id === options.ownDepartment),
+            : d.id === meta.data.ownDepartment),
       ),
-    }),
-  })
+    },
+  }
 }
 
 export function capabilityLevels(rubric: unknown) {

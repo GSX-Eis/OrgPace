@@ -1,4 +1,4 @@
-import { type QueryClient, useQuery } from "@tanstack/react-query"
+import { type QueryClient, queryOptions, useQuery } from "@tanstack/react-query"
 import { CapacityService, OrgsService } from "@/client"
 
 /** Type-safe TanStack Query keys for the Capacity domain (compatible with localeQuerySync). */
@@ -92,17 +92,24 @@ export const capacityKeys = {
     ["capacity", orgId, "create", kind] as const,
 } as const
 
-/** Shared query for departments accessible to capacity requesters/planners. */
-export function useCapacityDepartments(orgId: string, enabled = true) {
-  return useQuery({
+/** Shared query options for departments accessible to capacity requesters/planners. */
+export function capacityDepartmentsQueryOptions(orgId: string) {
+  return queryOptions({
     queryKey: capacityKeys.departments(orgId),
-    enabled,
     queryFn: async () =>
       (
         await CapacityService.listCapacityDepartments({
           path: { org_id: orgId },
         })
       ).data.data,
+  })
+}
+
+/** Shared query for departments accessible to capacity requesters/planners. */
+export function useCapacityDepartments(orgId: string, enabled = true) {
+  return useQuery({
+    ...capacityDepartmentsQueryOptions(orgId),
+    enabled,
   })
 }
 
@@ -151,12 +158,17 @@ export function invalidateDemandMutation(
   demandId: string,
 ) {
   return invalidateKeys(client, [
+    capacityKeys.demandRoot(orgId),
     capacityKeys.demand(orgId, demandId),
     capacityKeys.demandHistory(orgId, demandId),
-    capacityKeys.demandBasis(orgId, demandId),
-    capacityKeys.assignments(orgId, demandId),
-    capacityKeys.planningDemand(orgId, demandId),
-    capacityKeys.trackingRisk(orgId, demandId),
+    capacityKeys.demandBasisRoot(orgId),
+    capacityKeys.assignmentsRoot(orgId),
+    capacityKeys.assignmentsMe(orgId),
+    capacityKeys.extensions(orgId),
+    capacityKeys.planningAll(orgId),
+    capacityKeys.trackingRoot(orgId),
+    capacityKeys.trackingRiskRoot(orgId),
+    capacityKeys.feedbackAssignments(orgId),
     capacityKeys.outgoingDemands(orgId),
     capacityKeys.demands(orgId),
     capacityKeys.projects(orgId),
@@ -165,6 +177,8 @@ export function invalidateDemandMutation(
     capacityKeys.activeBorrowAssignments(orgId),
     capacityKeys.workloadTeam(orgId),
     capacityKeys.workloadMe(orgId),
+    capacityKeys.workloadRequests(orgId),
+    capacityKeys.carryOverPreview(orgId),
     ["inbox", orgId],
   ])
 }
