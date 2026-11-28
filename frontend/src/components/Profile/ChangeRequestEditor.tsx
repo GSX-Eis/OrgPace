@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useBlocker } from "@tanstack/react-router"
 import { isAxiosError } from "axios"
-import { useEffect, useId, useRef, useState } from "react"
+import { useEffect, useId, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import {
   type ChangeRequestPublic,
@@ -19,17 +19,17 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { formatDate } from "@/i18n/format"
-import { levelLabel, record } from "./fields"
+import { ChangeRequestPreview } from "./ChangeRequestPreview"
+import { record } from "./fields"
 import {
-  characterCount,
   EXPLANATION_MAX,
   ITEMS_MAX,
   STATEMENT_MAX,
   textLimitMessage,
 } from "./inputLimits"
 import { ProfileVisibility } from "./ProfileVisibility"
-import { RequestReviewers } from "./RequestReviewers"
+import { RequestEditorFooter } from "./RequestEditorFooter"
+import { RequestItemEditor } from "./RequestItemEditor"
 import {
   activeEvidence,
   cloneWithdrawnItems,
@@ -96,33 +96,37 @@ export function ChangeRequestEditor({
   const [preview, setPreview] = useState<RequestPreview | null>(null)
   const [savedItems, setSavedItems] = useState(() => JSON.stringify(items))
   const [confirmClose, setConfirmClose] = useState(false)
-  const limitErrors = items
-    .flatMap((item, index) => [
-      item.op !== "retract" &&
-      item.op !== "attach_evidence" &&
-      item.statement !==
-        profileItems.find((p) => p.capability.key === item.capability_key)
-          ?.claim?.statement
-        ? textLimitMessage(
-            item.statement,
-            STATEMENT_MAX,
-            index,
-            t("profile.common.capabilityStatement"),
-          )
-        : null,
-      ...[item.owner_statement, item.objection, item.uncertainty].map((text) =>
-        textLimitMessage(text ?? "", EXPLANATION_MAX, index),
-      ),
-    ])
-    .filter(Boolean)
-  if (items.length > ITEMS_MAX)
-    limitErrors.push(
-      t("profile.request.editor.maxItems", {
-        max: ITEMS_MAX,
-        count: items.length,
-      }),
-    )
-  const dirty = JSON.stringify(items) !== savedItems
+  const limitErrors = useMemo(() => {
+    const limitErrors = items
+      .flatMap((item, index) => [
+        item.op !== "retract" &&
+        item.op !== "attach_evidence" &&
+        item.statement !==
+          profileItems.find((p) => p.capability.key === item.capability_key)
+            ?.claim?.statement
+          ? textLimitMessage(
+              item.statement,
+              STATEMENT_MAX,
+              index,
+              t("profile.common.capabilityStatement"),
+            )
+          : null,
+        ...[item.owner_statement, item.objection, item.uncertainty].map(
+          (text) => textLimitMessage(text ?? "", EXPLANATION_MAX, index),
+        ),
+      ])
+      .filter(Boolean)
+    if (items.length > ITEMS_MAX)
+      limitErrors.push(
+        t("profile.request.editor.maxItems", {
+          max: ITEMS_MAX,
+          count: items.length,
+        }),
+      )
+    return limitErrors
+  }, [items, profileItems, t])
+  const serializedItems = useMemo(() => JSON.stringify(items), [items])
+  const dirty = serializedItems !== savedItems
   const blocker = useBlocker({
     shouldBlockFn: () => dirty,
     enableBeforeUnload: dirty,
@@ -170,19 +174,35 @@ export function ChangeRequestEditor({
     refetchOnWindowFocus: false,
   })
   const displayedPreview = preview ?? (showPreview ? initialPreview.data : null)
-  const evidenceTitles = new Map(
-    [
-      ...profileItems.flatMap((item) => item.claim?.evidence ?? []),
-      ...(source?.items ?? []).flatMap((item) => item.evidence ?? []),
-      ...(displayedPreview?.items ?? []).flatMap(({ before, after }) => [
-        ...(before?.evidence ?? []),
-        ...(after.evidence ?? []),
-      ]),
-    ].map((entry) => [entry.evidence_id, entry.title]),
+  const evidenceTitles = useMemo(() => {
+    const evidenceTitles = new Map(
+      [
+        ...profileItems.flatMap((item) => item.claim?.evidence ?? []),
+        ...(source?.items ?? []).flatMap((item) => item.evidence ?? []),
+        ...(displayedPreview?.items ?? []).flatMap(({ before, after }) => [
+          ...(before?.evidence ?? []),
+          ...(after.evidence ?? []),
+        ]),
+      ].map((entry) => [entry.evidence_id, entry.title]),
+    )
+    for (const entry of evidence.data?.data ?? []) {
+      evidenceTitles.set(entry.id, entry.title)
+    }
+    return evidenceTitles
+  }, [profileItems, source?.items, displayedPreview, evidence.data])
+  const capabilitiesByKey = useMemo(
+    () => new Map(dictionary.data?.data.map((c) => [c.key, c])),
+    [dictionary.data],
   )
-  for (const entry of evidence.data?.data ?? []) {
-    evidenceTitles.set(entry.id, entry.title)
-  }
+  const availableCapabilities = useMemo(
+    () =>
+      dictionary.data?.data.filter(
+        (c) =>
+          !items.some((i) => i.capability_key === c.key) &&
+          !profileItems.some((i) => i.capability.key === c.key && i.claim),
+      ),
+    [dictionary.data, items, profileItems],
+  )
   const refresh = () =>
     Promise.all([
       client.invalidateQueries({ queryKey: ["change-requests", orgId] }),
@@ -207,7 +227,7 @@ export function ChangeRequestEditor({
             body: { items, withdrawn_request_id: selection.cloneFrom?.id },
           })
       setRequestId(result.data.id)
-      setSavedItems(JSON.stringify(items))
+      setSavedItems(serializedItems)
       await refresh()
       if (andPreview) {
         const resultPreview = await EmployeeRequestsService.previewRequest({
@@ -429,151 +449,10 @@ export function ChangeRequestEditor({
               {t("profile.request.editor.reloadLatest")}
             </Button>
           ) : showPreview ? (
-            <>
-              {!displayedPreview && (
-                <p role="status">
-                  {t("profile.request.editor.loadingPreview")}
-                </p>
-              )}
-              {displayedPreview && (
-                <RequestReviewers
-                  reviewers={displayedPreview.reviewers}
-                  requiresManager={displayedPreview.requires_manager}
-                  partialAutoPublish={displayedPreview.partial_auto_publish}
-                  preview
-                />
-              )}
-              {displayedPreview?.items.map(
-                ({
-                  before,
-                  after,
-                  warning,
-                  current_changed_at,
-                  submission_notice,
-                }) => (
-                  <section
-                    key={after.id}
-                    className="space-y-3 rounded-lg border p-4"
-                  >
-                    <h3 className="font-semibold">{after.capability.name}</h3>
-                    <p>{submission_notice}</p>
-                    {current_changed_at && (
-                      <p
-                        role="status"
-                        className="text-sm text-muted-foreground"
-                      >
-                        {t("profile.request.editor.currentChangedAt", {
-                          time: formatDate(current_changed_at, {
-                            year: "numeric",
-                            month: "numeric",
-                            day: "numeric",
-                            hour: "2-digit",
-                            minute: "2-digit",
-                            second: "2-digit",
-                            timeZone: "Asia/Shanghai",
-                            hour12: false,
-                          }),
-                        })}
-                      </p>
-                    )}
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div>
-                        <p className="text-sm text-muted-foreground">
-                          {t("profile.request.editor.previewBefore")}
-                        </p>
-                        <p>
-                          {before?.statement ??
-                            t("profile.request.compactNoRecord")}
-                        </p>
-                        <p>
-                          {t("profile.request.levelColon")}
-                          {before?.level
-                            ? levelLabel(
-                                after.capability.level_rubric,
-                                before.level,
-                              )
-                            : t("profile.request.ungraded")}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-muted-foreground">
-                          {t("profile.request.editor.previewAfter")}
-                        </p>
-                        <p>
-                          {after.op === "attach_evidence"
-                            ? t("profile.request.editor.attachKeepOriginal")
-                            : after.op === "retract"
-                              ? t("profile.request.editor.retractItem")
-                              : after.after?.statement}
-                        </p>
-                        <p>
-                          {t("profile.request.levelColon")}
-                          {after.after?.level
-                            ? levelLabel(
-                                after.capability.level_rubric,
-                                after.after.level,
-                              )
-                            : t("profile.request.ungraded")}
-                        </p>
-                      </div>
-                    </div>
-                    {after.owner_statement && (
-                      <p>
-                        {t("profile.request.editor.ownerNote", {
-                          text: after.owner_statement,
-                        })}
-                      </p>
-                    )}
-                    {after.uncertainty && (
-                      <p>
-                        {t("profile.request.editor.uncertaintyNote", {
-                          text: after.uncertainty,
-                        })}
-                      </p>
-                    )}
-                    {after.objection && (
-                      <p>
-                        {t("profile.request.editor.objectionNote", {
-                          text: after.objection,
-                        })}
-                      </p>
-                    )}
-                    <div className="text-sm">
-                      <p>{t("profile.request.editor.relatedEvidence")}</p>
-                      {after.evidence?.length ? (
-                        <ul className="space-y-1">
-                          {after.evidence.map((entry) => (
-                            <li key={entry.evidence_id}>
-                              {onEvidence ? (
-                                <Button
-                                  type="button"
-                                  variant="link"
-                                  className="h-auto min-h-8 max-w-full justify-start px-0 text-left whitespace-normal"
-                                  onClick={() => onEvidence(entry.evidence_id)}
-                                >
-                                  {entry.title}
-                                </Button>
-                              ) : (
-                                entry.title
-                              )}
-                            </li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <p>{t("profile.request.editor.none")}</p>
-                      )}
-                    </div>
-                    {warning && (
-                      <p role="alert">
-                        {t("profile.request.editor.reselectLevelWarning", {
-                          warning,
-                        })}
-                      </p>
-                    )}
-                  </section>
-                ),
-              )}
-            </>
+            <ChangeRequestPreview
+              displayedPreview={displayedPreview}
+              onEvidence={onEvidence}
+            />
           ) : (
             <form
               id={formId}
@@ -584,263 +463,37 @@ export function ChangeRequestEditor({
               }}
             >
               <fieldset disabled={formDisabled} className="min-w-0 space-y-5">
-                {items.map((item, index) => {
-                  const capability = dictionary.data?.data.find(
-                    (c) => c.key === item.capability_key,
-                  )
-                  const rubric = capability?.level_rubric
-                  const levels =
-                    record(rubric) && Array.isArray(rubric.levels)
-                      ? rubric.levels
-                          .filter(record)
-                          .filter((l) => typeof l.key === "string")
-                      : []
-                  const invalidLevel =
-                    item.level && !levels.some((l) => l.key === item.level)
-                  return (
-                    <fieldset
-                      key={item.capability_key}
-                      className="min-w-0 space-y-3 rounded-lg border bg-muted/10 p-4"
-                    >
-                      <legend className="px-1 font-semibold">
-                        {capability?.name ??
-                          t("profile.request.editor.capabilityRetired")}
-                      </legend>
-                      {item.op === "attach_evidence" ? (
-                        <p>{t("profile.request.editor.attachKeepOriginal")}</p>
-                      ) : item.op === "retract" ? (
-                        <p>{t("profile.request.editor.retractItem")}</p>
-                      ) : (
-                        <>
-                          <label className="block space-y-1">
-                            {t("profile.request.editor.statementLabel")}
-                            <textarea
-                              ref={
-                                item.capability_key ===
-                                  selection.capabilityKey &&
-                                !selection.objection
-                                  ? activeField
-                                  : undefined
-                              }
-                              required
-                              aria-label={t(
-                                "profile.request.editor.statementLabel",
-                              )}
-                              value={item.statement}
-                              className="block min-h-24 w-full rounded-md border bg-background p-2"
-                              onChange={(e) =>
-                                update(index, { statement: e.target.value })
-                              }
-                            />
-                          </label>
-                          <p className="text-sm text-muted-foreground">
-                            {t("profile.request.editor.charCount", {
-                              count: characterCount(item.statement),
-                              max: STATEMENT_MAX,
-                            })}
-                          </p>
-                          <label className="block space-y-1">
-                            {t("profile.request.editor.levelLabel")}
-                            <select
-                              value={item.level ?? ""}
-                              className="block w-full rounded-md border bg-background p-2"
-                              onChange={(e) =>
-                                update(index, { level: e.target.value || null })
-                              }
-                            >
-                              <option value="">
-                                {t("profile.request.ungraded")}
-                              </option>
-                              {invalidLevel && (
-                                <option value={item.level!}>
-                                  {t(
-                                    "profile.request.editor.reselectLevelOption",
-                                  )}
-                                </option>
-                              )}
-                              {levels.map((level) => (
-                                <option
-                                  key={String(level.key)}
-                                  value={String(level.key)}
-                                >
-                                  {String(level.label ?? level.key)}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                        </>
-                      )}
-                      <label className="block space-y-1">
-                        {t("profile.request.editor.ownerNoteLabel")}
-                        <textarea
-                          value={item.owner_statement ?? ""}
-                          className="block min-h-20 w-full rounded-md border bg-background p-2"
-                          onChange={(e) =>
-                            update(index, {
-                              owner_statement: e.target.value || null,
-                            })
-                          }
-                        />
-                      </label>
-                      <p className="text-sm text-muted-foreground">
-                        {t("profile.request.editor.charCount", {
-                          count: characterCount(item.owner_statement ?? ""),
-                          max: EXPLANATION_MAX,
-                        })}
-                      </p>
-                      {(source?.origin === "initial_sync" ||
-                        source?.origin === "import" ||
-                        source?.items?.some(
-                          (original) =>
-                            original.capability.key === item.capability_key &&
-                            original.objection,
-                        ) ||
-                        item.objection) && (
-                        <label className="block space-y-1">
-                          {t("profile.request.editor.objectionLabel")}
-                          <textarea
-                            ref={
-                              item.capability_key === selection.capabilityKey &&
-                              selection.objection
-                                ? activeField
-                                : undefined
-                            }
-                            value={item.objection ?? ""}
-                            aria-label={t(
-                              "profile.request.editor.objectionLabel",
-                            )}
-                            className="block min-h-20 w-full rounded-md border bg-background p-2"
-                            onChange={(e) =>
-                              update(index, {
-                                objection: e.target.value || null,
-                              })
-                            }
-                          />
-                          <span className="text-sm text-muted-foreground">
-                            {t("profile.request.editor.charCount", {
-                              count: characterCount(item.objection ?? ""),
-                              max: EXPLANATION_MAX,
-                            })}
-                          </span>
-                        </label>
-                      )}
-                      {!!item.evidence_ids?.length && (
-                        <ul
-                          aria-label={t(
-                            "profile.request.editor.selectedEvidenceAria",
-                          )}
-                          className="space-y-2"
-                        >
-                          {item.evidence_ids.map((id) => (
-                            <li
-                              key={id}
-                              className="flex flex-wrap items-center gap-x-2 text-sm"
-                            >
-                              <span className="min-w-0">
-                                {evidenceTitles.get(id) ??
-                                  pickedTitles[id] ??
-                                  t(
-                                    "profile.request.editor.evidenceRefFallback",
-                                  )}
-                              </span>
-                              {onEvidence && (
-                                <Button
-                                  type="button"
-                                  variant="link"
-                                  size="sm"
-                                  onClick={() => onEvidence(id)}
-                                >
-                                  {t("profile.request.editor.view")}
-                                </Button>
-                              )}
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                onClick={() =>
-                                  update(index, {
-                                    evidence_ids: item.evidence_ids?.filter(
-                                      (selected) => selected !== id,
-                                    ),
-                                  })
-                                }
-                              >
-                                {t("profile.request.editor.remove")}
-                              </Button>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                      <details>
-                        <summary className="cursor-pointer">
-                          {t("profile.request.editor.selectEvidenceSummary", {
-                            count: item.evidence_ids?.length ?? 0,
-                          })}
-                        </summary>
-                        <div className="max-h-48 space-y-2 overflow-y-auto py-3">
-                          {evidence.data?.data.map((entry) => (
-                            <label
-                              key={entry.id}
-                              className="flex items-start gap-2 text-sm"
-                            >
-                              <input
-                                type="checkbox"
-                                checked={
-                                  item.evidence_ids?.includes(entry.id) ?? false
-                                }
-                                onChange={(e) => {
-                                  if (e.target.checked) {
-                                    setPickedTitles((titles) => ({
-                                      ...titles,
-                                      [entry.id]: entry.title,
-                                    }))
-                                  }
-                                  update(index, {
-                                    evidence_ids: e.target.checked
-                                      ? [...(item.evidence_ids ?? []), entry.id]
-                                      : item.evidence_ids?.filter(
-                                          (id) => id !== entry.id,
-                                        ),
-                                  })
-                                }}
-                              />
-                              {entry.title}
-                            </label>
-                          ))}
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          <Button
-                            type="button"
-                            variant="outline"
-                            disabled={!evidenceSkip}
-                            onClick={() => setEvidenceSkip(evidenceSkip - 100)}
-                          >
-                            {t("profile.request.editor.prevEvidence")}
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            disabled={
-                              evidenceSkip + 100 >= (evidence.data?.count ?? 0)
-                            }
-                            onClick={() => setEvidenceSkip(evidenceSkip + 100)}
-                          >
-                            {t("profile.request.editor.nextEvidence")}
-                          </Button>
-                        </div>
-                      </details>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        onClick={() =>
-                          setItems(items.filter((_, i) => i !== index))
-                        }
-                      >
-                        {t("profile.request.editor.removeChange")}
-                      </Button>
-                    </fieldset>
-                  )
-                })}
+                {items.map((item, index) => (
+                  <RequestItemEditor
+                    key={item.capability_key}
+                    item={item}
+                    capability={capabilitiesByKey.get(item.capability_key)}
+                    source={source}
+                    activeField={
+                      item.capability_key === selection.capabilityKey
+                        ? activeField
+                        : undefined
+                    }
+                    objectionFocus={selection.objection}
+                    update={(changes) => update(index, changes)}
+                    onRemove={() =>
+                      setItems(items.filter((_, i) => i !== index))
+                    }
+                    evidencePicker={{
+                      evidence: evidence.data,
+                      evidenceTitles,
+                      pickedTitles,
+                      evidenceSkip,
+                      setEvidenceSkip,
+                      onPickTitle: (id, title) =>
+                        setPickedTitles((titles) => ({
+                          ...titles,
+                          [id]: title,
+                        })),
+                      onEvidence,
+                    }}
+                  />
+                ))}
                 <label className="block space-y-1">
                   {t("profile.request.editor.addCapabilityLabel")}
                   <select
@@ -863,19 +516,11 @@ export function ChangeRequestEditor({
                     <option value="">
                       {t("profile.request.editor.selectFromDictionary")}
                     </option>
-                    {dictionary.data?.data
-                      .filter(
-                        (c) =>
-                          !items.some((i) => i.capability_key === c.key) &&
-                          !profileItems.some(
-                            (i) => i.capability.key === c.key && i.claim,
-                          ),
-                      )
-                      .map((c) => (
-                        <option key={c.id} value={c.key}>
-                          {c.name}
-                        </option>
-                      ))}
+                    {availableCapabilities?.map((c) => (
+                      <option key={c.id} value={c.key}>
+                        {c.name}
+                      </option>
+                    ))}
                   </select>
                 </label>
                 <p className="text-sm text-muted-foreground">
@@ -886,63 +531,32 @@ export function ChangeRequestEditor({
           )}
         </div>
         {!leaving && !stale && (
-          <div className="flex shrink-0 flex-wrap gap-3 border-t pt-4">
-            {showPreview ? (
-              <>
-                <Button
-                  variant="outline"
-                  disabled={busy}
-                  onClick={() => {
-                    scrollArea.current?.scrollTo({ top: 0 })
-                    setShowPreview(false)
-                    submit.reset()
-                  }}
-                >
-                  {t("profile.request.editor.backToEdit")}
-                </Button>
-                <Button
-                  disabled={
-                    busy ||
-                    !displayedPreview?.items.length ||
-                    limitErrors.length > 0 ||
-                    displayedPreview.items.some((i) => i.warning)
-                  }
-                  onClick={() => submit.mutate()}
-                >
-                  {t("profile.request.editor.confirmSubmit")}
-                </Button>
-              </>
-            ) : (
-              <>
-                <Button
-                  type="button"
-                  variant="outline"
-                  disabled={formDisabled || limitErrors.length > 0}
-                  onClick={() => save.mutate(false)}
-                >
-                  {t("profile.request.editor.saveDraft")}
-                </Button>
-                <Button
-                  type="submit"
-                  form={formId}
-                  disabled={
-                    formDisabled ||
-                    limitErrors.length > 0 ||
-                    !items.length ||
-                    items.some(
-                      (i) =>
-                        i.level &&
-                        !dictionary.data?.data.find(
-                          (c) => c.key === i.capability_key,
-                        ),
-                    )
-                  }
-                >
-                  {t("profile.request.editor.previewAndSubmit")}
-                </Button>
-              </>
-            )}
-          </div>
+          <RequestEditorFooter
+            showPreview={showPreview}
+            busy={busy}
+            canSubmit={
+              !!displayedPreview?.items.length &&
+              !limitErrors.length &&
+              !displayedPreview.items.some((i) => i.warning)
+            }
+            canSave={!formDisabled && !limitErrors.length}
+            canPreview={
+              !formDisabled &&
+              !limitErrors.length &&
+              !!items.length &&
+              !items.some(
+                (i) => i.level && !capabilitiesByKey.has(i.capability_key),
+              )
+            }
+            formId={formId}
+            onBack={() => {
+              scrollArea.current?.scrollTo({ top: 0 })
+              setShowPreview(false)
+              submit.reset()
+            }}
+            onSubmit={() => submit.mutate()}
+            onSave={() => save.mutate(false)}
+          />
         )}
       </DialogContent>
     </Dialog>
