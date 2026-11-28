@@ -18,13 +18,13 @@ from app.domains.change_request.models import (
     RequestOrigin,
     RequestStatus,
 )
+from app.domains.drafting.reminders import generate_questions
 from app.domains.im import binding, gateway, notifications
 from app.domains.im import settings as im_settings
 from app.domains.im.adapters.telegram import Telegram
 from app.domains.im.models import ImBinding, ImNotification
 from app.domains.im.schemas import ImSettingUpdate
 from app.domains.inbox.models import InboxItem, InboxKind
-from app.domains.inbox.reminders import generate_questions
 from app.domains.inbox.service import add_item, notify
 from app.domains.org.models import OrgMembership
 from app.models import User

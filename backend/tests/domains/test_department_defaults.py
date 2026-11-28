@@ -12,7 +12,6 @@ from app.api.deps import get_authenticated_user
 from app.authz.principal import Principal
 from app.domains.audit.models import ActorKind, AuditEvent
 from app.domains.base import utc_now
-from app.domains.capability import department_defaults as d
 from app.domains.capability.department import (
     SetDepartmentCapabilities,
     department_keys,
@@ -26,6 +25,7 @@ from app.domains.capability.service import (
     read_editor,
     save_version,
 )
+from app.domains.drafting import department_defaults as d
 from app.domains.model.client import ModelRateLimited, ModelUnavailable
 from app.domains.model.models import ModelSetting
 from app.domains.org.models import (

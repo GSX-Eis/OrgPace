@@ -22,7 +22,6 @@ from app.domains.change_request.models import (
 )
 from app.domains.evidence.models import EvidenceKind, Visibility
 from app.domains.evidence.service import append_evidence
-from app.domains.im.notifications import enqueue
 from app.domains.inbox.models import (
     InboxItem,
     InboxKind,
@@ -81,10 +80,22 @@ class InboxCapacityProvider(Protocol):
     ) -> set[UUID]: ...
 
 
+class ItemAddedHook(Protocol):
+    def __call__(
+        self,
+        session: Session,
+        item: InboxItem,
+        /,
+        *,
+        borrow_assignment_id: UUID | None = None,
+    ) -> None: ...
+
+
 REDACTED_EXTENSION_RECEIPT_MESSAGE = (
     "一条延期申请已由上级代为审批，受承接部门可见范围限制，暂不展示详情"
 )
 _capacity_provider: InboxCapacityProvider | None = None
+_item_added_hook: ItemAddedHook | None = None
 
 
 def register_capacity_provider(provider: InboxCapacityProvider) -> None:
@@ -92,12 +103,18 @@ def register_capacity_provider(provider: InboxCapacityProvider) -> None:
     _capacity_provider = provider
 
 
+def on_item_added(hook: ItemAddedHook) -> None:
+    global _item_added_hook
+    _item_added_hook = hook
+
+
 def add_item(
     session: Session, item: InboxItem, *, borrow_assignment_id: UUID | None = None
 ) -> None:
     session.add(item)
     session.flush()
-    enqueue(session, item, borrow_assignment_id=borrow_assignment_id)
+    if _item_added_hook is not None:
+        _item_added_hook(session, item, borrow_assignment_id=borrow_assignment_id)
 
 
 def notify(

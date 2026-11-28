@@ -8,11 +8,11 @@ from sqlmodel import Session, select
 from app.core.db import engine
 from app.domains.base import utc_now
 from app.domains.capability.models import CapabilityDefinition
+from app.domains.drafting import reminders
 from app.domains.drafting.models import UpdateSetting
 from app.domains.drafting.update_settings import months_before
 from app.domains.evidence.models import EvidenceKind, Visibility
 from app.domains.evidence.service import append_evidence, retract_evidence
-from app.domains.inbox import reminders
 from app.domains.org.models import Employee, Organization, OrgMembership
 from app.domains.profile.models import (
     AssessmentStatus,

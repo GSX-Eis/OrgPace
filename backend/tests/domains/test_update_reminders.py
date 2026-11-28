@@ -10,11 +10,11 @@ from app.core.db import engine
 from app.domains.audit.models import AuditEvent
 from app.domains.base import utc_now
 from app.domains.drafting.models import UpdateSetting
+from app.domains.drafting.reminders import dispatch_due_reminders, generate_questions
 from app.domains.drafting.update_settings import months_before
 from app.domains.evidence.models import EvidenceKind, Visibility
 from app.domains.evidence.service import append_evidence
 from app.domains.inbox.models import InboxItem, PendingQuestion, QuestionStatus
-from app.domains.inbox.reminders import dispatch_due_reminders, generate_questions
 from app.domains.org.models import (
     Employee,
     EmploymentStatus,

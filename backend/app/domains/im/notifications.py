@@ -17,6 +17,7 @@ from app.domains.im.adapters.base import Adapter, ImError
 from app.domains.im.models import ImBinding, ImNotification, ImSetting
 from app.domains.im.schemas import Platform
 from app.domains.inbox.models import InboxItem, InboxKind
+from app.domains.inbox.service import on_item_added
 from app.domains.org.models import Organization, OrgMembership
 from app.i18n import Locale, current_locale, tr, use_locale
 from app.models import User
@@ -67,6 +68,9 @@ def enqueue(
                 platform=row.platform,
             )
         )
+
+
+on_item_added(enqueue)
 
 
 def cancel_pending(
