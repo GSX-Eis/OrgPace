@@ -738,6 +738,12 @@ for kw, must, forbid in (
      ("ruff failed on app/main.py:12", "pre-commit=失败(3s)", "3s pre-commit (失败)", "passed=n/a"), ()),
     (dict(mode="playwright", project="nere1580", exit_code=1, raw_output="  4 passed (8.1s)\n" + "\n".join(f"cleanup detail {i}" for i in range(45)) + "\nCompose cleanup failed for nere1580.\nEPP_METRIC db_mode=ephemeral\n", playwright_artifacts="/tmp/epp-playwright.fixture"),
      ("Playwright artifacts: /tmp/epp-playwright.fixture", "passed=4 skipped=0 failed=0 errors=0 xfailed=0", "Compose cleanup failed"), ()),
+    (dict(mode="playwright", project="nere1580", exit_code=1, raw_output="  2 failed\n    [chromium] › a.spec.ts:1:1 › A\n    [chromium] › b.spec.ts:1:1 › B\n  1 skipped\n  3 did not run\n  4 passed (8.1s)\n"),
+     ("passed=4 skipped=1 failed=2 errors=0 xfailed=0 did_not_run=3",), ()),
+    (dict(mode="playwright", project="nere1580", exit_code=1, raw_output="  4 passed (8.1s)\n  1 error was not a part of any test, see above for details\n"),
+     ("passed=4 skipped=0 failed=0 errors=1 xfailed=0",), ()),
+    (dict(mode="playwright", project="nere1580", exit_code=1, raw_output="  1 flaky\n    a.spec.ts:1:1 › A\n  4 passed (8.1s)\n  2 errors were not a part of any test\n"),
+     ("passed=4 skipped=0 failed=0 errors=2 xfailed=0",), ()),
     (dict(mode="pytest", project="nere1580", exit_code=0, raw_output="no tests ran in 0.05s\n"), ("passed=0 skipped=0 failed=0 errors=0 xfailed=0",), ()),
 ):
     txt = fmt(**kw)
@@ -884,11 +890,26 @@ MOCK
   b6_fail=$("${warm_env[@]}" env EPP_WARM_DB=0 bash scripts/remote-test-worker.sh run_b6_fail nere123 pytest '' tests/test_a.py 2>&1)
   b6_rc=$?
   set -e
-  mv "$scratch/warm-bin/docker.orig" "$scratch/warm-bin/docker"
-  mv "$scratch/warm-bin/uv.orig" "$scratch/warm-bin/uv"
   [[ $b6_rc == 29 ]]
   grep -Fq 'COMPOSE_UP_BOOM' <<< "$b6_fail"
   python3 -c 'import re, sys; m = re.search(r"db_prep_s=([0-9.]+)", sys.argv[1]); assert m and float(m.group(1)) >= 0.03, sys.argv[1]' "$b6_fail"
+
+  mv "$scratch/warm-bin/docker.orig" "$scratch/warm-bin/docker"
+  : > "$warm_test_dir/cleanup.log"
+  printf '#!/usr/bin/env bash\nprintf hit > "$EPP_TEMPLATE_STATUS_FILE"\necho assertion_failed\nexit 42\n' > "$scratch/warm-bin/uv"
+  real_cat=$(command -v cat)
+  printf '#!/usr/bin/env bash\ncase "${1:-}" in */template-status) exit 17 ;; esac\nexec "%s" "$@"\n' "$real_cat" > "$scratch/warm-bin/cat"
+  chmod +x "$scratch/warm-bin/uv" "$scratch/warm-bin/cat"
+  set +e
+  bad_st=$("${warm_env[@]}" env EPP_WARM_DB=1 bash scripts/remote-test-worker.sh run_bad_status nere123 pytest '' tests/test_a.py -q 2>&1)
+  bad_st_rc=$?
+  set -e
+  rm -f "$scratch/warm-bin/cat"
+  mv "$scratch/warm-bin/uv.orig" "$scratch/warm-bin/uv"
+  [[ $bad_st_rc == 42 ]]
+  [[ -s $warm_test_dir/cleanup.log ]]
+  grep -Fq 'assertion_failed' <<< "$bad_st"
+  grep -Fq 'template_status=unknown' <<< "$bad_st"
 )
 
 grep -q -- '-oControlMaster=auto' "$runner"

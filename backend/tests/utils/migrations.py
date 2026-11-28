@@ -191,14 +191,18 @@ def _record_template_status(
 ) -> None:
     if status_file is None:
         return
+    fd: int | None = None
     try:
         fd = os.open(str(status_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    except FileExistsError:
-        return
-    try:
         os.write(fd, status.encode("ascii"))
+    except OSError:
+        return
     finally:
-        os.close(fd)
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 
 def ensure_shared_template(

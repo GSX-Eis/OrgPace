@@ -233,11 +233,11 @@ test_exec_started=
 test_exec_s=n/a
 
 mono_now() {
-  python3 -c 'import time; print(f"{time.monotonic():.6f}")'
+  python3 -c 'import time; print(f"{time.monotonic():.6f}")' 2>/dev/null || true
 }
 
 mono_elapsed() {
-  python3 -c 'import sys, time; print(f"{max(0.0, time.monotonic() - float(sys.argv[1])):.3f}")' "$1"
+  [[ -n ${1:-} ]] && python3 -c 'import sys, time; print(f"{max(0.0, time.monotonic() - float(sys.argv[1])):.3f}")' "$1" 2>/dev/null || echo unknown
 }
 
 run_quiet_on_success() {
@@ -264,6 +264,7 @@ run_backend_python() {
 
 cleanup() {
   local code=$?
+  set +e
   trap - EXIT
   trap '' HUP INT TERM
   if [[ -n $db_prep_started && $db_prep_done != true ]]; then
@@ -274,11 +275,9 @@ cleanup() {
     test_exec_s=$(mono_elapsed "$test_exec_started")
   fi
   if $warm_active; then
-    if [[ -s ${EPP_TEMPLATE_STATUS_FILE:-} ]]; then
-      template_status=$(cat "$EPP_TEMPLATE_STATUS_FILE")
-    elif [[ $code == 0 ]]; then
+    if [[ ! -e ${EPP_TEMPLATE_STATUS_FILE:-} && $code == 0 ]]; then
       template_status=n/a
-    else
+    elif ! template_status=$(cat "${EPP_TEMPLATE_STATUS_FILE:-}" 2>/dev/null) || [[ $template_status != built && $template_status != hit ]]; then
       template_status=unknown
     fi
   fi

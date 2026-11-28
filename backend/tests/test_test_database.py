@@ -306,6 +306,9 @@ def test_shared_template_race_failure_readonly_cloning_and_pruning(
             "built",
             "hit",
         ]
+        migrations_mod._record_template_status(
+            tmp_path / "missing-parent" / "status", "hit"
+        )
 
         # 3. Template is IS_TEMPLATE=true, ALLOW_CONNECTIONS=false and rejects direct connect.
         with psycopg.connect(admin_dsn, autocommit=True) as admin:

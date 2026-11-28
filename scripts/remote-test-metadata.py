@@ -1301,9 +1301,12 @@ _PYTEST_DURATION_LINE_RE = re.compile(
     r"^\s*(\d+(?:\.\d+)?s)\s+(call|setup|teardown)\s+(.+?)\s*$"
 )
 _PLAYWRIGHT_COUNT_RE = re.compile(
-    r"^\s*(\d+)\s+(passed|failed|skipped|flaky|timed out|interrupted)(?:\s+\([^)]+\))?\s*$"
+    r"^\s*(\d+)\s+(passed|failed|skipped|flaky|timed out|interrupted|did not run)(?:\s+\([^)]+\))?\s*$"
 )
-_PLAYWRIGHT_SUMMARY_DETAIL_RE = re.compile(r"^\s+\[[^\]]+\]\s+›\s+")
+_PLAYWRIGHT_FATAL_ERROR_RE = re.compile(
+    r"^\s*(\d+)\s+errors?\s+(?:was|were)\s+not\s+a\s+part\s+of\s+any\s+test(?:,\s*see above for details)?\s*$"
+)
+_PLAYWRIGHT_SUMMARY_DETAIL_RE = re.compile(r"^\s{4,}.+\s+›\s+")
 _PREFLIGHT_STEP_RE = re.compile(
     r"^(同步检查|单一head|pre-commit|数据库环境|pytest|手动提示):\s*(通过|跳过|失败)\s*\((\d+)s\)$"
 )
@@ -1325,24 +1328,26 @@ def _fmt_sec(raw: str) -> str:
 
 def _parse_counts_and_durations(
     mode: str, lines: list[str]
-) -> tuple[dict[str, int] | None, list[str], list[tuple[str, str, int]]]:
+) -> tuple[dict[str, int] | None, int, list[str], list[tuple[str, str, int]]]:
     counts: dict[str, int] | None = None
-    summary_idx = next(
-        (
-            i
-            for i in range(len(lines) - 1, -1, -1)
-            if _PYTEST_SUMMARY_RE.match(lines[i].strip())
-        ),
-        None,
-    )
-    if summary_idx is not None and (
-        m := _PYTEST_SUMMARY_RE.match(lines[summary_idx].strip())
-    ):
-        counts = {"passed": 0, "skipped": 0, "failed": 0, "errors": 0, "xfailed": 0}
-        for num_raw, kind in _PYTEST_COUNT_RE.findall(m.group(1)):
-            k = "errors" if kind in {"error", "errors"} else kind
-            if k in counts:
-                counts[k] += int(num_raw)
+    did_not_run = 0
+    if mode != "playwright":
+        summary_idx = next(
+            (
+                i
+                for i in range(len(lines) - 1, -1, -1)
+                if _PYTEST_SUMMARY_RE.match(lines[i].strip())
+            ),
+            None,
+        )
+        if summary_idx is not None and (
+            m := _PYTEST_SUMMARY_RE.match(lines[summary_idx].strip())
+        ):
+            counts = {"passed": 0, "skipped": 0, "failed": 0, "errors": 0, "xfailed": 0}
+            for num_raw, kind in _PYTEST_COUNT_RE.findall(m.group(1)):
+                k = "errors" if kind in {"error", "errors"} else kind
+                if k in counts:
+                    counts[k] += int(num_raw)
 
     durations: list[str] = []
     dur_start = next(
@@ -1369,6 +1374,7 @@ def _parse_counts_and_durations(
                 i
                 for i in range(len(lines) - 1, -1, -1)
                 if _PLAYWRIGHT_COUNT_RE.match(lines[i])
+                or _PLAYWRIGHT_FATAL_ERROR_RE.match(lines[i])
             ),
             None,
         )
@@ -1376,16 +1382,19 @@ def _parse_counts_and_durations(
             pw = {"passed": 0, "skipped": 0, "failed": 0, "errors": 0, "xfailed": 0}
             for i in range(last_pw, -1, -1):
                 ln = lines[i]
-                if pm := _PLAYWRIGHT_COUNT_RE.match(ln):
-                    kind = pm.group(2)
-                    k = (
-                        "failed"
-                        if kind in {"failed", "timed out"}
-                        else ("errors" if kind == "interrupted" else kind)
-                    )
-                    if k in pw:
-                        pw[k] += int(pm.group(1))
-                elif not _PLAYWRIGHT_SUMMARY_DETAIL_RE.match(ln) and ln.strip():
+                if fm := _PLAYWRIGHT_FATAL_ERROR_RE.match(ln):
+                    pw["errors"] += int(fm.group(1))
+                elif pm := _PLAYWRIGHT_COUNT_RE.match(ln):
+                    num, kind = int(pm.group(1)), pm.group(2)
+                    if kind == "did not run":
+                        did_not_run += num
+                    elif kind in {"failed", "timed out"}:
+                        pw["failed"] += num
+                    elif kind == "interrupted":
+                        pw["errors"] += num
+                    elif kind in {"passed", "skipped"}:
+                        pw[kind] += num
+                elif not _PLAYWRIGHT_SUMMARY_DETAIL_RE.match(ln):
                     break
             counts = pw
 
@@ -1410,7 +1419,7 @@ def _parse_counts_and_durations(
         if pf_header is not None
         else []
     )
-    return counts, durations[:5], pf_steps
+    return counts, did_not_run, durations[:5], pf_steps
 
 
 def build_summary_lines(
@@ -1433,7 +1442,7 @@ def build_summary_lines(
         for tok in ln[11:].split()
         if "=" in tok
     )
-    counts, durations, pf_steps = _parse_counts_and_durations(mode, lines)
+    counts, did_not_run, durations, pf_steps = _parse_counts_and_durations(mode, lines)
     top_slow = list(durations)
     if not top_slow and pf_steps:
         active = sorted(
@@ -1443,6 +1452,7 @@ def build_summary_lines(
 
     counts_str = (
         f"passed={counts['passed']} skipped={counts['skipped']} failed={counts['failed']} errors={counts['errors']} xfailed={counts['xfailed']}"
+        + (f" did_not_run={did_not_run}" if did_not_run > 0 else "")
         if counts is not None
         else "passed=n/a skipped=n/a failed=n/a errors=n/a xfailed=n/a"
     )
