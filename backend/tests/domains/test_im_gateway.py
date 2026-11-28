@@ -1039,7 +1039,9 @@ def test_refresh_restarts_crashed_task_with_backoff(
                 return "12345"
 
             async def poll(self) -> AsyncIterator[Event]:
-                if self.number < 2:
+                if failure in ("runtime", "key", "value") and self.number < 2:
+                    raise errors[failure]
+                if failure == "credentials" and self.number == 0:
                     raise errors[failure]
                 yield event(org_id, "next message")
                 await asyncio.Event().wait()
@@ -1061,6 +1063,11 @@ def test_refresh_restarts_crashed_task_with_backoff(
                 assert g.tasks[key][1] is original
                 assert not delays
                 assert len(instances) == (1 if failure == "credentials" else 0)
+                wanted[key] = encrypt_secret(json.dumps({"bot_token": "12345:rotated"}))
+                await g.refresh()
+                assert g.tasks[key][1] is not original
+                await asyncio.wait_for(delivered.wait(), timeout=1)
+                assert not g.tasks[key][1].done() and not delays
                 return
             restarted = g.tasks[key][1]
             assert restarted is not original

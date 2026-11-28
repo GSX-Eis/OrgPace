@@ -430,6 +430,7 @@ class Gateway:
         adapter = None
         try:
             while True:
+                authenticated = False
                 try:
                     adapter = ADAPTERS[platform](
                         org_id, json.loads(decrypt_secret(credentials))
@@ -440,6 +441,7 @@ class Gateway:
                             raise ImError("bot_already_used")
                         self.identities[platform, identity] = org_id
                     identity = await adapter.test_connection()
+                    authenticated = True
                     key = platform, identity
                     owner = self.identities.get(key)
                     if owner is not None and owner != org_id:
@@ -466,6 +468,11 @@ class Gateway:
                     KeyError,
                     SQLAlchemyError,
                 ) as error:
+                    if authenticated and isinstance(
+                        error, (SecretUnavailable, ValueError, KeyError)
+                    ):
+                        # Runtime failures are supervised, not invalid credentials.
+                        raise
                     code = (
                         error.code
                         if isinstance(error, ImError)
