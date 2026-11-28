@@ -47,19 +47,24 @@ export function discardStaleTurn(storageKey: string, selectedSession?: string) {
 
 /** Determine whether the chat panel should scroll to the bottom sentinel. */
 export function shouldScrollToBottom({
-  enabled = true,
   messageCount,
   streamText,
-  toolCount,
+  tools,
   busy = false,
+  setupIntro = false,
+  pendingMessage,
 }: {
-  enabled?: boolean
   messageCount: number
   streamText: string
-  toolCount: number
+  tools: readonly unknown[]
   busy?: boolean
+  setupIntro?: boolean
+  pendingMessage?: unknown
 }): boolean {
-  return enabled && Boolean(messageCount || busy || streamText || toolCount)
+  return (
+    (!setupIntro || Boolean(pendingMessage)) &&
+    Boolean(messageCount || busy || streamText || tools.length)
+  )
 }
 
 /** Shared cross-tab storage sync, session-switch turn cleanup, and auto-scroll hook for assistant panels. */
@@ -79,11 +84,12 @@ export function useSessionPanelSync({
   replaceOnStorageSync?: boolean
   onStorageSync?: () => void
   scroll: {
-    enabled?: boolean
     messageCount: number
     streamText: string
     tools: readonly unknown[]
     busy?: boolean
+    setupIntro?: boolean
+    pendingMessage?: unknown
   }
 }) {
   const navigate = useNavigate()
@@ -125,21 +131,23 @@ export function useSessionPanelSync({
   useEffect(() => {
     if (
       shouldScrollToBottom({
-        enabled: scroll.enabled,
         messageCount: scroll.messageCount,
         streamText: scroll.streamText,
-        toolCount: scroll.tools.length,
+        tools: scroll.tools,
         busy: scroll.busy,
+        setupIntro: scroll.setupIntro,
+        pendingMessage: scroll.pendingMessage,
       })
     ) {
       bottom.current?.scrollIntoView({ block: "end" })
     }
   }, [
-    scroll.enabled,
     scroll.messageCount,
     scroll.streamText,
-    scroll.tools.length,
+    scroll.tools,
     scroll.busy,
+    scroll.setupIntro,
+    scroll.pendingMessage,
   ])
 
   return { bottom, preserveText }

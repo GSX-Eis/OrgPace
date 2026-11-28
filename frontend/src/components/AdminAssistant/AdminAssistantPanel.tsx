@@ -507,11 +507,12 @@ export function AdminAssistantPanel({
       creatingSession.current = null
     },
     scroll: {
-      enabled: !setupIntro || !!pendingMessage,
       messageCount: messages.length,
       streamText: stream.text,
       tools: stream.tools,
       busy,
+      setupIntro,
+      pendingMessage,
     },
   })
   useLayoutEffect(() => {
