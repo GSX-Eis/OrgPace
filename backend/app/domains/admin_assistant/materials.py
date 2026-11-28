@@ -6,7 +6,6 @@ from pydantic import BaseModel, Field, RootModel
 from sqlmodel import Session
 
 from app.authz.principal import Principal
-from app.domains.bot.attachments import AttachmentError, get_session_attachment
 from app.domains.change_request.batch_import import (
     ImportResult,
     MaterialPerson,
@@ -14,6 +13,7 @@ from app.domains.change_request.batch_import import (
 )
 from app.domains.change_request.import_json import InvalidImport
 from app.domains.change_request.schemas import ToolInput
+from app.domains.chat_runtime.attachments import AttachmentError, get_session_attachment
 from app.i18n import tr
 
 

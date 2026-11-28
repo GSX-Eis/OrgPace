@@ -1,23 +1,18 @@
-from datetime import datetime
-from math import ceil
-from zoneinfo import ZoneInfo
-
 from fastapi import HTTPException
 from sqlmodel import Session
 
 from app.authz.principal import Principal
-from app.domains.base import utc_now
 from app.domains.bot import schemas as s
 from app.domains.capacity import demand
 from app.domains.capacity.settings import read_settings as read_capacity_settings
-from app.domains.review.routing import can_review_any
-from app.i18n import current_locale, tr
-
-DEADLINE_MESSAGE = (
-    "这次处理超过 3 分钟没完成，已经停止，没有保存任何改动。"
-    "材料较多时请分批，例如名单每次 10–20 人、词典每次 20 项左右。"
-    "已经上传的附件不用重新上传，直接说『用刚才的名单先建前 10 人』。"
+from app.domains.chat_runtime.presentation import (
+    DEADLINE_MESSAGE as DEADLINE_MESSAGE,
 )
+from app.domains.chat_runtime.presentation import (
+    retry_time as retry_time,
+)
+from app.domains.review.routing import can_review_any
+from app.i18n import tr
 
 _CAPACITY_KEYWORDS = (
     "提需求",
@@ -239,21 +234,3 @@ def manual_failure(
             )
         )
     return s.TextMessage(text=message)
-
-
-def retry_time(retry_at: datetime) -> str:
-    now = utc_now()
-    local = retry_at.astimezone(ZoneInfo("Asia/Shanghai"))
-    if local.date() == now.astimezone(local.tzinfo).date():
-        day = ""
-    elif current_locale.get() == "en":
-        day = f"{local:%b %d} "
-    else:
-        day = f"{local.month} 月 {local.day} 日 "
-    minutes = max(1, ceil((retry_at - now).total_seconds() / 60))
-    return tr(
-        "北京时间 {day}{time}（约 {minutes} 分钟后）",
-        day=day,
-        time=f"{local:%H:%M}",
-        minutes=minutes,
-    )

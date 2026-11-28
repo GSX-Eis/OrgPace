@@ -38,8 +38,6 @@ from app.domains.admin_assistant.schemas import (
     SecretInputCard,
 )
 from app.domains.base import utc_now
-from app.domains.bot import store as messages
-from app.domains.bot.schemas import TextMessage
 from app.domains.capability.proposals import ProposalConflict
 from app.domains.capability.service import DictionaryConflict
 from app.domains.change_request.employee import (
@@ -49,6 +47,8 @@ from app.domains.change_request.employee import (
 )
 from app.domains.change_request.import_json import InvalidImport
 from app.domains.change_request.schemas import limit_validation_message
+from app.domains.chat_runtime import store as messages
+from app.domains.chat_runtime.schemas import TextMessage
 from app.domains.im.settings import InvalidImSetting
 from app.domains.model.service import InvalidModelSetting
 from app.domains.org.roster.service import RosterError

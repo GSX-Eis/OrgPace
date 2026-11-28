@@ -16,9 +16,9 @@ from app.domains.admin_assistant.schemas import (
     RequestFile,
     SecretInputCard,
 )
-from app.domains.bot import attachments
 from app.domains.change_request.import_json import InvalidImport
 from app.domains.change_request.schemas import ToolInput
+from app.domains.chat_runtime import attachments
 from app.domains.drafting.settings import AutoDraftDisabled
 from app.domains.model.pi_client import ToolDefinition
 from app.domains.org.roster.service import RosterError

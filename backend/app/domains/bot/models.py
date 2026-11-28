@@ -14,7 +14,13 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlmodel import Field, SQLModel
 
-from app.domains.base import TenantRecord, tenant_fk, utc_now
+from app.domains.base import tenant_fk, utc_now
+from app.domains.chat_runtime.models import (
+    ChatAttachment as ChatAttachment,
+)
+from app.domains.chat_runtime.models import (
+    ConversationMessage as ConversationMessage,
+)
 
 
 class BotSetting(SQLModel, table=True):
@@ -63,12 +69,6 @@ class BotSession(SQLModel, table=True):
     lease_until: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
 
 
-class ConversationMessage(TenantRecord):
-    session_id: UUID
-    role: Literal["user", "assistant"] = Field(sa_type=String)
-    ciphertext: str = Field(repr=False)
-
-
 class BotMessage(ConversationMessage, table=True):
     __tablename__ = "bot_message"
     __table_args__ = (
@@ -80,17 +80,6 @@ class BotMessage(ConversationMessage, table=True):
         CheckConstraint("role IN ('user', 'assistant')"),
         Index("ix_bot_message_session_time", "org_id", "session_id", "created_at"),
     )
-
-
-class ChatAttachment(TenantRecord):
-    session_id: UUID
-    kind: Literal["image", "file"] = Field(sa_type=String)
-    filename: str
-    mime_type: str
-    size: int
-    ciphertext: str = Field(repr=False)
-    text_ciphertext: str | None = Field(default=None, repr=False)
-    notice: str | None = None
 
 
 class BotAttachment(ChatAttachment, table=True):

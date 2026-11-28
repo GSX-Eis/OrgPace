@@ -17,7 +17,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
 from app.domains.base import TenantRecord, utc_now
-from app.domains.bot.models import ChatAttachment, ConversationMessage
+from app.domains.chat_runtime.models import ChatAttachment, ConversationMessage
 
 
 class AdminAssistantSession(SQLModel, table=True):

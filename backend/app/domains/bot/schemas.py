@@ -8,15 +8,34 @@ from pydantic import (
     Field,
     JsonValue,
     PrivateAttr,
-    field_validator,
     model_validator,
 )
 
 from app.authz.principal import Principal
-from app.domains.bot.attachments import AttachmentPublic
 from app.domains.capacity.demand_schemas import ProjectInput
 from app.domains.change_request.models import ItemDecision
 from app.domains.change_request.schemas import RequestReviewer, SubmitInput, ToolInput
+from app.domains.chat_runtime.schemas import (
+    AttachmentPublic as AttachmentPublic,
+)
+from app.domains.chat_runtime.schemas import (
+    CardLink as CardLink,
+)
+from app.domains.chat_runtime.schemas import (
+    SessionCreated as SessionCreated,
+)
+from app.domains.chat_runtime.schemas import (
+    TextMessage as TextMessage,
+)
+from app.domains.chat_runtime.schemas import (
+    ToolStep as ToolStep,
+)
+from app.domains.chat_runtime.schemas import (
+    TurnInput as TurnInput,
+)
+from app.domains.chat_runtime.schemas import (
+    UserMessage as UserMessage,
+)
 from app.domains.profile.models import AssessmentStatus
 from app.domains.review.direct import DirectEditInput
 from app.domains.review.schemas import DecisionInput
@@ -213,11 +232,6 @@ class PlanCard(BaseModel):
     )
 
 
-class CardLink(BaseModel):
-    label: str
-    href: str
-
-
 class FeasibilityDepartmentItem(BaseModel):
     department_name: str
     conclusion: Literal["can_do", "later", "needs_confirmation", "cannot_do"]
@@ -286,15 +300,6 @@ class CapacityCard(BaseModel):
     plan: PlanCard | None = Field(default=None, exclude_if=lambda value: value is None)
     detail_link: CardLink | None = Field(
         default=None, exclude_if=lambda value: value is None
-    )
-
-
-class TextMessage(BaseModel):
-    type: Literal["text"] = "text"
-    text: str
-    review_link: Literal["/reviews"] | None = None
-    capacity_links: list[CardLink] = Field(
-        default_factory=list, exclude_if=lambda links: not links
     )
 
 
@@ -383,36 +388,11 @@ Message = Annotated[
 ]
 
 
-class ToolStep(BaseModel):
-    name: str
-    ok: bool
-
-
 class TurnResponse(BaseModel):
     messages: list[Message]
     steps: list[ToolStep] = Field(default_factory=list)
     _principal: Principal | None = PrivateAttr(default=None)
     _scope: dict[str, JsonValue] | None = PrivateAttr(default=None)
-
-
-class TurnInput(ToolInput):
-    text: str = Field(min_length=1, max_length=10000, pattern=r"\S")
-    attachment_ids: list[UUID] = Field(default_factory=list, max_length=5)
-
-    @field_validator("attachment_ids", mode="before")
-    @classmethod
-    def limit_attachments(cls, value: object) -> object:
-        if isinstance(value, list) and len(value) > 5:
-            raise ValueError("每轮最多 5 个附件")
-        return value
-
-
-class UserMessage(TurnInput):
-    attachments: list[AttachmentPublic] = Field(default_factory=list)
-
-
-class SessionCreated(BaseModel):
-    session_id: UUID
 
 
 class SessionMessage(BaseModel):

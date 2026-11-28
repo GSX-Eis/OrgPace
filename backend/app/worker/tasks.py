@@ -10,10 +10,10 @@ from sqlmodel import Session, col, select
 from app.authz.principal import Principal
 from app.core.db import engine
 from app.domains.base import utc_now
-from app.domains.bot.store import cleanup_messages
 from app.domains.capacity.forecast import refresh_org_forecasts
 from app.domains.capacity.proposal import expire
 from app.domains.capacity.tracking import recompute
+from app.domains.chat_runtime.store import cleanup_messages
 from app.domains.drafting.department_defaults import fill_department_defaults
 from app.domains.drafting.incremental import run_incremental
 from app.domains.drafting.reminders import dispatch_due_reminders
@@ -21,6 +21,7 @@ from app.domains.drafting.service import run_drafting
 from app.domains.im.admin_todos import dispatch_admin_todos
 from app.domains.im.binding import cleanup_events
 from app.domains.org.models import Organization
+from app.domains.setup import wizard as _setup_wizard  # noqa: F401
 from app.domains.source.schedule import dispatch_due_syncs
 from app.domains.source.sync import execute_sync
 from app.worker.app import app

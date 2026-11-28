@@ -23,17 +23,17 @@ from app.domains.admin_assistant.schemas import (
     TableCard,
 )
 from app.domains.base import utc_now
-from app.domains.bot import attachments
-from app.domains.bot import store as messages
-from app.domains.bot.admission import (
+from app.domains.chat_runtime import attachments
+from app.domains.chat_runtime import store as messages
+from app.domains.chat_runtime.admission import (
     BotBusy,
     BotDraftingPriority,
     BotQuotaPaused,
     BotRateLimited,
     begin_turn,
 )
-from app.domains.bot.presentation import DEADLINE_MESSAGE, retry_time
-from app.domains.bot.schemas import TextMessage, ToolStep
+from app.domains.chat_runtime.presentation import DEADLINE_MESSAGE, retry_time
+from app.domains.chat_runtime.schemas import TextMessage, ToolStep
 from app.domains.drafting.service import drafting_jobs
 from app.domains.model import pi_client
 from app.domains.model.client import ModelUnavailable

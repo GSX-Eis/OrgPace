@@ -639,6 +639,13 @@ def drafting_jobs(
     )
 
 
+from app.domains.chat_runtime.admission import (  # noqa: E402
+    register_drafting_jobs_checker as _register_drafting_jobs_checker,
+)
+
+_register_drafting_jobs_checker(drafting_jobs)
+
+
 def drafting_employee_ids(
     session: Session,
     org_id: UUID,

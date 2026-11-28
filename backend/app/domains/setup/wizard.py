@@ -116,3 +116,12 @@ def update_step(
     else:
         session.flush()
     return read_setup(session, principal.org_id)
+
+
+from app.domains.chat_runtime.store import (  # noqa: E402
+    register_setup_completion_checker as _register_setup_completion_checker,
+)
+
+_register_setup_completion_checker(
+    lambda session, org_id: read_setup(session, org_id).completed
+)
