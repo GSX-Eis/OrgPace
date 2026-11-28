@@ -14,7 +14,6 @@ from app.core.security import create_access_token
 from app.domains.bot import core, store, tools
 from app.domains.bot import schemas as s
 from app.domains.change_request import employee
-from app.domains.change_request.employee import InvalidItems, RequestConflict
 from app.domains.change_request.models import (
     ChangeItem,
     ProfileChangeRequest,
@@ -317,24 +316,23 @@ def test_review_projection_empty_permissions_and_validation(
     assert "error" in tools.call(
         db, p, session, [], "prepare_review_decision", invalid_reason
     )
-    with pytest.raises(InvalidItems):
-        tools.call(
+    for invalid, expected in (
+        (
+            {"decisions": args["decisions"] * 2},
+            "必须逐项决定所有尚未决定的改动，不能重复",
+        ),
+        ({"revision": request.revision + 1}, "内容已更新，请刷新查看"),
+    ):
+        invalid_cards = []
+        assert tools.call(
             db,
             p,
             session,
-            [],
+            invalid_cards,
             "prepare_review_decision",
-            {**args, "decisions": args["decisions"] * 2},
-        )
-    with pytest.raises(RequestConflict):
-        tools.call(
-            db,
-            p,
-            session,
-            [],
-            "prepare_review_decision",
-            {**args, "revision": request.revision + 1},
-        )
+            {**args, **invalid},
+        ) == {"error": expected}
+        assert invalid_cards == []
     for name in ("decide", "decide_review_items", "confirm_review"):
         assert "error" in tools.call(db, p, session, [], name, args)
     names = {t.name for t in tools.definitions()}

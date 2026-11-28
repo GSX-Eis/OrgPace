@@ -7,6 +7,7 @@ from datetime import timedelta
 from uuid import UUID, uuid4
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine, inspect, text
 from sqlmodel import Session, select
@@ -19,7 +20,9 @@ from app.core.secrets import encrypt_secret
 from app.domains.account.limiter import LoginLimited
 from app.domains.account.models import LoginAttempt
 from app.domains.base import utc_now
-from app.domains.im import binding, gateway
+from app.domains.bot import schemas as bot_s
+from app.domains.bot import store
+from app.domains.im import actions, binding, gateway
 from app.domains.im import settings as im_settings
 from app.domains.im.adapters import telegram
 from app.domains.im.adapters.base import Event, ImError
@@ -352,7 +355,7 @@ def test_codes_scope_reuse_and_rate_limit(demo: tuple, db: Session) -> None:
         g.dispatch(
             event(p.org_id, "绑定 " + valid, user="400"), "12345", setting.credentials
         )
-        == binding.GUIDE
+        == "当前请求较多，请稍后再试"
     )
     assert not db.exec(
         select(ImBinding).where(
@@ -939,4 +942,100 @@ def test_concurrent_poll_errors_and_cancellation(
             await asyncio.gather(connection, return_exceptions=True)
             assert idle_stopped.is_set()
 
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("status", [404, 409, 500])
+def test_delivery_failure_keeps_polling(
+    demo: tuple, db: Session, monkeypatch: pytest.MonkeyPatch, status: int
+) -> None:
+    p = principal(db, demo[1]["E02"].org_id, demo[1]["E02"].id)
+    setting = enable(db, p)
+    credentials = setting.credentials
+    assert binding.bind(
+        db, p.org_id, "telegram", "100", "100", "12345", binding.create_code(db, p).code
+    )
+    g = gateway.Gateway(engine)
+    first, second = event(p.org_id, "first"), event(p.org_id, "second")
+    reply = actions.Reply(
+        uuid4(), bot_s.TurnResponse(messages=[bot_s.TextMessage(text="unsent")])
+    )
+
+    def dispatch(incoming: Event, *_args: object) -> actions.Reply | str:
+        return reply if incoming == first else "next response"
+
+    monkeypatch.setattr(g, "dispatch", dispatch)
+    if status != 404:
+
+        def fail(*_args: object) -> None:
+            raise HTTPException(status, "synthetic private detail")
+
+        monkeypatch.setattr(store, "get_session", fail)
+
+    async def run() -> None:
+        sent = []
+        finished = asyncio.Event()
+
+        class Fake:
+            async def poll(self) -> AsyncIterator[Event]:
+                yield first
+                yield second
+                await asyncio.Event().wait()
+
+            async def send_text(self, _chat: str, text: str) -> None:
+                sent.append(text)
+                if text == "next response":
+                    finished.set()
+
+        task = asyncio.create_task(g.poll(Fake(), "12345", credentials))
+        waiter = asyncio.create_task(finished.wait())
+        try:
+            done, _ = await asyncio.wait(
+                [task, waiter], timeout=1, return_when=asyncio.FIRST_COMPLETED
+            )
+            assert waiter in done and not task.done()
+            assert sent[-1] == "next response"
+            assert "synthetic private detail" not in sent and "unsent" not in sent
+        finally:
+            task.cancel()
+            waiter.cancel()
+            await asyncio.gather(task, waiter, return_exceptions=True)
+
+    asyncio.run(run())
+
+
+def test_refresh_restarts_crashed_task_with_backoff(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    g = gateway.Gateway(engine)
+    org_id = uuid4()
+    key = (org_id, "telegram")
+    wanted = {key: "synthetic"}
+    attempts, delays = [], []
+
+    async def connect(*_args: object) -> None:
+        attempts.append(True)
+        if len(attempts) <= 2:
+            raise RuntimeError("synthetic private detail")
+        # Clean return represents non-retryable credentials.
+
+    async def backoff(seconds: float) -> None:
+        delays.append(seconds)
+
+    monkeypatch.setattr(g, "wanted", lambda: wanted)
+    monkeypatch.setattr(g, "connect", connect)
+
+    async def run() -> None:
+        await g.refresh()
+        for _ in range(3):
+            task = g.tasks[key][1]
+            await asyncio.gather(task, return_exceptions=True)
+            await g.refresh()
+        assert delays == [1, 2]
+        assert len(attempts) == 3
+        assert g.tasks[key][1] is task
+        assert "synthetic private detail" not in caplog.text
+        assert "IM connection" in caplog.text
+
+    monkeypatch.setattr(gateway.asyncio, "sleep", backoff)
     asyncio.run(run())

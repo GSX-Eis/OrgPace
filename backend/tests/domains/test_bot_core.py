@@ -603,3 +603,13 @@ def test_incomplete_turn_rolls_back_tools(
     assert len(history) == 2 and "不应保存" not in json.dumps(
         [m.payload for m in history]
     )
+
+
+def test_missing_employee_request_returns_tool_error(demo: tuple, db: Session) -> None:
+    p = principal_for(db, demo[1]["E02"].org_id)
+    session = store.create_session(db, p)
+    cards = []
+    assert tools.call(
+        db, p, session, cards, "preview_request", {"request_id": str(uuid4())}
+    ) == {"error": "记录不存在"}
+    assert not cards

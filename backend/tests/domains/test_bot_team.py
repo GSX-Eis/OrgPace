@@ -347,9 +347,13 @@ def test_team_scope(demo: tuple, db: Session, channel: str, invalid: str) -> Non
         elif invalid == "self" and name == "get_member_profile":
             assert tools.call(db, p, session, [], name, body)
         else:
-            with pytest.raises(HTTPException) as error:
-                tools.call(db, p, session, [], name, body)
-            assert error.value.status_code == (403 if invalid == "self" else 404)
+            cards = []
+            assert tools.call(db, p, session, cards, name, body) == {
+                "error": "不能直接修改自己的画像，请在画像页提交修改"
+                if invalid == "self"
+                else "找不到该员工"
+            }
+            assert not cards
     names = {d.name for d in tools.definitions(p)}
     assert ("prepare_profile_edit" in names) == bool(p.managed_department_ids)
     if invalid == "employee":

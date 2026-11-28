@@ -531,3 +531,34 @@ def test_file_does_not_answer_pending_question(demo: tuple, db: Session) -> None
     history = store.messages_for(db, session)
     assert history[0].payload["text"] == "我发送了文件：材料.txt"
     assert history[0].payload["attachments"][0]["filename"] == "材料.txt"
+
+
+@pytest.mark.parametrize("status", [404, 409, 403])
+def test_bound_question_error_is_not_binding_guide(
+    demo: tuple, db: Session, monkeypatch: pytest.MonkeyPatch, status: int
+) -> None:
+    p, setting = setup(db, demo)
+    incoming = event(p.org_id, "synthetic answer")
+    session = actions.conversation(db, p, incoming, "12345")
+    question = PendingQuestion(
+        org_id=p.org_id,
+        target_employee_id=p.employee_id,
+        question="Synthetic question",
+        reason="Synthetic reason",
+    )
+    db.add(question)
+    db.flush()
+    session.pending_question_id = question.id
+    db.add(session)
+    db.commit()
+
+    def fail(*_args: object) -> None:
+        raise HTTPException(status, "synthetic private detail")
+
+    monkeypatch.setattr(actions, "read_question", fail)
+    assert (
+        gateway.Gateway(engine).dispatch(incoming, "12345", setting.credentials)
+        == "操作未完成，请重新查看后再试。"
+    )
+    db.refresh(question)
+    assert question.status == "open"
