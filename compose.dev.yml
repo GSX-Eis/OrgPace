@@ -1,7 +1,7 @@
 services:
   db:
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
 
   adminer:
     image: adminer
@@ -11,7 +11,7 @@ services:
     environment:
       ADMINER_DESIGN: pepa-linha-dark
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
 
   backend:
     environment:
@@ -41,9 +41,6 @@ services:
             - ./frontend/dist
             - ./frontend/blob-report
             - ./frontend/test-results
-    # TODO: remove once coverage is done locally
-    volumes:
-      - ./backend/htmlcov:/app/backend/htmlcov
 
   mock-jira:
     image: ${COMPOSE_PROJECT_NAME:-employee-profile}-backend:latest

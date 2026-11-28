@@ -1,6 +1,9 @@
 from procrastinate import App, PsycopgConnector
 
 from app.core.config import settings
+from app.core.observability import init_observability
+
+init_observability()
 
 app = App(
     connector=PsycopgConnector(

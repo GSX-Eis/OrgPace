@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -43,6 +44,8 @@ from app.domains.manager_tools import MANAGER_TOOLS
 from app.domains.org.employee_fields import FIELD_LABELS
 from app.domains.planning.tools import COORDINATION_TOOLS
 from app.mcp.oauth import resource_url
+
+logger = logging.getLogger(__name__)
 
 TOOLS = {tool.name: tool for tool in (*EMPLOYEE_TOOLS, *MANAGER_TOOLS)}
 
@@ -132,6 +135,7 @@ def invoke(
     assert ctx.request is not None
     principal, client_name = ctx.request.scope["mcp_identity"]
     with Session(engine) as session:
+        tool = None
         try:
             tools = available_tools(principal, session)
             tool = tools.get(params.name)
@@ -214,13 +218,21 @@ def invoke(
                         )
                     ],
                 )
-            except Exception:
-                # Never let SDK exception logging include SQL, credentials or input text.
+            except Exception as exc:
+                logger.warning(
+                    "MCP tool %s commit failed (%s)",
+                    tool.name if tool else "unknown",
+                    type(exc).__name__,
+                )
                 message = "操作失败，请稍后重试"
         except HTTPException as exc:
             message = _http_error_message(params.name, exc)
-        except Exception:
-            # Never let SDK exception logging include SQL, credentials or input text.
+        except Exception as exc:
+            logger.warning(
+                "MCP tool %s failed (%s)",
+                tool.name if tool else "unknown",
+                type(exc).__name__,
+            )
             message = "操作失败，请稍后重试"
         session.rollback()
     return types.CallToolResult(
