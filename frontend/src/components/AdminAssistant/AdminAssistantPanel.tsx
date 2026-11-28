@@ -20,7 +20,6 @@ import { TodayPanel } from "@/components/Admin/TodayPanel"
 import { BotMessage } from "@/components/Bot/BotMessage"
 import {
   beginAssistantRestart,
-  discardAssistantTurn,
   getAssistantTurn,
   selectAssistantSession,
 } from "@/components/Chat/assistantTurnStore"
@@ -30,6 +29,7 @@ import {
   readChatDraft,
 } from "@/components/Chat/ChatComposer"
 import { ChatMessages } from "@/components/Chat/ChatMessages"
+import { useSessionPanelSync } from "@/components/Chat/useSessionPanelSync"
 import { useStreamingTurn } from "@/components/Chat/useStreamingTurn"
 import { RosterPreview } from "@/components/Roster/RosterPreview"
 import { SetupCard } from "@/components/Setup/SetupCards"
@@ -355,8 +355,6 @@ export function AdminAssistantPanel({
     promise: Promise<string>
   } | null>(null)
   const [text, setText] = useState(prefill?.text ?? "")
-  const bottom = useRef<HTMLDivElement>(null)
-  const preserveText = useRef(false)
   const mounted = useRef(true)
   useEffect(() => {
     mounted.current = true
@@ -394,22 +392,6 @@ export function AdminAssistantPanel({
   const expired =
     history.error instanceof AxiosError &&
     history.error.response?.status === 404
-  useEffect(() => {
-    const follow = (event: StorageEvent) => {
-      if (event.key !== storageKey) return
-      if (getAssistantTurn(storageKey)?.sessionId !== event.newValue)
-        discardAssistantTurn(storageKey)
-      selectAssistantSession(storageKey, event.newValue ?? "")
-      creatingSession.current = null
-      preserveText.current = true
-      navigate({
-        to: "/assistant",
-        search: { mode: "admin", session: event.newValue || undefined },
-      })
-    }
-    window.addEventListener("storage", follow)
-    return () => window.removeEventListener("storage", follow)
-  }, [storageKey, navigate])
   useEffect(() => {
     if (expired) {
       if (
@@ -516,10 +498,25 @@ export function AdminAssistantPanel({
     ])
     client.invalidateQueries()
   }
+  const { bottom, preserveText } = useSessionPanelSync({
+    storageKey,
+    mode: "admin",
+    selectedSession,
+    syncEmptyStorage: true,
+    onStorageSync: () => {
+      creatingSession.current = null
+    },
+    scroll: {
+      messageCount: messages.length,
+      streamText: stream.text,
+      tools: stream.tools,
+      busy,
+      setupIntro,
+      pendingMessage,
+    },
+  })
   useLayoutEffect(() => {
     if (selectedSession) {
-      if (getAssistantTurn(storageKey)?.sessionId !== selectedSession)
-        discardAssistantTurn(storageKey)
       rememberConversation(storageKey, selectedSession)
     } else if (restart && beginAssistantRestart(storageKey, restart)) {
       rememberConversation(storageKey, "")
@@ -544,21 +541,7 @@ export function AdminAssistantPanel({
       )
     preserveText.current = false
     creatingSession.current = null
-  }, [selectedSession, storageKey, prefill])
-  useEffect(() => {
-    if (
-      (!setupIntro || pendingMessage) &&
-      (messages.length || busy || stream.text || stream.tools.length)
-    )
-      bottom.current?.scrollIntoView({ block: "end" })
-  }, [
-    messages.length,
-    busy,
-    stream.text,
-    stream.tools,
-    setupIntro,
-    pendingMessage,
-  ])
+  }, [selectedSession, storageKey, prefill, preserveText])
   const content = (
     <>
       <div

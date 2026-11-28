@@ -1,21 +1,23 @@
-import { useQuery } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
 import { useTranslation } from "react-i18next"
 import { BotService } from "@/client"
-import { SetupError } from "@/components/Setup/SetupError"
+import {
+  ConversationHistory,
+  useConversationHistoryQuery,
+} from "@/components/Chat/ConversationHistory"
 import { formatDate } from "@/i18n/format"
 
 export function useBotConversations(
   orgId: string | undefined,
   staleTime = 30_000,
 ) {
-  return useQuery({
-    queryKey: ["conversation-history", orgId, false],
-    enabled: !!orgId,
+  return useConversationHistoryQuery(
+    orgId,
+    false,
+    async (id) =>
+      (await BotService.listSessions({ query: { org_id: id } })).data,
     staleTime,
-    queryFn: async () =>
-      (await BotService.listSessions({ query: { org_id: orgId! } })).data,
-  })
+  )
 }
 
 export function SessionHistory({
@@ -33,15 +35,16 @@ export function SessionHistory({
   const navigate = useNavigate()
   const history = useBotConversations(orgId)
   return (
-    <section
-      aria-label={t("bot.sessionHistoryAria")}
+    <ConversationHistory
+      ariaLabel={t("bot.sessionHistoryAria")}
       className="min-h-0 flex-1 overflow-y-auto text-sm"
-    >
-      {history.isPending && (
-        <p role="status">{t("bot.loadingConversations")}</p>
-      )}
-      <SetupError error={history.error} />
-      {history.data?.data.map((entry) => (
+      history={history}
+      loadingText={t("bot.loadingConversations")}
+      emptyText={t("bot.noConversations")}
+      retentionText={(days) =>
+        days === 0 ? t("bot.retentionZero") : t("bot.retentionDays", { days })
+      }
+      renderItem={(entry) => (
         <button
           key={entry.id}
           type="button"
@@ -72,19 +75,7 @@ export function SessionHistory({
             })}
           </span>
         </button>
-      ))}
-      {history.data?.data.length === 0 && (
-        <p className="px-2 py-2 text-muted-foreground">
-          {t("bot.noConversations")}
-        </p>
       )}
-      {history.data && (
-        <p className="px-2 py-3 text-xs text-muted-foreground">
-          {history.data.retention_days === 0
-            ? t("bot.retentionZero")
-            : t("bot.retentionDays", { days: history.data.retention_days })}
-        </p>
-      )}
-    </section>
+    />
   )
 }

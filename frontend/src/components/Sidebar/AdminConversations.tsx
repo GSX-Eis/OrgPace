@@ -1,10 +1,11 @@
-import { useQuery } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 import { Bot, ListChecks } from "lucide-react"
 import { useTranslation } from "react-i18next"
 import { AdminAssistantService } from "@/client"
-import { SetupError } from "@/components/Setup/SetupError"
-import { Button } from "@/components/ui/button"
+import {
+  ConversationHistory,
+  useConversationHistoryQuery,
+} from "@/components/Chat/ConversationHistory"
 import { useSetup } from "@/hooks/useSetup"
 import { formatDate } from "@/i18n/format"
 
@@ -12,17 +13,17 @@ export function useAdminConversations(
   orgId: string | undefined,
   staleTime = 30_000,
 ) {
-  return useQuery({
-    queryKey: ["conversation-history", orgId, true],
-    enabled: !!orgId,
-    staleTime,
-    queryFn: async () =>
+  return useConversationHistoryQuery(
+    orgId,
+    true,
+    async (id) =>
       (
         await AdminAssistantService.assistantListSessions({
-          query: { org_id: orgId! },
+          query: { org_id: id },
         })
       ).data,
-  })
+    staleTime,
+  )
 }
 
 export function AdminConversations({
@@ -39,24 +40,22 @@ export function AdminConversations({
   const remaining =
     setup.data?.steps.filter((step) => step.status === "pending").length ?? 0
   const history = useAdminConversations(orgId)
-  const entries = history.data?.data ?? []
   return (
-    <section
-      aria-label={t("common.adminConversations.ariaLabel")}
-      className="min-h-0 flex-1 overflow-y-auto"
-    >
-      {history.isPending && (
-        <p role="status" className="p-3 text-sm">
-          {t("common.adminConversations.loading")}
-        </p>
-      )}
-      <SetupError error={history.error} />
-      {history.isError && (
-        <Button variant="ghost" onClick={() => history.refetch()}>
-          {t("common.adminConversations.retry")}
-        </Button>
-      )}
-      {entries.map((entry) => {
+    <ConversationHistory
+      ariaLabel={t("common.adminConversations.ariaLabel")}
+      history={history}
+      loadingText={t("common.adminConversations.loading")}
+      loadingClassName="p-3 text-sm"
+      retryText={t("common.adminConversations.retry")}
+      emptyText={t("common.adminConversations.empty")}
+      emptyClassName="p-3 text-sm text-muted-foreground"
+      retentionText={(days) =>
+        days
+          ? t("common.adminConversations.retentionDays", { days })
+          : t("common.adminConversations.ephemeralRetention")
+      }
+      retentionClassName="px-3 py-4 text-xs text-muted-foreground"
+      renderItem={(entry) => {
         const onboarding = entry.purpose === "setup" && !setup.data?.completed
         const title = onboarding
           ? t("common.adminConversations.initialSetup")
@@ -114,21 +113,7 @@ export function AdminConversations({
             </div>
           </Link>
         )
-      })}
-      {history.data && entries.length === 0 && (
-        <p className="p-3 text-sm text-muted-foreground">
-          {t("common.adminConversations.empty")}
-        </p>
-      )}
-      {history.data && (
-        <p className="px-3 py-4 text-xs text-muted-foreground">
-          {history.data.retention_days
-            ? t("common.adminConversations.retentionDays", {
-                days: history.data.retention_days,
-              })
-            : t("common.adminConversations.ephemeralRetention")}
-        </p>
-      )}
-    </section>
+      }}
+    />
   )
 }
