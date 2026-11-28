@@ -12,6 +12,7 @@ import {
   useDemandOptions,
 } from "./DemandFields"
 import { DemandTarget } from "./DemandsReference"
+import { capacityKeys, invalidateDemandCreation } from "./queries"
 import { formatIsoDateRange } from "./shared"
 
 export function DemandsCreate({
@@ -36,14 +37,11 @@ export function DemandsCreate({
   }, [preview])
   const options = useDemandOptions(orgId)
   const submit = useMutation({
-    mutationKey: ["capacity", orgId, "create", "outgoing"],
+    mutationKey: capacityKeys.createMutation(orgId, "outgoing"),
     mutationFn: (body: DemandInput) =>
       CapacityService.submitDemand({ path: { org_id: orgId }, body }),
     onSuccess: async ({ data }) => {
-      await Promise.all([
-        cache.invalidateQueries({ queryKey: ["capacity", orgId] }),
-        cache.invalidateQueries({ queryKey: ["inbox", orgId] }),
-      ])
+      await invalidateDemandCreation(cache, orgId, true)
       created(data.id)
     },
   })

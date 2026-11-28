@@ -18,6 +18,7 @@ import {
   useDemandOptions,
 } from "./DemandFields"
 import { DemandTarget, readDemandExtras } from "./DemandsReference"
+import { capacityKeys, invalidateDemandCreation } from "./queries"
 
 type DraftRole = { id: number; name: string }
 
@@ -45,11 +46,11 @@ export function ProjectCreate({
   const options = useDemandOptions(orgId)
   const cache = useQueryClient()
   const submit = useMutation({
-    mutationKey: ["capacity", orgId, "create", "projects"],
+    mutationKey: capacityKeys.createMutation(orgId, "projects"),
     mutationFn: (body: ProjectInput) =>
       CapacityService.submitProject({ path: { org_id: orgId }, body }),
     onSuccess: ({ data }) => {
-      void cache.invalidateQueries({ queryKey: ["capacity", orgId] })
+      void invalidateDemandCreation(cache, orgId, false)
       created(data.id)
     },
   })

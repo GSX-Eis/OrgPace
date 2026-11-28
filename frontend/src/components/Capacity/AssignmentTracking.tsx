@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import i18n from "@/i18n"
 import { CapacityError, useCapacityRefresh } from "./AssignmentFields"
+import { capacityKeys } from "./queries"
 
 const trackingStateKeys: Record<TrackingState, string> = {
   status_unknown: "capacity.assignments.tracking.states.status_unknown",
@@ -34,7 +35,7 @@ export function AssignmentTracking({
   const inputId = useId()
   const [query, setQuery] = useState("")
   const path = { org_id: orgId, assignment_id: assignmentId }
-  const key = ["capacity", orgId, "tracking", assignmentId]
+  const key = capacityKeys.tracking(orgId, assignmentId)
   const tracking = useQuery({
     queryKey: key,
     queryFn: async () =>

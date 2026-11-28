@@ -8,11 +8,12 @@ import {
 import { record } from "@/components/Profile/fields"
 import { Input } from "@/components/ui/input"
 import { useOrg } from "@/hooks/useOrg"
+import { capacityKeys } from "./queries"
 
 export function useDemandOptions(orgId: string) {
   const { roles, employeeId, managedDepartmentIds } = useOrg()
   return useQuery({
-    queryKey: ["capacity", orgId, "demand-options"],
+    queryKey: capacityKeys.demandOptions(orgId),
     queryFn: async () => {
       const [departments, capabilities, self] = await Promise.all([
         CapacityService.listCapacityDepartments({ path: { org_id: orgId } }),

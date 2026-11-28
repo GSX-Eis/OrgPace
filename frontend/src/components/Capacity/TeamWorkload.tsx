@@ -42,10 +42,11 @@ import { useOrg } from "@/hooks/useOrg"
 import i18n, { getLocale } from "@/i18n"
 import { formatDate } from "@/i18n/format"
 import { cn } from "@/lib/utils"
+import { addWeeks, overlaps, weekdaysIso, weekRange } from "./dateUtils"
 import { ForecastPolicyPanel } from "./ForecastPolicyPanel"
 import { Unavailability } from "./MyWorkload"
+import { capacityKeys, invalidateWorkloadMutation } from "./queries"
 import {
-  addWeeks,
   formatCapacityPercent,
   formatDateOptional,
   hasForecast,
@@ -54,12 +55,10 @@ import {
   workloadNotice,
 } from "./shared"
 import {
-  overlaps,
   TeamWorkloadGantt,
   WorkloadDetails,
   WorkloadLegend,
   type WorkloadSelection,
-  weekRange,
 } from "./TeamWorkloadGantt"
 
 type WorkloadDialog =
@@ -100,13 +99,13 @@ export function TeamWorkload({ orgId }: { orgId: string }) {
       })
     ).data.data
   const current = useQuery({
-    queryKey: ["capacity", orgId, "team"],
+    queryKey: capacityKeys.workloadTeam(orgId),
     queryFn: () => list(),
   })
   const canCarryOver = !isAdmin && !!managedDepartmentIds.length
   const canRefreshForecasts = isAdmin || !!managedDepartmentIds.length
   const carryOverPreview = useQuery({
-    queryKey: ["capacity", orgId, "carry-over-preview", department],
+    queryKey: capacityKeys.carryOverPreview(orgId, department),
     queryFn: async () =>
       (
         await CapacityService.previewCapacityCarryOver({
@@ -122,7 +121,7 @@ export function TeamWorkload({ orgId }: { orgId: string }) {
   const fromWeek =
     currentWeek && offset ? addWeeks(currentWeek, offset) : undefined
   const shifted = useQuery({
-    queryKey: ["capacity", orgId, "team", fromWeek],
+    queryKey: capacityKeys.workloadTeam(orgId, fromWeek),
     queryFn: () => list(fromWeek),
     enabled: !!fromWeek,
   })
@@ -157,8 +156,7 @@ export function TeamWorkload({ orgId }: { orgId: string }) {
       setCarryMessage(
         t("capacity.team.carrySuccess", { count: response.data.items.length }),
       )
-      client.invalidateQueries({ queryKey: ["capacity", orgId] })
-      client.invalidateQueries({ queryKey: ["inbox", orgId] })
+      void invalidateWorkloadMutation(client, orgId, { inbox: true })
     },
   })
   const previewRevert = useMutation({
@@ -191,11 +189,10 @@ export function TeamWorkload({ orgId }: { orgId: string }) {
           count: response.data.items.length,
         }),
       )
-      client.invalidateQueries({ queryKey: ["capacity", orgId] })
-      client.invalidateQueries({ queryKey: ["inbox", orgId] })
+      void invalidateWorkloadMutation(client, orgId, { inbox: true })
     },
     onError: () => {
-      client.invalidateQueries({ queryKey: ["capacity", orgId] })
+      void invalidateWorkloadMutation(client, orgId)
     },
   })
   const refreshForecast = useMutation({
@@ -210,7 +207,7 @@ export function TeamWorkload({ orgId }: { orgId: string }) {
           count: response.data.updated_rows,
         }),
       )
-      client.invalidateQueries({ queryKey: ["capacity", orgId] })
+      void invalidateWorkloadMutation(client, orgId)
     },
   })
   const resetForecast = useMutation({
@@ -231,7 +228,7 @@ export function TeamWorkload({ orgId }: { orgId: string }) {
       }),
     onSuccess: () => {
       setCarryMessage(t("capacity.team.resetSuccess"))
-      client.invalidateQueries({ queryKey: ["capacity", orgId] })
+      void invalidateWorkloadMutation(client, orgId)
     },
   })
   if (current.isPending) return <ProfileLoading />
@@ -934,14 +931,11 @@ export function TeamWorkload({ orgId }: { orgId: string }) {
 const WEEKDAY_KEYS = ["mon", "tue", "wed", "thu", "fri"] as const
 
 function weekdaysOf(mondayIso: string) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(mondayIso)) return []
-  const base = new Date(`${mondayIso}T00:00:00Z`)
-  if (Number.isNaN(base.getTime())) return []
+  const days = weekdaysIso(mondayIso)
+  if (!days.length) return []
   const locale = getLocale()
-  return WEEKDAY_KEYS.map((key, index) => {
-    const day = new Date(base)
-    day.setUTCDate(base.getUTCDate() + index)
-    const iso = day.toISOString().slice(0, 10)
+  return days.map((iso, index) => {
+    const key = WEEKDAY_KEYS[index]
     const datePart =
       locale === "en"
         ? formatDate(iso, { month: "numeric", day: "numeric" })
@@ -1049,8 +1043,10 @@ function Adjustment({
         },
       }),
     onSuccess: () => {
-      client.invalidateQueries({ queryKey: ["capacity", orgId] })
-      client.invalidateQueries({ queryKey: ["inbox", orgId] })
+      void invalidateWorkloadMutation(client, orgId, {
+        inbox: true,
+        unavailability: true,
+      })
       close()
     },
   })
@@ -1343,7 +1339,7 @@ function ForecastAdjustment({
         },
       }),
     onSuccess: () => {
-      client.invalidateQueries({ queryKey: ["capacity", orgId] })
+      void invalidateWorkloadMutation(client, orgId)
       close()
     },
   })

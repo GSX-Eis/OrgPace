@@ -30,6 +30,7 @@ import {
   useCapacityRefresh,
 } from "./AssignmentFields"
 import { AssignmentTracking, trackingLabel } from "./AssignmentTracking"
+import { capacityKeys } from "./queries"
 import {
   formatCapacityPercent,
   formatIsoDate,
@@ -66,12 +67,12 @@ export function DemandAssignments({
   const path = { org_id: orgId, demand_id: demand.id }
   const feedback = useFeedbackAssignments(orgId, demand.id)
   const query = useQuery({
-    queryKey: ["capacity", orgId, "assignments", demand.id],
+    queryKey: capacityKeys.assignments(orgId, demand.id),
     queryFn: async () =>
       (await CapacityService.listDemandAssignments({ path })).data,
   })
   const basis = useQuery({
-    queryKey: ["capacity", orgId, "demand-basis", demand.id],
+    queryKey: capacityKeys.demandBasis(orgId, demand.id),
     queryFn: async () => (await CapacityService.getDemandBasis({ path })).data,
   })
   const create = useMutation({

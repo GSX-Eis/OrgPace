@@ -20,9 +20,10 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { useOrg } from "@/hooks/useOrg"
 import { cn } from "@/lib/utils"
+import { addWeeks, type DateRange, overlaps, weekRange } from "./dateUtils"
 import { MyAssignments } from "./MyAssignments"
+import { capacityKeys, invalidateWorkloadMutation } from "./queries"
 import {
-  addWeeks,
   formatCapacityPercent,
   formatDateOptional,
   formatIsoDateRange,
@@ -36,13 +37,7 @@ import {
   weekLabel,
   weekLoadLabel,
 } from "./shared"
-import {
-  type DateRange,
-  overlaps,
-  WorkloadDetails,
-  WorkloadLegend,
-  weekRange,
-} from "./TeamWorkloadGantt"
+import { WorkloadDetails, WorkloadLegend } from "./TeamWorkloadGantt"
 
 export function MyWorkload({
   orgId,
@@ -63,7 +58,7 @@ export function MyWorkload({
   const [start, setStart] = useState("")
   const [end, setEnd] = useState("")
   const query = useQuery({
-    queryKey: ["capacity", orgId, "me"],
+    queryKey: capacityKeys.workloadMe(orgId),
     queryFn: async () =>
       (await CapacityService.getMyWorkload({ path: { org_id: orgId } })).data,
   })
@@ -82,7 +77,7 @@ export function MyWorkload({
       })
     },
     onSuccess: () => {
-      client.invalidateQueries({ queryKey: ["capacity", orgId] })
+      void invalidateWorkloadMutation(client, orgId)
       setPercent("")
       setReason("")
       setStart("")
@@ -589,14 +584,7 @@ export function Unavailability({
   const resolvedSubmitLabel =
     submitLabel ?? t("capacity.unavailability.register")
   const query = useQuery({
-    queryKey: [
-      "capacity",
-      orgId,
-      "unavailability",
-      employeeId,
-      fromDate,
-      toDate,
-    ],
+    queryKey: capacityKeys.unavailability(orgId, employeeId, fromDate, toDate),
     queryFn: async () =>
       (
         await CapacityService.listUnavailability({
@@ -625,7 +613,7 @@ export function Unavailability({
           }),
     onSuccess: (response, id) => {
       setOver(response.data.over_weeks)
-      client.invalidateQueries({ queryKey: ["capacity", orgId] })
+      void invalidateWorkloadMutation(client, orgId, { unavailability: true })
       if (!id) {
         onRegistered?.(response.data.over_weeks)
       }

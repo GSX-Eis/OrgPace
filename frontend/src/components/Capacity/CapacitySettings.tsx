@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/select"
 import { useOrg } from "@/hooks/useOrg"
 import { ForecastPolicyPanel } from "./ForecastPolicyPanel"
+import { capacityKeys } from "./queries"
 import { formatCapacityPercent, useCapacitySettings } from "./shared"
 
 export function CapacitySettings() {
@@ -35,8 +36,8 @@ function SettingsForm({ orgId }: { orgId: string }) {
     mutationFn: (body: CapacitySettingsInput) =>
       CapacityService.putCapacitySettings({ path: { org_id: orgId }, body }),
     onSuccess: ({ data }) => {
-      client.setQueryData(["capacity-settings", orgId], data)
-      client.removeQueries({ queryKey: ["capacity", orgId] })
+      client.setQueryData(capacityKeys.settings(orgId), data)
+      client.removeQueries({ queryKey: capacityKeys.all(orgId) })
       setChanges(null)
       setCapInput(null)
     },

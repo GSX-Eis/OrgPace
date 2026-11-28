@@ -11,6 +11,7 @@ import { SetupError } from "@/components/Setup/SetupError"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { ExtensionReviews } from "./ExtensionReviews"
+import { invalidateWorkloadMutation } from "./queries"
 import { formatCapacityPercent, formatIsoDateRange } from "./shared"
 
 export function Approvals({
@@ -61,8 +62,7 @@ function WorkloadDecision({
         body: { approve, note: note.trim() || null },
       }),
     onSuccess: () => {
-      client.invalidateQueries({ queryKey: ["capacity", orgId] })
-      client.invalidateQueries({ queryKey: ["inbox", orgId] })
+      void invalidateWorkloadMutation(client, orgId, { inbox: true })
     },
   })
   return (
