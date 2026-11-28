@@ -214,19 +214,16 @@ def _seed_all_tables(
         "mime_type": "text/plain",
         "size": 5,
     }
+    ms, oa = "model_setting", "oauth_client"
     db.add_all(
         [
             ModelSetting(
                 org_id=org_id,
                 updated_by_user_id=user_id,
-                api_key_ciphertext=enc(
-                    "model_setting", str(org_id), "api_key_ciphertext"
-                ),
-                chatgpt_auth_ciphertext=enc(
-                    "model_setting", str(org_id), "chatgpt_auth_ciphertext"
-                ),
+                api_key_ciphertext=enc(ms, str(org_id), "api_key_ciphertext"),
+                chatgpt_auth_ciphertext=enc(ms, str(org_id), "chatgpt_auth_ciphertext"),
                 chatgpt_login_ciphertext=enc(
-                    "model_setting", str(org_id), "chatgpt_login_ciphertext"
+                    ms, str(org_id), "chatgpt_login_ciphertext"
                 ),
             ),
             SourceConnection(
@@ -249,27 +246,16 @@ def _seed_all_tables(
                 OAuthClient(
                     client_id=cid,
                     client_metadata={"n": str(i)},
-                    client_secret_encrypted=val,
+                    client_secret_encrypted=(
+                        ""
+                        if i == 2
+                        else None
+                        if i == 3
+                        else enc(oa, cid, "client_secret_encrypted")
+                    ),
                     registered_ip="127.0.0.1",
                 )
-                for i, (cid, val) in enumerate(
-                    [
-                        (
-                            oauth_ids[0],
-                            enc(
-                                "oauth_client", oauth_ids[0], "client_secret_encrypted"
-                            ),
-                        ),
-                        (
-                            oauth_ids[1],
-                            enc(
-                                "oauth_client", oauth_ids[1], "client_secret_encrypted"
-                            ),
-                        ),
-                        (oauth_ids[2], ""),
-                        (oauth_ids[3], None),
-                    ]
-                )
+                for i, cid in enumerate(oauth_ids)
             ],
             BotSession(
                 id=bs_id,
