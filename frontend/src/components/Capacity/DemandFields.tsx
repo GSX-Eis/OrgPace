@@ -1,44 +1,12 @@
 import { useQuery } from "@tanstack/react-query"
 import { useTranslation } from "react-i18next"
-import {
-  CapabilitiesService,
-  type CapabilityPublic,
-  type DepartmentPublic,
-  EmployeesService,
-} from "@/client"
+import { CapabilitiesService, EmployeesService } from "@/client"
 import { record } from "@/components/Profile/fields"
 import { Input } from "@/components/ui/input"
 import { useOrg } from "@/hooks/useOrg"
 import { capacityKeys, useCapacityDepartments } from "./queries"
 
-export type DemandOptionsData = {
-  departments: DepartmentPublic[]
-  capabilities: CapabilityPublic[]
-  ownDepartment: string | undefined
-  requesting: DepartmentPublic[]
-}
-
-type DemandOptionsResult =
-  | {
-      isPending: true
-      isError: false
-      data: undefined
-      refetch: () => Promise<unknown>
-    }
-  | {
-      isPending: false
-      isError: true
-      data: undefined
-      refetch: () => Promise<unknown>
-    }
-  | {
-      isPending: false
-      isError: false
-      data: DemandOptionsData
-      refetch: () => Promise<unknown>
-    }
-
-export function useDemandOptions(orgId: string): DemandOptionsResult {
+export function useDemandOptions(orgId: string) {
   const { roles, employeeId, managedDepartmentIds } = useOrg()
   const departments = useCapacityDepartments(orgId)
   const meta = useQuery({
@@ -60,19 +28,24 @@ export function useDemandOptions(orgId: string): DemandOptionsResult {
   })
   const refetch = () => Promise.all([departments.refetch(), meta.refetch()])
   if (departments.isError || meta.isError) {
-    return { isPending: false, isError: true, data: undefined, refetch }
+    return {
+      isPending: false as const,
+      isError: true as const,
+      data: undefined,
+      refetch,
+    }
   }
-  if (
-    departments.isPending ||
-    meta.isPending ||
-    !departments.data ||
-    !meta.data
-  ) {
-    return { isPending: true, isError: false, data: undefined, refetch }
+  if (!departments.data || !meta.data) {
+    return {
+      isPending: true as const,
+      isError: false as const,
+      data: undefined,
+      refetch,
+    }
   }
   return {
-    isPending: false,
-    isError: false,
+    isPending: false as const,
+    isError: false as const,
     refetch,
     data: {
       departments: departments.data,
