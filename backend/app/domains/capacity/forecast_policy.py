@@ -10,10 +10,27 @@ from app.authz.principal import Principal
 from app.domains.base import utc_now
 from app.domains.capacity import calendar
 from app.domains.capacity.common import (
+    DEFAULT_RETENTION_RATE as DEFAULT_RETENTION_RATE,
+)
+from app.domains.capacity.common import (
     CapacityForbidden,
     CapacityNotFound,
     audit,
+    require_enabled,
 )
+from app.domains.capacity.common import (
+    build_policy_label as build_policy_label,
+)
+from app.domains.capacity.common import (
+    build_scope_label as build_scope_label,
+)
+from app.domains.capacity.common import (
+    retention_from_decay as retention_from_decay,
+)
+from app.domains.capacity.common import (
+    retention_mode_label as retention_mode_label,
+)
+from app.domains.capacity.forecast import refresh_org_forecasts
 from app.domains.capacity.models import (
     CapacityForecastEvent,
     CapacityForecastPolicy,
@@ -31,27 +48,9 @@ from app.domains.capacity.schemas import (
     ForecastRefreshResult,
     Via,
 )
-from app.domains.capacity.settings import require_enabled
 from app.domains.org.models import Department, Employee, EmploymentStatus
 from app.domains.org.service import department_ancestry, managed_scope
 from app.i18n import tr
-
-DEFAULT_RETENTION_RATE = 0.65
-
-
-def retention_from_decay(decay_rate: float) -> float:
-    """Convert stored decay_rate column to retention_rate in [0.0, 1.0]."""
-    return round(min(1.0, max(0.0, 1.0 - decay_rate)), 2)
-
-
-def retention_mode_label(retention_rate: float) -> str:
-    if retention_rate == 0.0:
-        return tr("脉冲波次型")
-    if retention_rate == 0.5:
-        return tr("常规均衡型")
-    if retention_rate == 0.8:
-        return tr("项目延续型")
-    return tr("自定义延续")
 
 
 def format_retention_summary(retention_rate: float) -> str:
@@ -62,28 +61,6 @@ def format_retention_summary(retention_rate: float) -> str:
     if retention_rate == 0.8:
         return tr("0.8（项目延续型：每周按 80% 延续，适合长周期项目）")
     return tr("{rate}（下周预测负荷 = 上周负荷 × {rate}）", rate=f"{retention_rate:g}")
-
-
-def build_scope_label(department_name: str | None, job_family: str | None) -> str:
-    if department_name and job_family:
-        return f"{department_name} / {job_family}"
-    if department_name:
-        return department_name
-    if job_family:
-        return tr("全企业 / {job_family}", job_family=job_family)
-    return tr("企业默认")
-
-
-def build_policy_label(
-    retention_rate: float,
-    department_name: str | None,
-    job_family: str | None,
-) -> str:
-    return tr(
-        "周延续系数 {rate}（{scope}）",
-        rate=f"{retention_rate:g}",
-        scope=build_scope_label(department_name, job_family),
-    )
 
 
 def require_manager_or_admin(principal: Principal) -> None:
@@ -230,8 +207,6 @@ def _refresh_scopes(
     org_id: UUID,
     scopes: Iterable[tuple[UUID | None, str | None]],
 ) -> int:
-    from app.domains.capacity.forecast import refresh_org_forecasts
-
     collected: set[UUID] = set()
     for dept_id, job_family in scopes:
         ids = scope_employee_ids(session, org_id, dept_id, job_family)

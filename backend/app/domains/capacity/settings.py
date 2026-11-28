@@ -18,6 +18,7 @@ from app.domains.capacity.common import (
 from app.domains.capacity.common import (
     require_enabled as require_enabled,
 )
+from app.domains.capacity.forecast import refresh_org_forecasts
 from app.domains.capacity.models import CapacitySetting
 from app.domains.capacity.schemas import CapacitySettingsInput, Via
 from app.domains.org.service import lock_org
@@ -67,7 +68,5 @@ def save_settings(
         body.model_dump(mode="json"),
     )
     if row.enabled and not was_enabled:
-        from app.domains.capacity.forecast import refresh_org_forecasts
-
         refresh_org_forecasts(session, principal.org_id)
     return body

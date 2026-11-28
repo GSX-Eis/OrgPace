@@ -17,6 +17,7 @@ from app.domains.capacity.common import (
     CapacityNotFound,
     employee,
     open_jira_task_counts,
+    require_enabled,
     user_names,
 )
 from app.domains.capacity.models import (
@@ -43,7 +44,6 @@ from app.domains.capacity.schemas import (
     WorkloadRequestPublic,
     WorkloadUnavailabilitySegment,
 )
-from app.domains.capacity.settings import require_enabled
 from app.domains.org.models import (
     Department,
     Employee,

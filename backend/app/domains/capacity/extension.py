@@ -10,24 +10,33 @@ from app.authz.principal import Principal
 from app.domains.base import utc_now
 from app.domains.capacity.assignment import (
     AssignmentCapacityConflict,
-    assignment_lender,
     assignment_rows,
     change_due_date,
 )
 from app.domains.capacity.common import (
     CapacityConflict,
     CapacityNotFound,
+    assignment_lender,
     audit,
     employee,
     notify_employee,
     record_capacity_inbox_link,
+    require_enabled,
+)
+from app.domains.capacity.common import (
+    extension_department_allowed as extension_department_allowed,
+)
+from app.domains.capacity.common import (
+    extension_reviewer as extension_reviewer,
+)
+from app.domains.capacity.common import (
+    extension_reviewers as extension_reviewers,
 )
 from app.domains.capacity.common import (
     user_names as user_names,
 )
 from app.domains.capacity.demand import (
     represents_department,
-    responder_user_ids,
     responders_by_department,
 )
 from app.domains.capacity.extension_schemas import (
@@ -45,14 +54,11 @@ from app.domains.capacity.models import (
     CapacityRequestStatus,
 )
 from app.domains.capacity.schemas import Via
-from app.domains.capacity.settings import require_enabled
 from app.domains.inbox.models import InboxItem, InboxKind
 from app.domains.inbox.service import REDACTED_EXTENSION_RECEIPT_MESSAGE, add_item
 from app.domains.org.models import Department, Employee, EmploymentStatus, OrgMembership
-from app.domains.org.service import department_ancestry, managed_scope
+from app.domains.org.service import department_ancestry
 from app.domains.review.routing import (
-    can_review,
-    review_participants,
     reviewable_employees,
     reviewers_for,
 )
@@ -63,39 +69,6 @@ from app.models import User
 class BorrowExtensionCapacityConflict(HTTPException):
     def __init__(self) -> None:
         super().__init__(409, "借调无法按新日期安排，请联系原部门经理核对")
-
-
-def extension_reviewer(
-    principal: Principal,
-    session: Session,
-    employee_id: UUID,
-    target_department_id: UUID,
-) -> UUID | None:
-    reviewer = can_review(session, principal, employee_id)
-    if reviewer is None or extension_department_allowed(
-        principal, session, target_department_id
-    ):
-        return reviewer
-    return None
-
-
-def extension_department_allowed(
-    principal: Principal, session: Session, target_department_id: UUID
-) -> bool:
-    if represents_department(principal, target_department_id):
-        return True
-    target_ids = managed_scope(
-        session, principal.org_id, frozenset({target_department_id})
-    )
-    member = session.exec(
-        select(Employee.id).where(
-            employee_scope_clause(principal),
-            Employee.id == principal.employee_id,
-            Employee.employment_status == EmploymentStatus.ACTIVE,
-            col(Employee.department_id).in_(target_ids),
-        )
-    ).first()
-    return member is not None
 
 
 def extension_public(
@@ -189,51 +162,6 @@ def request_extension(
         user_names(session, principal.org_id, {u.id for u in users}).values()
     )
     return result
-
-
-def extension_reviewers(
-    principal: Principal,
-    session: Session,
-    row: CapacityAssignment,
-    demand: CapacityDemand,
-) -> list[User]:
-    borrowed = assignment_lender(session, row) is not None
-    if borrowed:
-        recipients = responder_user_ids(
-            session, row.org_id, demand.target_department_id
-        )
-    else:
-        managers, delegates = review_participants(
-            session, principal.org_id, row.employee_id
-        )
-        recipients = set(managers) | delegates
-    if not recipients:
-        return []
-    users = session.exec(
-        select(User)
-        .join(OrgMembership, col(OrgMembership.user_id) == User.id)
-        .where(
-            OrgMembership.org_id == principal.org_id,
-            col(User.id).in_(recipients),
-            User.is_active,
-        )
-        .order_by(col(User.id))
-    ).all()
-    if borrowed:
-        return list(users)
-    return [
-        user
-        for user in users
-        if (
-            extension_reviewer(
-                get_org_principal(principal.org_id, user, session),
-                session,
-                row.employee_id,
-                demand.target_department_id,
-            )
-            is not None
-        )
-    ]
 
 
 def employee_department_ancestry(principal: Principal, session: Session) -> set[UUID]:

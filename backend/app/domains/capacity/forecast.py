@@ -18,21 +18,20 @@ from app.authz.principal import Principal
 from app.domains.base import utc_now
 from app.domains.capacity import calendar
 from app.domains.capacity.common import (
+    DEFAULT_RETENTION_RATE,
     CapacityForbidden,
     CapacityNotFound,
     audit,
+    build_policy_label,
+    build_scope_label,
+    require_enabled,
+    retention_from_decay,
 )
 from app.domains.capacity.common import (
     employee as load_employee,
 )
 from app.domains.capacity.common import (
     open_jira_task_counts as open_jira_task_counts,
-)
-from app.domains.capacity.forecast_policy import (
-    DEFAULT_RETENTION_RATE,
-    build_policy_label,
-    build_scope_label,
-    retention_from_decay,
 )
 from app.domains.capacity.models import (
     CapacityForecastEvent,
@@ -50,7 +49,6 @@ from app.domains.capacity.schemas import (
     Via,
     WorkloadList,
 )
-from app.domains.capacity.settings import require_enabled
 from app.domains.capacity.workload_views import views
 from app.domains.org.models import (
     Department,
