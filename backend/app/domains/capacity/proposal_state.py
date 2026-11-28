@@ -52,7 +52,7 @@ from app.domains.capacity.proposal_views import (
     lines_for,
 )
 from app.domains.capacity.schemas import ReasonCode, Via
-from app.domains.inbox.models import InboxItem, InboxKind
+from app.domains.inbox.models import InboxItem, InboxKind, InboxTargetType
 from app.domains.inbox.service import add_item
 from app.i18n import bilingual, tr, use_locale
 from app.models import User
@@ -135,6 +135,12 @@ def notify_parties(
                 org_id=principal.org_id,
                 recipient_user_id=user_id,
                 kind=InboxKind.CAPACITY,
+                target_type=(
+                    InboxTargetType.CAPACITY_OUTGOING
+                    if is_req
+                    else InboxTargetType.CAPACITY_PLANS
+                ),
+                target_id=demand.id,
                 message=req_zh if is_req else tgt_zh,
                 message_en=req_en if is_req else tgt_en,
             ),
@@ -655,6 +661,7 @@ def create(
                     org_id=principal.org_id,
                     recipient_user_id=user_id,
                     kind=InboxKind.CAPACITY,
+                    target_type=InboxTargetType.REVIEWS_BORROW,
                     message=msg_zh,
                     message_en=msg_en,
                 ),

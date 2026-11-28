@@ -50,6 +50,7 @@ class MembershipPublic(SQLModel):
     employee_id: UUID | None
     roles: list[Role | Literal["employee"]]
     managed_department_ids: list[UUID]
+    can_review: bool = False
 
 
 class DepartmentArgs(BaseModel):

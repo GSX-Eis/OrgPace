@@ -77,9 +77,11 @@ def request_extension(
 
 @router.get("/capacity/extension-requests")
 def list_extension_requests(
-    principal: OrgPrincipalDep, session: SessionDep
+    principal: OrgPrincipalDep, session: SessionDep, exclude_own: bool = False
 ) -> ExtensionList:
-    return extension.list_extension_requests(principal, session)
+    return extension.list_extension_requests(
+        principal, session, exclude_own=exclude_own
+    )
 
 
 @router.post("/capacity/extension-requests/{request_id}/decision")

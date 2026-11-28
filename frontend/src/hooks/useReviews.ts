@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query"
 import { ReviewsService } from "@/client"
 import { useOrg } from "./useOrg"
 
-export function useReviews() {
+export function useReviews(enabled = true) {
   const { org } = useOrg()
   return useQuery({
     queryKey: ["reviews", org?.id],
@@ -13,7 +13,7 @@ export function useReviews() {
           signal,
         })
       ).data,
-    enabled: !!org,
+    enabled: !!org && enabled,
     refetchInterval: 30000,
   })
 }

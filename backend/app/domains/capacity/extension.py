@@ -54,7 +54,7 @@ from app.domains.capacity.models import (
     CapacityRequestStatus,
 )
 from app.domains.capacity.schemas import Via
-from app.domains.inbox.models import InboxItem, InboxKind
+from app.domains.inbox.models import InboxItem, InboxKind, InboxTargetType
 from app.domains.inbox.service import REDACTED_EXTENSION_RECEIPT_MESSAGE, add_item
 from app.domains.org.models import Department, Employee, EmploymentStatus, OrgMembership
 from app.domains.org.service import department_ancestry
@@ -141,6 +141,7 @@ def request_extension(
                 org_id=principal.org_id,
                 recipient_user_id=user.id,
                 kind=InboxKind.CAPACITY,
+                target_type=InboxTargetType.REVIEWS_WORKLOAD,
                 message=msg_zh,
                 message_en=msg_en,
             ),
@@ -185,8 +186,19 @@ def employee_department_ancestry(principal: Principal, session: Session) -> set[
     return set(department_ancestry(departments, department_id))
 
 
-def list_extension_requests(principal: Principal, session: Session) -> ExtensionList:
+def list_extension_requests(
+    principal: Principal, session: Session, *, exclude_own: bool = False
+) -> ExtensionList:
     require_enabled(principal, session)
+    visibility_clauses = [
+        col(CapacityExtensionRequest.status) == CapacityRequestStatus.PENDING,
+        col(CapacityExtensionRequest.decided_by_user_id) == principal.user_id,
+        col(CapacityExtensionRequest.decided_for_user_id) == principal.user_id,
+    ]
+    if not exclude_own:
+        visibility_clauses.append(
+            col(CapacityAssignment.employee_id) == principal.employee_id
+        )
     query = (
         select(
             CapacityExtensionRequest,
@@ -212,11 +224,11 @@ def list_extension_requests(principal: Principal, session: Session) -> Extension
         .where(
             col(CapacityExtensionRequest.org_id) == principal.org_id,
             col(Employee.employment_status) == EmploymentStatus.ACTIVE,
-            or_(
-                col(CapacityExtensionRequest.status) == CapacityRequestStatus.PENDING,
-                col(CapacityExtensionRequest.decided_by_user_id) == principal.user_id,
-                col(CapacityExtensionRequest.decided_for_user_id) == principal.user_id,
-                CapacityAssignment.employee_id == principal.employee_id,
+            or_(*visibility_clauses),
+            *(
+                [col(CapacityAssignment.employee_id) != principal.employee_id]
+                if exclude_own and principal.employee_id is not None
+                else []
             ),
         )
         .order_by(
@@ -274,7 +286,8 @@ def list_extension_requests(principal: Principal, session: Session) -> Extension
     confirmations: dict[UUID, UUID] = {}
     for request, row, demand, name in rows:
         if row.employee_id == principal.employee_id:
-            data.append(extension_public(request, row, demand, name))
+            if not exclude_own:
+                data.append(extension_public(request, row, demand, name))
             continue
         target = demand.target_department_id
         represents_target = represents_department(principal, target)
@@ -400,6 +413,7 @@ def decide_extension_request(
             org_id=principal.org_id,
             recipient_employee_id=row.employee_id,
             kind=InboxKind.CAPACITY,
+            target_type=InboxTargetType.CAPACITY,
             message=msg_zh,
             message_en=msg_en,
         )
@@ -491,6 +505,7 @@ def decide_extension_request(
             org_id=principal.org_id,
             recipient_user_id=request.decided_for_user_id,
             kind=InboxKind.CAPACITY,
+            target_type=InboxTargetType.CAPACITY,
             message=msg_zh,
             message_en=msg_en,
         )

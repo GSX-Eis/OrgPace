@@ -17,7 +17,8 @@
     "openPlans": "Open plans",
     "openBorrows": "Open borrow requests",
     "viewReviews": "View pending reviews",
-    "viewDetails": "View details"
+    "viewDetails": "View details",
+    "openAdminAssistant": "Open Admin Assistant"
   },
   "question": {
     "answered": "Answered and saved as restricted self-report evidence",

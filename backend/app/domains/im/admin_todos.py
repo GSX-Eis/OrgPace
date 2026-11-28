@@ -10,7 +10,7 @@ from sqlmodel import Session, select
 from app.domains.admin.overview import build_overview
 from app.domains.im.binding import principal_for
 from app.domains.im.models import ImBinding, ImSetting
-from app.domains.inbox.models import InboxItem, InboxKind
+from app.domains.inbox.models import InboxItem, InboxKind, InboxTargetType
 from app.domains.inbox.service import add_item
 from app.domains.org.models import Organization
 from app.i18n import bilingual
@@ -77,6 +77,7 @@ def dispatch_admin_todos(db: Session, now: datetime) -> None:
                             org_id=org_id,
                             recipient_user_id=p.user_id,
                             kind=InboxKind.ADMIN_TODOS,
+                            target_type=InboxTargetType.ASSISTANT_ADMIN,
                             admin_todo_date=day,
                             admin_todo_count=count,
                             message=msg_zh,

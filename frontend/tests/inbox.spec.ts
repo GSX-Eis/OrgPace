@@ -309,20 +309,53 @@ test("inbox filters across pages, marks matching unread and keeps the last-page 
   await expect(success).toHaveCount(0)
 })
 
-test("legacy collaboration notices link to the matching workspace", async ({
+test("structured and fallback notices link to the matching workspace", async ({
   page,
 }) => {
   const notices = [
-    ["收到新的协作需求", "/reviews?type=demand"],
-    ["协作需求收到追问", "/reviews?type=demand"],
-    ["协作需求已收到答复", "/capacity?tab=outgoing"],
+    {
+      kind: "capacity",
+      target_type: "reviews_demand",
+      message: "收到新的协作需求",
+      linkName: "查看详情",
+      href: "/reviews?type=demand",
+    },
+    {
+      kind: "capacity",
+      target_type: "reviews_demand",
+      message: "协作需求收到追问",
+      linkName: "查看详情",
+      href: "/reviews?type=demand",
+    },
+    {
+      kind: "capacity",
+      target_type: "capacity_outgoing",
+      message: "协作需求已收到答复",
+      linkName: "查看详情",
+      href: "/capacity?tab=outgoing",
+    },
+    {
+      kind: "capacity",
+      target_type: null,
+      message: "历史协同通知兜底跳转",
+      linkName: "查看详情",
+      href: "/capacity",
+    },
+    {
+      kind: "admin_todos",
+      target_type: "assistant_admin",
+      message: "你有 2 条管理员待办",
+      linkName: "打开管理助手",
+      href: "/assistant?mode=admin",
+    },
   ]
   await page.route("**/me/inbox?*", (route) =>
     route.fulfill({
       json: {
-        data: notices.map(([message], index) => ({
+        data: notices.map(({ kind, target_type, message }, index) => ({
           id: String(index),
-          kind: "capacity",
+          kind,
+          target_type,
           message,
           created_at: "2026-11-22T00:00:00Z",
           read_at: "2026-11-22T00:00:00Z",
@@ -339,15 +372,16 @@ test("legacy collaboration notices link to the matching workspace", async ({
   await logInUser(page, username, password)
   await page.goto("/inbox")
   const detail = page.getByRole("region", { name: "消息详情" })
-  for (const [title, href] of notices) {
+  for (const { message, linkName, href } of notices) {
     await page
       .getByRole("listitem")
-      .filter({ hasText: title })
+      .filter({ hasText: message })
       .getByRole("button")
       .click()
-    await expect(
-      detail.getByRole("link", { name: "查看详情" }),
-    ).toHaveAttribute("href", href)
+    await expect(detail.getByRole("link", { name: linkName })).toHaveAttribute(
+      "href",
+      href,
+    )
   }
 })
 

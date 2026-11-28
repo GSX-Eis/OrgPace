@@ -41,7 +41,7 @@ from app.domains.capacity.workload_views import (
     workload_reviewers,
 )
 from app.domains.capacity.workload_weeks import set_week
-from app.domains.inbox.models import InboxItem, InboxKind
+from app.domains.inbox.models import InboxItem, InboxKind, InboxTargetType
 from app.domains.inbox.service import add_item
 from app.domains.org.models import Employee, EmploymentStatus
 from app.domains.review.routing import can_review, reviewable_employees, reviewers_for
@@ -107,6 +107,7 @@ def request_workload_change(
                 org_id=principal.org_id,
                 recipient_user_id=user.id,
                 kind=InboxKind.CAPACITY,
+                target_type=InboxTargetType.REVIEWS_WORKLOAD,
                 message=msg_zh,
                 message_en=msg_en,
             ),
@@ -328,6 +329,7 @@ def decide_workload_request(
             org_id=principal.org_id,
             recipient_user_id=row.decided_for_user_id,
             kind=InboxKind.CAPACITY,
+            target_type=InboxTargetType.CAPACITY,
             message=msg_zh,
             message_en=msg_en,
         )

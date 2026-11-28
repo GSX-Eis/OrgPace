@@ -30,7 +30,7 @@ from app.domains.capacity.schemas import (
 from app.domains.capacity.settings import require_enabled
 from app.domains.capacity.tracking import notify_unavailability
 from app.domains.capacity.workload_views import views, workload_reviewers
-from app.domains.inbox.models import InboxItem, InboxKind
+from app.domains.inbox.models import InboxItem, InboxKind, InboxTargetType
 from app.domains.inbox.service import add_item
 from app.domains.org.models import Employee
 from app.i18n import bilingual
@@ -466,6 +466,7 @@ def register_unavailability(
                     org_id=principal.org_id,
                     recipient_user_id=user.id,
                     kind=InboxKind.CAPACITY,
+                    target_type=InboxTargetType.CAPACITY_TEAM,
                     message=msg_zh,
                     message_en=msg_en,
                 ),

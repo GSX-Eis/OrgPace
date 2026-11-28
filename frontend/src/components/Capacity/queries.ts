@@ -41,7 +41,10 @@ export const capacityKeys = {
     ["capacity", orgId, "assignments", demandId] as const,
   assignmentsMe: (orgId: string) =>
     ["capacity", orgId, "assignments-me"] as const,
-  extensions: (orgId: string) => ["capacity", orgId, "extensions"] as const,
+  extensions: (orgId: string, excludeOwn = false) =>
+    excludeOwn
+      ? (["capacity", orgId, "extensions", "review"] as const)
+      : (["capacity", orgId, "extensions"] as const),
   trackingRoot: (orgId: string) => ["capacity", orgId, "tracking"] as const,
   tracking: (orgId: string, assignmentId: string) =>
     ["capacity", orgId, "tracking", assignmentId] as const,

@@ -1,3 +1,4 @@
+import re
 from collections.abc import Sequence
 from typing import Protocol
 from uuid import UUID
@@ -25,6 +26,7 @@ from app.domains.evidence.service import append_evidence
 from app.domains.inbox.models import (
     InboxItem,
     InboxKind,
+    InboxTargetType,
     PendingQuestion,
     QuestionStatus,
 )
@@ -200,6 +202,90 @@ def _is_unlinked_delegated_extension_receipt(item: InboxItem) -> bool:
     )
 
 
+_LEGACY_DEMAND_LINK_RE = re.compile(
+    r"\n/capacity\?tab=(incoming|outgoing)&demand=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(&plans=1)?$",
+    re.IGNORECASE,
+)
+_LEGACY_CAPACITY_PREFIXES: tuple[tuple[tuple[str, ...], InboxTargetType], ...] = (
+    (
+        (
+            "借调请求（",
+            "借调请求待你确认（",
+            "Borrow request (",
+            "Borrow request awaiting your confirmation (",
+        ),
+        InboxTargetType.REVIEWS_BORROW,
+    ),
+    (
+        (
+            "有负荷调整申请等你审批",
+            "有延期申请等你审批",
+            "You have a workload adjustment request awaiting approval",
+            "You have an extension request awaiting approval",
+        ),
+        InboxTargetType.REVIEWS_WORKLOAD,
+    ),
+    (
+        (
+            "收到新的协作需求",
+            "协作需求收到追问",
+            "New collaboration demand received",
+            "Collaboration demand received a follow-up",
+        ),
+        InboxTargetType.REVIEWS_DEMAND,
+    ),
+    (
+        ("协作需求已收到答复", "Collaboration demand received a reply"),
+        InboxTargetType.CAPACITY_OUTGOING,
+    ),
+)
+
+
+def _resolve_target(
+    item: InboxItem,
+    workload_request_id: UUID | None,
+    extension_request_id: UUID | None,
+    *,
+    redacted: bool,
+) -> tuple[InboxTargetType | None, UUID | None]:
+    if redacted:
+        return InboxTargetType.CAPACITY, None
+    if item.target_type is not None:
+        try:
+            return InboxTargetType(item.target_type), item.target_id
+        except ValueError:
+            pass
+    if workload_request_id is not None or extension_request_id is not None:
+        return InboxTargetType.CAPACITY, None
+    if item.kind == InboxKind.ADMIN_TODOS:
+        return InboxTargetType.ASSISTANT_ADMIN, None
+    if item.kind != InboxKind.CAPACITY:
+        return None, None
+    if item.message.endswith("\n/capacity?tab=borrows"):
+        return InboxTargetType.CAPACITY_BORROWS, None
+    if match := _LEGACY_DEMAND_LINK_RE.search(item.message):
+        tab, demand_id, plans = match.groups()
+        try:
+            parsed_id = UUID(demand_id)
+        except ValueError:
+            parsed_id = None
+        if parsed_id is not None:
+            target_type = (
+                InboxTargetType.CAPACITY_PLANS
+                if tab == "incoming" and plans
+                else InboxTargetType.CAPACITY_INCOMING
+                if tab == "incoming"
+                else InboxTargetType.CAPACITY_OUTGOING
+            )
+            return target_type, parsed_id
+    for prefixes, target_type in _LEGACY_CAPACITY_PREFIXES:
+        if item.message.startswith(prefixes):
+            return target_type, None
+    if " 已登记请假（" in item.message or " recorded leave (" in item.message:
+        return InboxTargetType.CAPACITY_TEAM, None
+    return InboxTargetType.CAPACITY, None
+
+
 def _to_inbox_public(
     item: InboxItem,
     workload_request_id: UUID | None = None,
@@ -212,12 +298,17 @@ def _to_inbox_public(
         if current_locale.get() == "en" and item.message_en
         else item.message
     )
+    target_type, target_id = _resolve_target(
+        item, workload_request_id, extension_request_id, redacted=redacted
+    )
     return InboxPublic.model_validate(
         item,
         update={
             "message": displayed_message,
             "workload_request_id": workload_request_id,
             "extension_request_id": None if redacted else extension_request_id,
+            "target_type": target_type,
+            "target_id": target_id,
             **({"message": tr(REDACTED_EXTENSION_RECEIPT_MESSAGE)} if redacted else {}),
         },
     )

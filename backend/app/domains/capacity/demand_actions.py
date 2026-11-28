@@ -53,7 +53,7 @@ from app.domains.capacity.models import (
 from app.domains.capacity.proposal_state import respond_proposal
 from app.domains.capacity.proposal_views import latest, reply_superseded
 from app.domains.capacity.schemas import ReasonCode, Via
-from app.domains.inbox.models import InboxItem, InboxKind
+from app.domains.inbox.models import InboxItem, InboxKind, InboxTargetType
 from app.domains.inbox.service import add_item
 from app.i18n import bilingual
 
@@ -176,6 +176,8 @@ def create_demand(
                 org_id=principal.org_id,
                 recipient_user_id=user_id,
                 kind=InboxKind.CAPACITY,
+                target_type=InboxTargetType.CAPACITY_INCOMING,
+                target_id=row.id,
                 message=msg_zh,
                 message_en=msg_en,
             ),
@@ -286,6 +288,8 @@ def reply_demand(
                 org_id=principal.org_id,
                 recipient_user_id=row.requester_user_id,
                 kind=InboxKind.CAPACITY,
+                target_type=InboxTargetType.CAPACITY_OUTGOING,
+                target_id=row.id,
                 message=msg_zh,
                 message_en=msg_en,
             ),
@@ -404,6 +408,12 @@ def respond_demand(
                 org_id=principal.org_id,
                 recipient_user_id=user_id,
                 kind=InboxKind.CAPACITY,
+                target_type=(
+                    InboxTargetType.CAPACITY_INCOMING
+                    if action == "follow_up"
+                    else InboxTargetType.CAPACITY_PLANS
+                ),
+                target_id=row.id,
                 message=msg_zh,
                 message_en=msg_en,
             ),

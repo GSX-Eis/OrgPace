@@ -72,13 +72,13 @@ function ReviewsPage() {
   const { org, employeeId } = useOrg()
   const pending = usePendingApprovals()
   if (!org) return <OrgState />
-  const { capacity, profile, counts, totalCount } = pending
+  const { capacity, profileData, profileQueries, counts, totalCount } = pending
   const sections = [
     {
       type: "profile",
-      queries: [profile],
+      queries: profileQueries,
       count: counts.profile,
-      content: <ProfileReviews data={profile.data} />,
+      content: <ProfileReviews data={profileData} />,
     },
     {
       type: "workload",
@@ -220,8 +220,8 @@ function ReviewsPage() {
                     }
                   />
                 ) : section.type === "profile" ||
-                  section.count ||
-                  (section.type === "workload" && section.queries.length) ? (
+                  section.type === "workload" ||
+                  section.count ? (
                   section.content
                 ) : (
                   <p

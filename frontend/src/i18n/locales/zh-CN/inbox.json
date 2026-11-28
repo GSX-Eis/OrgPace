@@ -17,7 +17,8 @@
     "openPlans": "打开方案页",
     "openBorrows": "打开借调页",
     "viewReviews": "查看待审批",
-    "viewDetails": "查看详情"
+    "viewDetails": "查看详情",
+    "openAdminAssistant": "打开管理助手"
   },
   "question": {
     "answered": "已回答，已保存为受限自述证据",
