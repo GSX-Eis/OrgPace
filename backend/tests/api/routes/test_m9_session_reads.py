@@ -3,6 +3,7 @@
 import json
 from dataclasses import replace
 from typing import Literal
+from unittest.mock import patch
 
 import pytest
 from sqlmodel import Session, select
@@ -356,3 +357,63 @@ def test_a_side_gets_hidden_reply_notice_and_details_link(
     assert "reply_notice" not in detail
     assert "demand_url" not in detail
     assert detail["events"][0]["text"] == private
+
+
+@pytest.mark.parametrize(
+    ("kind", "calls", "hidden"),
+    [
+        ("visible", 0, True),
+        ("tracked", 0, True),
+        ("legacy", 1, True),
+        ("legacy-message", 0, True),
+        ("legacy-clean", 1, False),
+    ],
+)
+def test_list_messages_loads_state_only_for_legacy_scope(
+    demo: tuple, db: Session, kind: str, calls: int, hidden: bool
+) -> None:
+    people = demo[1]
+    p = principal(db, people["E01"].org_id, people["E01"].id)
+    session = store.create_session(db, p)
+    scope = store.session_scope(db, p)
+    target = people["E02"]
+    assert str(target.id) in scope["visible_employee_ids"]
+    payload = {"messages": [{"type": "text", "text": "synthetic reply"}]}
+    if kind == "visible":
+        payload["scope"] = scope
+    elif kind == "tracked":
+        payload["scope"] = {
+            **scope,
+            "read_employee_ids": [str(target.id)],
+            "read_scope_format": store.READ_SCOPE_FORMAT,
+        }
+    elif kind == "legacy-message":
+        payload["steps"] = [{"name": "find_people"}]
+    for _ in range(2):
+        store.append_message(db, session, "assistant", payload)
+    store.save_state(
+        db,
+        session,
+        {"messages": ["ordinary" if kind == "legacy-clean" else "find_people"]},
+    )
+    target.employment_status = EmploymentStatus.INACTIVE
+    db.add(target)
+    db.commit()
+    with patch.object(store, "load_state", wraps=store.load_state) as load:
+        # The old eager path performed one state load regardless of scope.
+        legacy = store._legacy_sensitive(
+            store.messages_for(db, session), store.load_state(db, session)
+        )
+        assert load.call_count == 1
+        current = store.session_scope(db, p)
+        assert (
+            store.scope_shrank(payload.get("scope"), current, legacy_sensitive=legacy)
+            == hidden
+        )
+        load.reset_mock()
+        history = store.list_messages(db, p, session.id)
+        assert len(history) == 2
+        assert all((store.HIDDEN_REPLY in str(m.payload)) == hidden for m in history)
+        assert all(("synthetic reply" in str(m.payload)) != hidden for m in history)
+        assert load.call_count == calls
+        print(f"messages {kind}: state loads 1 -> {load.call_count}")  # noqa: T201

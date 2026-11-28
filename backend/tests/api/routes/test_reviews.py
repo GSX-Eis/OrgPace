@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -7,7 +8,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, event, text
 from sqlalchemy.exc import OperationalError
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from app.authz.deps import get_org_principal
 from app.authz.principal import Principal
@@ -23,9 +24,11 @@ from app.domains.change_request.models import (
     ChangeOp,
     ItemDecision,
     ProfileChangeRequest,
+    RequestOrigin,
     RequestStatus,
     ReviewDecision,
     ReviewVia,
+    SubmissionVia,
 )
 from app.domains.change_request.schemas import ItemInput
 from app.domains.change_request.service import review_statuses
@@ -43,8 +46,8 @@ from app.domains.org.models import (
 from app.domains.profile.models import ClaimEvidence, EvidenceRelation, ProfileVersion
 from app.domains.review import service
 from app.domains.review.publish import current_claims, publish
-from app.domains.review.routing import review_assignment, reviewers_for
-from app.domains.review.schemas import DecisionInput
+from app.domains.review.routing import can_review, review_assignment, reviewers_for
+from app.domains.review.schemas import DecisionInput, PendingReviews, ReviewSummary
 from app.domains.work.models import Task, WorkEvent
 from app.models import User
 
@@ -1262,3 +1265,161 @@ def test_review_assignment_reason(
         assert response.json()["acting_for_name"]
     assert review_assignment(db, subject.org_id, subject.id)[0] == expected_reviewers
     assert reviewers_for(db, subject.org_id, subject.id) == expected_reviewers
+
+
+def test_pending_inbox_matches_reference_with_constant_queries(
+    demo: tuple, db: Session
+) -> None:
+    people = demo[1]
+    mgr = manager(db, demo)
+    org_id = mgr.org_id
+    root = Department(org_id=org_id, name="Synthetic parent")
+    db.add(root)
+    db.flush()
+    department = db.get_one(Department, people["E01"].department_id)
+    department.parent_department_id = root.id
+    upper = add_manager(db, people["E04"], root.id)
+    people["E04"].department_id = root.id
+    db.exec(
+        delete(RoleGrant).where(
+            RoleGrant.org_id == org_id, RoleGrant.role == Role.ORG_ADMIN
+        )
+    )
+    db.add(RoleGrant(org_id=org_id, membership_id=upper.id, role=Role.ORG_ADMIN))
+    db.commit()
+    upper_p = get_org_principal(org_id, db.get_one(User, upper.user_id), db)
+    owner = actor(db, org_id, "employee.platform@demo.example.com")
+    capability = list_capabilities(db, org_id, get_schema(db, org_id).id)[0]
+    statements: list[str] = []
+
+    def record(*args: Any) -> None:
+        statements.append(args[2])
+
+    def reference(p: Principal) -> PendingReviews:
+        data = []
+        for request, subject, dept in db.exec(
+            select(ProfileChangeRequest, Employee, Department)
+            .join(
+                Employee,
+                (col(Employee.id) == ProfileChangeRequest.subject_employee_id)
+                & (col(Employee.org_id) == ProfileChangeRequest.org_id),
+            )
+            .outerjoin(
+                Department,
+                (col(Department.id) == Employee.department_id)
+                & (col(Department.org_id) == Employee.org_id),
+            )
+            .where(
+                ProfileChangeRequest.org_id == org_id,
+                ProfileChangeRequest.status == RequestStatus.PENDING_REVIEW,
+            )
+            .order_by(
+                col(ProfileChangeRequest.submitted_at), col(ProfileChangeRequest.id)
+            )
+        ).all():
+            reviewers = reviewers_for(db, org_id, subject.id)
+            allowed = can_review(db, p, subject.id) is not None
+            if not allowed and not (p.is_org_admin and not reviewers):
+                continue
+            count = len(
+                db.exec(
+                    select(ChangeItem.id).where(
+                        ChangeItem.org_id == org_id,
+                        ChangeItem.request_id == request.id,
+                        col(ChangeItem.decision).is_(None),
+                    )
+                ).all()
+            )
+            data.append(
+                ReviewSummary(
+                    id=request.id,
+                    subject_employee_id=subject.id,
+                    employee_name=subject.display_name,
+                    department_name=dept.name if dept else None,
+                    submitted_at=request.submitted_at,
+                    submitted_via=request.submitted_via,
+                    client_name=request.client_name,
+                    owner_reviewed=request.submitted_via
+                    != SubmissionVia.ADMIN_HANDOVER,
+                    item_count=count,
+                    can_decide=allowed,
+                    unavailable_reason=None if reviewers else "没有可用的审批人",
+                )
+            )
+        return PendingReviews(data=data, count=len(data))
+
+    def add_request(subject: Employee, index: int) -> UUID:
+        request = ProfileChangeRequest(
+            org_id=org_id,
+            subject_employee_id=subject.id,
+            origin=RequestOrigin.MANUAL,
+            status=RequestStatus.PENDING_REVIEW,
+            author={},
+            submitted_via=SubmissionVia.ADMIN_HANDOVER
+            if index % 2
+            else SubmissionVia.WEB,
+            submitted_at=utc_now(),
+        )
+        db.add(request)
+        db.flush()
+        for position in range(index % 3):
+            db.add(
+                ChangeItem(
+                    org_id=org_id,
+                    request_id=request.id,
+                    position=position,
+                    op=ChangeOp.ADD,
+                    capability_definition_id=capability.id,
+                    after={},
+                    decision=ItemDecision.REJECTED if position else None,
+                )
+            )
+        return request.id
+
+    first_id = add_request(people["E02"], 1)
+    db.flush()
+    bind = db.get_bind()
+    event.listen(bind, "before_cursor_execute", record)
+    try:
+        service.list_pending_reviews(upper_p, db)
+        small_count = len(statements)
+    finally:
+        event.remove(bind, "before_cursor_execute", record)
+    for i in range(2, 11):
+        add_request(people[("E02", "E01", "E04")[i % 3]], i)
+    db.flush()
+    event.listen(bind, "before_cursor_execute", record)
+    try:
+        for p in (mgr, upper_p, owner):
+            statements.clear()
+            expected = reference(p)
+            old_count = len(statements)
+            statements.clear()
+            actual = service.list_pending_reviews(p, db)
+            new_count = len(statements)
+            assert actual == expected
+            assert new_count <= 7 < old_count
+            if p == upper_p:
+                assert new_count == small_count
+                assert any(
+                    r.id == first_id and r.can_decide and r.item_count == 1
+                    for r in actual.data
+                )
+                assert any(
+                    r.subject_employee_id == upper_p.employee_id
+                    and not r.can_decide
+                    and r.unavailable_reason
+                    for r in actual.data
+                )
+                print(  # noqa: T201
+                    f"pending inbox: {old_count} -> {new_count} SQL statements; small batch {small_count}"
+                )
+            if p == owner:
+                assert first_id not in {r.id for r in actual.data}
+            if p == mgr:
+                assert any(r.id == first_id and r.can_decide for r in actual.data)
+                assert all(
+                    r.subject_employee_id != mgr.employee_id for r in actual.data
+                )
+    finally:
+        event.remove(bind, "before_cursor_execute", record)

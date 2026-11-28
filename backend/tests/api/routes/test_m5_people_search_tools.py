@@ -1,5 +1,6 @@
 import asyncio
 import json
+from copy import deepcopy
 from datetime import timedelta
 from typing import Any
 from uuid import UUID, uuid4
@@ -8,14 +9,19 @@ import jwt
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlmodel import Session, select
+from sqlalchemy import event
+from sqlmodel import Session, col, select
 
 from app.authz.principal import Principal
 from app.core.db import engine
 from app.core.secrets import encrypt_secret
 from app.domains.base import utc_now
 from app.domains.bot import core, store, tools
-from app.domains.capability.search import PeopleSearchInput
+from app.domains.capability.search import (
+    PeopleSearchInput,
+    find_people,
+    snapshot_claims,
+)
 from app.domains.evidence.models import Evidence
 from app.domains.im import binding, gateway
 from app.domains.im.adapters.feishu import Feishu
@@ -25,6 +31,7 @@ from app.domains.model.models import ModelSetting
 from app.domains.model.pi_client import TurnResult
 from app.domains.org.models import Department, OrgMembership, Role, RoleGrant
 from app.domains.profile.models import ProfileVersion
+from app.domains.profile.service import version_summaries
 from tests.api.routes.test_mcp import call, initialize, token_for
 from tests.domains.test_bot_core import enable
 from tests.domains.test_im_gateway import principal
@@ -622,3 +629,102 @@ def test_tool_arguments_cannot_change_identity(
     assert denied["isError"]
     assert "structuredContent" not in denied
     assert headers["Authorization"].split()[1] not in json.dumps(denied)
+
+
+def test_search_uses_first_publication_without_historical_snapshots(
+    people: tuple, db: Session
+) -> None:
+    demo, _, now, _ = people
+    employees = demo[1]
+    p = principal(db, employees["E01"].org_id, employees["E01"].id)
+    for code in ("E02", "E03"):
+        original = db.exec(
+            select(ProfileVersion).where(
+                ProfileVersion.org_id == p.org_id,
+                ProfileVersion.subject_employee_id == employees[code].id,
+                ProfileVersion.revision == 100,
+            )
+        ).one()
+        payload = deepcopy(original.snapshot)
+        for revision in (101, 102, 103):
+            if code == "E03" and revision == 102:
+                payload["claims"][0]["id"] = str(uuid4())
+            db.add(
+                ProfileVersion(
+                    org_id=p.org_id,
+                    subject_employee_id=original.subject_employee_id,
+                    schema_version_id=original.schema_version_id,
+                    revision=revision,
+                    snapshot=deepcopy(payload),
+                    published_by={"actor_type": "system_worker"},
+                    published_at=now + timedelta(days=revision - 100),
+                )
+            )
+        db.flush()
+    result = find_people(db, p, PeopleSearchInput(capability_key="backend_api"))
+    ids = {r.employee_id for r in result.data}
+    assert {employees["E02"].id, employees["E03"].id} <= ids
+    old_versions = list(
+        db.exec(
+            select(ProfileVersion)
+            .where(
+                ProfileVersion.org_id == p.org_id,
+                col(ProfileVersion.subject_employee_id).in_(ids),
+            )
+            .order_by(col(ProfileVersion.revision))
+        ).all()
+    )
+    first = {}
+    latest = {}
+    for version, summary in zip(
+        old_versions, version_summaries(db, p, old_versions), strict=True
+    ):
+        for claim in snapshot_claims(version):
+            first.setdefault((version.subject_employee_id, claim.id), summary)
+        latest[version.subject_employee_id] = version
+    for row in result.data:
+        claim = snapshot_claims(latest[row.employee_id])[0]
+        expected = first[(row.employee_id, claim.id)]
+        assert (row.published_at, row.published_by) == (
+            expected.published_at,
+            expected.published_by,
+        )
+    assert (
+        next(
+            r for r in result.data if r.employee_id == employees["E02"].id
+        ).published_at
+        == now
+    )
+    assert next(
+        r for r in result.data if r.employee_id == employees["E03"].id
+    ).published_at == now + timedelta(days=2)
+
+    snapshot_rows = []
+    version_rows = []
+
+    def record(*args: Any) -> None:
+        cursor, sql = args[1], args[2]
+        if "FROM profile_version" not in sql:
+            return
+        projection = sql.split("FROM", 1)[0]
+        if "profile_version.snapshot" in projection:
+            snapshot_rows.append(cursor.rowcount)
+        elif "profile_version.published_at" in projection:
+            version_rows.append(cursor.rowcount)
+
+    bind = db.get_bind()
+    event.listen(bind, "after_cursor_execute", record)
+    try:
+        assert (
+            find_people(db, p, PeopleSearchInput(capability_key="backend_api"))
+            == result
+        )
+    finally:
+        event.remove(bind, "after_cursor_execute", record)
+    # Only the existing latest-profile query may select snapshot JSONB.
+    assert len(snapshot_rows) == 1
+    assert version_rows == [len(ids)]
+    assert len(old_versions) > sum(version_rows)
+    print(  # noqa: T201
+        f"publisher history: {len(old_versions)} full snapshots -> 0; {sum(version_rows)} metadata rows; latest snapshot rows {snapshot_rows[0]}"
+    )
