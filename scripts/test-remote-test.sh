@@ -33,7 +33,10 @@ expect_failure '--force only applies' "$runner" --force status
 expect_failure '--no-cache only applies' "$runner" --no-cache status
 expect_failure '1–2999' env COMPOSE_PROJECT_NAME=nere3000 "$runner" pytest
 expect_failure '1–16' env COMPOSE_PROJECT_NAME=nere123 PREFLIGHT_PYTEST_WORKERS=17 "$runner" preflight
-expect_failure 'Set GCP_PROJECT' "$runner" status
+expect_failure 'Set GCP_PROJECT, GCP_ZONE and GCP_INSTANCE' "$runner" status
+grep -Fq 'SPOT_HOURLY_RATE_USD' "$scratch/output"
+if grep -Fq 'docs/cloud-testing.md' "$scratch/output"; then exit 1; fi
+expect_failure 'Set SPOT_HOURLY_RATE_USD' env GCP_PROJECT=sample-project GCP_ZONE=example-zone GCP_INSTANCE=example-instance "$runner" status
 
 export CLOUD_RUNNER_CONFIG=$scratch/runner.env
 export CLOUD_TEST_QUEUE_DIR=$scratch/queue
