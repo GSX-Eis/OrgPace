@@ -18,6 +18,7 @@ ENTRYPOINTS = {
     "api/routes/capacity_demands.py",
     "api/routes/capacity_forecast.py",
     "api/routes/capacity_workload.py",
+    "api/routes/private.py",
     "domains/__init__.py",
     "mcp/server.py",
 }
@@ -778,3 +779,70 @@ def test_capacity_has_zero_internal_delayed_imports_and_strict_dag() -> None:
         dag[path.stem] = deps
     assert delayed == []
     assert len(list(TopologicalSorter(dag).static_order())) == len(mod_names)
+
+
+def test_capacity_routes_split_and_private_playwright_router_gating(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastapi import APIRouter
+    from fastapi.routing import APIRoute
+
+    from app.api.main import include_playwright_fixtures
+    from app.api.routes import (
+        capacity,
+        capacity_assignments,
+        capacity_demands,
+        capacity_forecast,
+        capacity_workload,
+        private,
+    )
+    from app.core.config import settings
+
+    split_routes = [
+        route
+        for mod in (
+            capacity_workload,
+            capacity_forecast,
+            capacity_demands,
+            capacity_assignments,
+        )
+        for route in mod.router.routes
+        if isinstance(route, APIRoute)
+    ]
+    assert len(split_routes) == 48
+    assert len(capacity.router.routes) == 48
+    assert not hasattr(capacity, "playwright_router")
+    assert all(route.tags == ["capacity"] for route in split_routes)
+    assert all("legacy-accepted-demands" not in route.path for route in split_routes)
+    assert not any(
+        isinstance(r, APIRoute) and "legacy-accepted-demands" in r.path
+        for r in private.router.routes
+    )
+    fixture_routes = [
+        r for r in private.playwright_router.routes if isinstance(r, APIRoute)
+    ]
+    assert [r.path for r in fixture_routes] == [
+        "/private/orgs/{org_id}/legacy-accepted-demands/{demand_id}"
+    ]
+    assert all(not r.include_in_schema for r in fixture_routes)
+
+    def mounted_paths() -> list[str]:
+        probe = APIRouter()
+        include_playwright_fixtures(probe)
+        paths: list[str] = []
+        for entry in probe.routes:
+            if isinstance(entry, APIRoute):
+                paths.append(entry.path)
+            elif (orig := getattr(entry, "original_router", None)) is not None:
+                paths.extend(r.path for r in orig.routes if isinstance(r, APIRoute))
+        return paths
+
+    monkeypatch.setattr(settings, "FASTAPI_ENV", "development")
+    monkeypatch.setattr(settings, "PLAYWRIGHT_FIXTURES_ENABLED", False)
+    assert mounted_paths() == []
+    monkeypatch.setattr(settings, "PLAYWRIGHT_FIXTURES_ENABLED", True)
+    assert (
+        "/private/orgs/{org_id}/legacy-accepted-demands/{demand_id}" in mounted_paths()
+    )
+    monkeypatch.setattr(settings, "FASTAPI_ENV", "production")
+    assert mounted_paths() == []
