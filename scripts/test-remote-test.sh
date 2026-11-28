@@ -331,6 +331,7 @@ subprocess.run(["git", "update-ref", "refs/remotes/origin/master", "HEAD"], cwd=
 
 base_env = {**os.environ, "CLOUD_TEST_CACHE_DIR": str(cache_dir)}
 base_env.pop("CLOUD_TEST_NO_CACHE", None)
+base_env.pop("EPP_WARM_DB", None)
 base_env.pop("EXTERNAL_MCP_ENABLED", None)
 base_env.pop("PLAYWRIGHT_FIXTURES_ENABLED", None)
 base_env.pop("PREFLIGHT_FULL_PYTEST", None)
@@ -414,6 +415,35 @@ assert run_meta(["cache-lookup", "preflight", "--"], env={**base_env, "PREFLIGHT
 
 # 8. TTL expiry misses
 assert run_meta(["cache-lookup", "pytest", "--", "tests/api/test_a.py"], env={**base_env, "CLOUD_TEST_CACHE_TTL_HOURS": "0"}).returncode == 1
+
+# 9. B3: EPP_WARM_DB=0 cold path and warm path cache keys are isolated (exact + subset).
+(repo / "app.py").write_text("x = 3\n", encoding="utf-8")
+subprocess.run(["git", "add", "app.py"], cwd=repo, check=True)
+subprocess.run(["git", "commit", "-qm", "b3"], cwd=repo, check=True)
+warm_env = {**base_env, "EPP_WARM_DB": "1"}
+cold_env = {**base_env, "EPP_WARM_DB": "0"}
+desc_warm = Path(work) / "desc-b3-warm.json"
+assert run_meta(["cache-prepare", str(desc_warm), "pytest", "--", "tests/api/test_a.py", "tests/api/test_b.py"], env=warm_env).returncode == 0
+assert run_meta(["cache-store", str(desc_warm), "nere1603", "5.0", str(out_log)], env=warm_env).returncode == 0
+assert run_meta(["cache-lookup", "pytest", "--", "tests/api/test_a.py", "tests/api/test_b.py"], env=warm_env).returncode == 0
+assert run_meta(["cache-lookup", "pytest", "--", "tests/api/test_a.py"], env=warm_env).returncode == 0
+assert run_meta(["cache-lookup", "pytest", "--", "tests/api/test_a.py", "tests/api/test_b.py"], env=cold_env).returncode == 1
+assert run_meta(["cache-lookup", "pytest", "--", "tests/api/test_a.py"], env=cold_env).returncode == 1
+
+# Reverse direction: EPP_WARM_DB=0 cached does not satisfy default/warm lookups; playwright ignores EPP_WARM_DB.
+(repo / "app.py").write_text("x = 4\n", encoding="utf-8")
+desc_cold = Path(work) / "desc-b3-cold.json"
+assert run_meta(["cache-prepare", str(desc_cold), "pytest", "--", "tests/api/test_a.py", "tests/api/test_b.py"], env=cold_env).returncode == 0
+assert run_meta(["cache-store", str(desc_cold), "nere1603", "6.0", str(out_log)], env=cold_env).returncode == 0
+assert run_meta(["cache-lookup", "pytest", "--", "tests/api/test_a.py", "tests/api/test_b.py"], env=cold_env).returncode == 0
+assert run_meta(["cache-lookup", "pytest", "--", "tests/api/test_a.py"], env=cold_env).returncode == 0
+assert run_meta(["cache-lookup", "pytest", "--", "tests/api/test_a.py", "tests/api/test_b.py"], env=base_env).returncode == 1
+assert run_meta(["cache-lookup", "pytest", "--", "tests/api/test_a.py"], env=warm_env).returncode == 1
+desc_pw0 = Path(work) / "desc-b3-pw0.json"
+desc_pw1 = Path(work) / "desc-b3-pw1.json"
+assert run_meta(["cache-prepare", str(desc_pw0), "playwright", "--"], env=cold_env).returncode == 0
+assert run_meta(["cache-prepare", str(desc_pw1), "playwright", "--"], env=warm_env).returncode == 0
+assert json.loads(desc_pw0.read_text())["cache_key"] == json.loads(desc_pw1.read_text())["cache_key"]
 PY
 
 # Verify runner returns cached PASS before touching gcloud, and --no-cache forces gcloud call.
@@ -498,9 +528,13 @@ cp -R "$scratch/real-snap/.remote-test-snapshot" "$scratch/real-worker/"
   done
   expect_failure 'fatal:' env PREFLIGHT_BASE_REF=origin/missing bash "$worker" fixture nere123 preflight 4
 )
-# Verify remote-test.sh validates and forwards EPP_WARM_DB / EPP_WARM_DB_PORT via SSH remote_env.
+# Verify remote-test.sh and remote-test-worker.sh validate EPP_WARM_DB / EPP_WARM_DB_PORT
+# (rejecting 5432 and reserved 15000–59999, allowing 14532/14999/60000) and forward via SSH remote_env.
 expect_failure 'Set EPP_WARM_DB to 0 or 1' env COMPOSE_PROJECT_NAME=nere123 EPP_WARM_DB=2 "$runner" --force --no-cache pytest tests/test_a.py
-expect_failure 'Set EPP_WARM_DB_PORT' env COMPOSE_PROJECT_NAME=nere123 EPP_WARM_DB_PORT=5432 "$runner" --force --no-cache pytest tests/test_a.py
+for bad_port in 5432 15000 15123 59999; do
+  expect_failure 'Set EPP_WARM_DB_PORT' env COMPOSE_PROJECT_NAME=nere123 EPP_WARM_DB_PORT="$bad_port" "$runner" --force --no-cache pytest tests/test_a.py
+  expect_failure 'Invalid EPP_WARM_DB_PORT' env EPP_WARM_DB_PORT="$bad_port" bash "$worker" fixture nere123 pytest '' tests/test_a.py
+done
 mkdir -p "$scratch/ssh-bin"
 cat > "$scratch/ssh-bin/gcloud" <<'MOCK'
 #!/usr/bin/env bash
@@ -521,10 +555,14 @@ exit 0
 MOCK
 chmod +x "$scratch/ssh-bin/"*
 : > "$scratch/ssh.log"
-env PATH="$scratch/ssh-bin:$PATH" MOCK_SSH_LOG="$scratch/ssh.log" \
-  COMPOSE_PROJECT_NAME=nere123 EPP_WARM_DB=0 EPP_WARM_DB_PORT=14533 \
-  "$runner" --force --no-cache pytest tests/test_a.py >/dev/null
-grep -Fq 'EPP_WARM_DB=0' "$scratch/ssh.log" && grep -Fq 'EPP_WARM_DB_PORT=14533' "$scratch/ssh.log"
+for good_port in 14532 14999 60000; do
+  : > "$scratch/ssh.log"
+  env PATH="$scratch/ssh-bin:$PATH" MOCK_SSH_LOG="$scratch/ssh.log" \
+    COMPOSE_PROJECT_NAME=nere123 EPP_WARM_DB=0 EPP_WARM_DB_PORT="$good_port" \
+    "$runner" --force --no-cache pytest tests/test_a.py >/dev/null
+  grep -Fq 'EPP_WARM_DB=0' "$scratch/ssh.log" && grep -Fq "EPP_WARM_DB_PORT=$good_port" "$scratch/ssh.log"
+  expect_failure 'mock lsof reached' env PATH="$scratch/bin:$PATH" EPP_WARM_DB=0 EPP_WARM_DB_PORT="$good_port" bash "$worker" fixture nere123 pytest '' tests/test_a.py
+done
 
 # Verify remote-test-worker.sh warm DB lifecycle: real kernel fcntl.flock usage lease,
 # cold start, fast-path reuse, dynamic Compose command rebuild, B1 concurrent protection,
@@ -744,11 +782,42 @@ for kw, must, forbid in (
      ("passed=4 skipped=0 failed=0 errors=1 xfailed=0",), ()),
     (dict(mode="playwright", project="nere1580", exit_code=1, raw_output="  1 flaky\n    a.spec.ts:1:1 › A\n  4 passed (8.1s)\n  2 errors were not a part of any test\n"),
      ("passed=4 skipped=0 failed=0 errors=2 xfailed=0",), ()),
-    (dict(mode="pytest", project="nere1580", exit_code=0, raw_output="no tests ran in 0.05s\n"), ("passed=0 skipped=0 failed=0 errors=0 xfailed=0",), ()),
+    (dict(mode="pytest", project="nere1580", exit_code=0, raw_output="no tests ran in 0.05s\n"), ("passed=0 skipped=0 failed=0 errors=0 xfailed=0", "db_container=n/a template_s=n/a db_clone=n/a"), ()),
 ):
     txt = fmt(**kw)
     for m_tok in must: assert m_tok in txt, (m_tok, txt)
     for f_tok in forbid: assert f_tok not in txt, (f_tok, txt)
+
+# B2 + B6: Reverse outer Top-20 durations, [baseline-gate] line, and db_container/template_s/db_clone display + n/a fallback.
+dur_rows = "\n".join(f"{20.0 - i * 0.5:.2f}s call     tests/test_top_{i:02d}.py::test_case_{i:02d}" for i in range(22))
+b2_raw = (
+    "=== slowest 5 durations ===\n"
+    "99.00s call     tests/test_inner.py::test_inner_dummy\n"
+    "=== slowest 20 durations ===\n"
+    f"{dur_rows}\n"
+    "=== 4004 passed, 3 skipped in 194.12s ===\n"
+    "[baseline-gate] PASS: 4004/4004 expected tests verified against baseline (0 known failure(s)).\n"
+    "EPP_METRIC db_mode=warm db_prep_s=0.142 db_container_s=0.142 template_status=hit template_s=0.015 db_clone_s=0.180 db_clone_max_s=0.055 db_clone_count=4 test_exec_s=194.120\n"
+)
+b2_txt = fmt(mode="preflight", project="nere1603", exit_code=0, raw_output=b2_raw)
+for i in range(20):
+    assert f"tests/test_top_{i:02d}.py::test_case_{i:02d}" in b2_txt, i
+for forbidden in ("test_case_20", "test_case_21", "test_inner_dummy"):
+    assert forbidden not in b2_txt, forbidden
+assert "  baseline_gate: [baseline-gate] PASS: 4004/4004 expected tests verified against baseline (0 known failure(s))." in b2_txt
+assert "db_container=0.142s template_s=0.015s db_clone=0.180s(max=0.055s,n=4)" in b2_txt
+
+b2_ok = fmt(mode="preflight", project="nere1603", exit_code=0, raw_output="[baseline-gate] OK: backend/tests/baseline_failures.json\nEPP_METRIC db_mode=warm db_prep_s=0.100 db_container_s=0.100 template_status=n/a template_s=n/a db_clone_s=0.032 db_clone_max_s=0.032 db_clone_count=1 test_exec_s=1.000\n")
+assert "  baseline_gate: [baseline-gate] OK: backend/tests/baseline_failures.json" in b2_ok
+assert "db_container=0.100s template_s=n/a db_clone=0.032s\n" in b2_ok
+assert "(max=" not in b2_ok
+
+# Verify cache-store preserves header + all 20 durations + baseline_gate in cached summary.
+b2_summary_lines = m.build_summary_lines(
+    mode="preflight", project="nere1603", exit_code=0, queue_wait_s="0.100", sync_s="0.200", total_s="195.000",
+    vm_summary="VM: RUNNING", raw_output=b2_raw,
+)
+assert len(b2_summary_lines) <= m.CACHE_OUTPUT_TAIL_LINES, (len(b2_summary_lines), m.CACHE_OUTPUT_TAIL_LINES)
 PY
 
 mkdir -p "$scratch/e2e-bin"
@@ -919,6 +988,27 @@ MOCK
   [[ -s $warm_test_dir/cleanup.log ]]
   grep -Fq 'assertion_failed' <<< "$bad_st"
   grep -Fq 'template_status=unknown' <<< "$bad_st"
+
+  # B6: worker aggregates EPP_DB_METRICS_FILE into EPP_METRIC and degrades fail-open to n/a on corrupt/unreadable input.
+  cp "$scratch/warm-bin/uv" "$scratch/warm-bin/uv.orig"
+  cat > "$scratch/warm-bin/uv" <<'MOCK'
+#!/usr/bin/env bash
+printf '{"kind":"template","seconds":0.025}\n{"kind":"db_clone","seconds":0.030}\n{"kind":"db_clone","seconds":0.045}\n' > "$EPP_DB_METRICS_FILE"
+MOCK
+  chmod +x "$scratch/warm-bin/uv"
+  b6_ok=$("${warm_env[@]}" bash scripts/remote-test-worker.sh run_b6_ok nere123 pytest '' tests/test_a.py -q)
+  grep -Fq 'template_s=0.025 db_clone_s=0.075 db_clone_max_s=0.045 db_clone_count=2' <<< "$b6_ok"
+  grep -Eq 'db_container_s=[0-9]+\.[0-9]{3}' <<< "$b6_ok"
+
+  cat > "$scratch/warm-bin/uv" <<'MOCK'
+#!/usr/bin/env bash
+printf '{not-json\n{"kind":"template","seconds":-1}\n{"kind":"db_clone","seconds":"bad"}\n' > "$EPP_DB_METRICS_FILE"
+chmod 000 "$EPP_DB_METRICS_FILE" || true
+MOCK
+  chmod +x "$scratch/warm-bin/uv"
+  b6_bad=$("${warm_env[@]}" bash scripts/remote-test-worker.sh run_b6_bad nere123 pytest '' tests/test_a.py -q)
+  mv "$scratch/warm-bin/uv.orig" "$scratch/warm-bin/uv"
+  grep -Fq 'template_s=n/a db_clone_s=n/a db_clone_max_s=n/a db_clone_count=0' <<< "$b6_bad"
 )
 
 grep -q -- '-oControlMaster=auto' "$runner"

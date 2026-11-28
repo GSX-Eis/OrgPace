@@ -1,6 +1,8 @@
 import hashlib
+import json
 import os
 import re
+import time
 from collections.abc import Generator
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
@@ -205,6 +207,37 @@ def _record_template_status(
                 pass
 
 
+def record_db_metric(
+    kind: Literal["template", "db_clone"],
+    seconds: float,
+    *,
+    metrics_file: Path | None = None,
+) -> None:
+    """Append a fail-open JSONL timing event to EPP_DB_METRICS_FILE (never raises on IO)."""
+    target = metrics_file
+    if target is None:
+        raw = os.environ.get("EPP_DB_METRICS_FILE", "").strip()
+        if not raw:
+            return
+        target = Path(raw)
+    payload = json.dumps(
+        {"kind": kind, "seconds": round(max(0.0, seconds), 6)},
+        separators=(",", ":"),
+    )
+    fd: int | None = None
+    try:
+        fd = os.open(str(target), os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
+        os.write(fd, (payload + "\n").encode("utf-8"))
+    except OSError:
+        return
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
 def ensure_shared_template(
     url: URL,
     *,
@@ -213,6 +246,7 @@ def ensure_shared_template(
     max_templates: int = DEFAULT_MAX_SHARED_TEMPLATES,
     lease_stack: ExitStack | None = None,
     status_file: Path | None = None,
+    metrics_file: Path | None = None,
 ) -> str:
     """Return an existing migrated template DB or atomically build one under advisory lock."""
     template = template_name or shared_template_name(backend_dir)
@@ -223,86 +257,103 @@ def ensure_shared_template(
         if raw_status_file := os.environ.get("EPP_TEMPLATE_STATUS_FILE", "").strip():
             resolved_status_file = Path(raw_status_file)
 
+    started = time.monotonic()
     admin_url = url.set(drivername="postgresql", database="postgres")
-    # Acquire session lease (key=1) before releasing/pruning so an active session's
-    # template can never be evicted by another fingerprint build.
-    if lease_stack is not None:
-        _acquire_template_lease(admin_url, template, lease_stack)
+    try:
+        # Acquire session lease (key=1) before releasing/pruning so an active session's
+        # template can never be evicted by another fingerprint build.
+        if lease_stack is not None:
+            _acquire_template_lease(admin_url, template, lease_stack)
 
-    with psycopg.connect(
-        admin_url.render_as_string(hide_password=False), autocommit=True
-    ) as admin:
-        admin.execute("SELECT pg_advisory_lock(hashtextextended(%s, 0))", (template,))
-        try:
-            row = admin.execute(
-                "SELECT datistemplate, datallowconn FROM pg_database WHERE datname = %s",
-                (template,),
-            ).fetchone()
-            if row is None:
-                staging = f"{SHARED_TEMPLATE_STAGING_PREFIX}{uuid4().hex[:12]}"
-                published = False
-                admin.execute(
-                    sql.SQL("CREATE DATABASE {}").format(sql.Identifier(staging))
-                )
-                try:
-                    staging_engine = create_engine(url.set(database=staging))
-                    try:
-                        migrate(staging_engine, "upgrade", "head")
-                    finally:
-                        staging_engine.dispose()
-                    admin.execute(
-                        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                        "WHERE datname = %s AND pid <> pg_backend_pid()",
-                        (staging,),
+        with psycopg.connect(
+            admin_url.render_as_string(hide_password=False), autocommit=True
+        ) as admin:
+            admin.execute(
+                "SELECT pg_advisory_lock(hashtextextended(%s, 0))", (template,)
+            )
+            try:
+                row = admin.execute(
+                    "SELECT datistemplate, datallowconn FROM pg_database WHERE datname = %s",
+                    (template,),
+                ).fetchone()
+                if row is None:
+                    staging = (
+                        run_scoped_db_name("stg")
+                        if os.environ.get("PYTEST_DB_PREFIX", "").strip()
+                        else f"{SHARED_TEMPLATE_STAGING_PREFIX}{uuid4().hex[:12]}"
                     )
+                    published = False
+                    admin.execute(
+                        sql.SQL("CREATE DATABASE {}").format(sql.Identifier(staging))
+                    )
+                    try:
+                        staging_engine = create_engine(url.set(database=staging))
+                        try:
+                            migrate(staging_engine, "upgrade", "head")
+                        finally:
+                            staging_engine.dispose()
+                        admin.execute(
+                            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                            "WHERE datname = %s AND pid <> pg_backend_pid()",
+                            (staging,),
+                        )
+                        admin.execute(
+                            sql.SQL(
+                                "ALTER DATABASE {} WITH IS_TEMPLATE true ALLOW_CONNECTIONS false"
+                            ).format(sql.Identifier(staging))
+                        )
+                        _rename_database(admin, staging, template)
+                        published = True
+                        _record_template_status(resolved_status_file, "built")
+                    finally:
+                        if not published:
+                            try:
+                                if admin.execute(
+                                    "SELECT 1 FROM pg_database WHERE datname = %s",
+                                    (staging,),
+                                ).fetchone():
+                                    admin.execute(
+                                        sql.SQL(
+                                            "ALTER DATABASE {} WITH IS_TEMPLATE false"
+                                        ).format(sql.Identifier(staging))
+                                    )
+                                    admin.execute(
+                                        sql.SQL(
+                                            "DROP DATABASE IF EXISTS {} WITH (FORCE)"
+                                        ).format(sql.Identifier(staging))
+                                    )
+                            except psycopg.Error:
+                                pass
+                elif not row[0] or row[1]:
                     admin.execute(
                         sql.SQL(
                             "ALTER DATABASE {} WITH IS_TEMPLATE true ALLOW_CONNECTIONS false"
-                        ).format(sql.Identifier(staging))
+                        ).format(sql.Identifier(template))
                     )
-                    _rename_database(admin, staging, template)
-                    published = True
-                    _record_template_status(resolved_status_file, "built")
-                finally:
-                    if not published:
-                        try:
-                            if admin.execute(
-                                "SELECT 1 FROM pg_database WHERE datname = %s",
-                                (staging,),
-                            ).fetchone():
-                                admin.execute(
-                                    sql.SQL(
-                                        "ALTER DATABASE {} WITH IS_TEMPLATE false"
-                                    ).format(sql.Identifier(staging))
-                                )
-                                admin.execute(
-                                    sql.SQL(
-                                        "DROP DATABASE IF EXISTS {} WITH (FORCE)"
-                                    ).format(sql.Identifier(staging))
-                                )
-                        except psycopg.Error:
-                            pass
-            elif not row[0] or row[1]:
-                admin.execute(
-                    sql.SQL(
-                        "ALTER DATABASE {} WITH IS_TEMPLATE true ALLOW_CONNECTIONS false"
-                    ).format(sql.Identifier(template))
+                if row is not None:
+                    _record_template_status(resolved_status_file, "hit")
+                _prune_old_shared_templates(
+                    admin, keep=template, max_templates=max_templates
                 )
-            if row is not None:
-                _record_template_status(resolved_status_file, "hit")
-            _prune_old_shared_templates(
-                admin, keep=template, max_templates=max_templates
-            )
-        finally:
-            admin.execute(
-                "SELECT pg_advisory_unlock(hashtextextended(%s, 0))", (template,)
+            finally:
+                admin.execute(
+                    "SELECT pg_advisory_unlock(hashtextextended(%s, 0))", (template,)
+                )
+    finally:
+        if metrics_file is not None or template_name is None:
+            record_db_metric(
+                "template", time.monotonic() - started, metrics_file=metrics_file
             )
     return template
 
 
 @contextmanager
 def isolated_database(
-    url: URL, database: str, *, template: str | None = None
+    url: URL,
+    database: str,
+    *,
+    template: str | None = None,
+    metrics_file: Path | None = None,
 ) -> Generator[Engine]:
     admin_url = url.set(drivername="postgresql", database="postgres")
     with psycopg.connect(
@@ -319,7 +370,13 @@ def isolated_database(
                 "SELECT pg_advisory_lock(hashtextextended(%s, 0))", (template,)
             )
             try:
+                clone_started = time.monotonic()
                 admin.execute(statement)
+                record_db_metric(
+                    "db_clone",
+                    time.monotonic() - clone_started,
+                    metrics_file=metrics_file,
+                )
             finally:
                 admin.execute(
                     "SELECT pg_advisory_unlock(hashtextextended(%s, 0))", (template,)

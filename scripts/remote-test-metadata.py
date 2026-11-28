@@ -531,7 +531,7 @@ def queue_run(queue_name: str, timeout_raw: str, label: str, command: list[str])
 DEFAULT_CACHE_DIR = "~/.cache/cloud_test_results"
 DEFAULT_CACHE_TTL_HOURS = 24.0
 CACHE_SCHEMA_VERSION = 1
-CACHE_OUTPUT_TAIL_LINES = 30
+CACHE_OUTPUT_TAIL_LINES = 50
 CACHE_SCOPE_MAX_ENTRIES = 32
 
 PYTEST_IGNORED_FLAGS = frozenset(
@@ -1010,7 +1010,13 @@ def build_cache_descriptor(mode: str, args: list[str]) -> dict[str, Any]:
     else:
         return {"bypass": f"unsupported-mode:{mode}"}
 
+    warm_db_mode = (
+        "ephemeral"
+        if mode == "playwright"
+        else ("0" if os.environ.get("EPP_WARM_DB", "").strip() == "0" else "1")
+    )
     semantic_env = {
+        "EPP_WARM_DB": warm_db_mode,
         "EXTERNAL_MCP_ENABLED": os.environ.get("EXTERNAL_MCP_ENABLED", ""),
         "PLAYWRIGHT_FIXTURES_ENABLED": (
             "true"
@@ -1323,7 +1329,7 @@ def _fmt_sec(raw: str) -> str:
     try:
         return f"{float(raw):.3f}s"
     except ValueError:
-        return raw
+        return "n/a"
 
 
 def _parse_counts_and_durations(
@@ -1353,8 +1359,8 @@ def _parse_counts_and_durations(
     dur_start = next(
         (
             i + 1
-            for i, ln in enumerate(lines)
-            if (b := _PYTEST_BANNER_RE.match(ln.strip()))
+            for i in range(len(lines) - 1, -1, -1)
+            if (b := _PYTEST_BANNER_RE.match(lines[i].strip()))
             and re.fullmatch(
                 r"slowest(?:\s+\d+)?\s+durations", b.group(1), re.IGNORECASE
             )
@@ -1419,7 +1425,7 @@ def _parse_counts_and_durations(
         if pf_header is not None
         else []
     )
-    return counts, did_not_run, durations[:5], pf_steps
+    return counts, did_not_run, durations[:20], pf_steps
 
 
 def build_summary_lines(
@@ -1456,6 +1462,25 @@ def build_summary_lines(
         if counts is not None
         else "passed=n/a skipped=n/a failed=n/a errors=n/a xfailed=n/a"
     )
+    baseline_gate_line = next(
+        (
+            ln.strip()
+            for ln in reversed(lines)
+            if ln.strip().startswith("[baseline-gate] ")
+        ),
+        None,
+    )
+    db_clone_disp = _fmt_sec(metric.get("db_clone_s", "n/a"))
+    db_clone_max = _fmt_sec(metric.get("db_clone_max_s", "n/a"))
+    db_clone_count = metric.get("db_clone_count", "")
+    if (
+        db_clone_disp != "n/a"
+        and db_clone_count.isdigit()
+        and int(db_clone_count) > 1
+        and db_clone_max != "n/a"
+    ):
+        db_clone_disp = f"{db_clone_disp}(max={db_clone_max},n={db_clone_count})"
+
     out = [
         f"[remote-test] {'PASS' if exit_code == 0 else 'FAIL'}",
         f"  mode: {mode}",
@@ -1463,9 +1488,11 @@ def build_summary_lines(
         f"  exit_code: {exit_code}",
         f"  vm_budget: {vm_summary or 'n/a'}",
         f"  timings: queue_wait={_fmt_sec(queue_wait_s)} sync={_fmt_sec(sync_s)} db_prep={_fmt_sec(metric.get('db_prep_s', 'n/a'))} exec={_fmt_sec(metric.get('test_exec_s', 'n/a'))} total={_fmt_sec(total_s)}",
-        f"  db: db_mode={metric.get('db_mode', 'unknown')} template_status={metric.get('template_status', 'unknown')}",
+        f"  db: db_mode={metric.get('db_mode', 'unknown')} template_status={metric.get('template_status', 'unknown')} db_container={_fmt_sec(metric.get('db_container_s', 'n/a'))} template_s={_fmt_sec(metric.get('template_s', 'n/a'))} db_clone={db_clone_disp}",
         f"  counts: {counts_str}",
     ]
+    if baseline_gate_line:
+        out.append(f"  baseline_gate: {baseline_gate_line}")
     if pf_steps:
         out.append(
             "  preflight_steps: "

@@ -107,12 +107,25 @@ def test_migration_fingerprint_and_db_prefix_validation(tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="PYTEST_DB_PREFIX"):
             sanitize_db_prefix(bad)
 
+    from tests.utils.migrations import record_db_metric
+
+    metrics_path = tmp_path / "db-metrics.jsonl"
+    record_db_metric("template", 0.125, metrics_file=metrics_path)
+    record_db_metric("db_clone", 0.0345, metrics_file=metrics_path)
+    assert metrics_path.read_text(encoding="utf-8").splitlines() == [
+        '{"kind":"template","seconds":0.125}',
+        '{"kind":"db_clone","seconds":0.0345}',
+    ]
+    # Fail-open on unwritable/missing directory path.
+    record_db_metric("template", 0.5, metrics_file=tmp_path / "missing" / "m.jsonl")
+
 
 @pytest.mark.unit
 def test_conftest_shared_template_toggle(monkeypatch: pytest.MonkeyPatch) -> None:
     import tests.conftest as root_conftest
     import tests.utils.migrations as migrations_mod
 
+    monkeypatch.delenv("EPP_DB_METRICS_FILE", raising=False)
     url = make_url("postgresql+psycopg://postgres:pw@127.0.0.1:15432/app")
     cleaned, isolated_calls = [], []
 
@@ -165,6 +178,7 @@ def test_shared_template_race_failure_readonly_cloning_and_pruning(
     import tests.utils.migrations as migrations_mod
     from app.core.db import engine
 
+    monkeypatch.delenv("EPP_DB_METRICS_FILE", raising=False)
     admin_dsn = engine.url.set(
         drivername="postgresql", database="postgres"
     ).render_as_string(hide_password=False)
@@ -423,15 +437,84 @@ def test_shared_template_race_failure_readonly_cloning_and_pruning(
 
         sim_a = f"{run_prefix}_sa_{suffix[:4]}"
         sim_b = f"{run_prefix}_sb_{suffix[:4]}"
+        # B1: Production ensure_shared_template staging DB uses run_scoped_db_name("stg")
+        # when PYTEST_DB_PREFIX is set (and legacy prefix when unset), so crash cleanup reclaims it.
+        real_stg_a: list[str] = []
+        real_stg_unset: list[str] = []
+
+        def _capture_stg(eng: Engine, _act: str, _rev: str, *, out: list[str]) -> None:
+            assert eng.url.database is not None
+            out.append(eng.url.database)
+            raise RuntimeError("abort_mid_build")
+
+        with monkeypatch.context() as mp:
+            mp.setenv("PYTEST_DB_PREFIX", sim_a)
+            mp.setattr(
+                migrations_mod,
+                "migrate",
+                lambda eng, a, r: _capture_stg(eng, a, r, out=real_stg_a),
+            )
+            with pytest.raises(RuntimeError, match="abort_mid_build"):
+                migrations_mod.ensure_shared_template(
+                    engine.url, template_name=f"{sim_a}_b1tpl_{suffix}", max_templates=0
+                )
+            mp.delenv("PYTEST_DB_PREFIX", raising=False)
+            mp.setattr(
+                migrations_mod,
+                "migrate",
+                lambda eng, a, r: _capture_stg(eng, a, r, out=real_stg_unset),
+            )
+            with pytest.raises(RuntimeError, match="abort_mid_build"):
+                migrations_mod.ensure_shared_template(
+                    engine.url, template_name=f"{sim_a}_b1tpl_{suffix}", max_templates=0
+                )
+        assert len(real_stg_a) == 1 and real_stg_a[0].startswith(f"{sim_a}_stg_")
+        assert not re.fullmatch(migrations_mod.SHARED_TEMPLATE_REGEX, real_stg_a[0])
+        assert len(real_stg_unset) == 1 and real_stg_unset[0].startswith(
+            migrations_mod.SHARED_TEMPLATE_STAGING_PREFIX
+        )
+
+        # B6: ensure_shared_template & isolated_database record template_s / db_clone_s fail-open.
+        b6_metrics = tmp_path / "b6-metrics.jsonl"
+        b6_tpl = f"{sim_a}_m_tpl_{suffix}"
+        with monkeypatch.context() as mp:
+            mp.setattr(migrations_mod, "migrate", lambda *_a: None)
+            migrations_mod.ensure_shared_template(
+                engine.url,
+                template_name=b6_tpl,
+                max_templates=0,
+                metrics_file=b6_metrics,
+            )
+        with migrations_mod.isolated_database(
+            engine.url,
+            f"{sim_a}_m_iso_{suffix}",
+            template=b6_tpl,
+            metrics_file=b6_metrics,
+        ):
+            pass
+        # Fail-open with unwritable metrics path still clones cleanly.
+        with migrations_mod.isolated_database(
+            engine.url,
+            f"{sim_a}_m_iso2_{suffix}",
+            template=b6_tpl,
+            metrics_file=tmp_path / "no-such-dir" / "metrics.jsonl",
+        ):
+            pass
+        _drop_dbs([b6_tpl])
+        metric_lines = b6_metrics.read_text(encoding="utf-8").splitlines()
+        assert len(metric_lines) == 2
+        assert '"kind":"template"' in metric_lines[0]
+        assert '"kind":"db_clone"' in metric_lines[1]
+
         a_dbs = [
             f"{sim_a}_gw0_{suffix}",
             f"{sim_a}_hb_{suffix}",
             f"{sim_a}_fresh_{suffix}",
             f"{sim_a}_iso_{suffix}",
             f"{sim_a}_tpl_{suffix}",
-            f"{sim_a}_stg_{suffix}",
+            real_stg_a[0],
         ]
-        b_dbs = [f"{sim_b}_gw0_{suffix}", f"{sim_b}_hb_{suffix}"]
+        b_dbs = [f"{sim_b}_gw0_{suffix}", f"{sim_b}_stg_{suffix}"]
         with psycopg.connect(admin_dsn, autocommit=True) as admin:
             for d in [*a_dbs, *b_dbs, prod_tpl]:
                 admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(d)))

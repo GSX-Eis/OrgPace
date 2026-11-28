@@ -92,8 +92,8 @@ else
   fi
   [[ -z $workers || ( $workers =~ ^[1-9][0-9]*$ && $workers -le 16 ) ]] || die 'Set PREFLIGHT_PYTEST_WORKERS to 1–16'
   [[ -z ${EPP_WARM_DB:-} || ${EPP_WARM_DB} == 0 || ${EPP_WARM_DB} == 1 ]] || die 'Set EPP_WARM_DB to 0 or 1'
-  if [[ -n ${EPP_WARM_DB_PORT:-} ]] && { ! [[ $EPP_WARM_DB_PORT =~ ^[1-9][0-9]*$ ]] || (( EPP_WARM_DB_PORT >= 65536 || EPP_WARM_DB_PORT == 5432 )); }; then
-    die 'Set EPP_WARM_DB_PORT to 1–65535 (and != 5432)'
+  if [[ -n ${EPP_WARM_DB_PORT:-} ]] && { ! [[ $EPP_WARM_DB_PORT =~ ^[1-9][0-9]*$ ]] || (( EPP_WARM_DB_PORT >= 65536 || EPP_WARM_DB_PORT == 5432 || (EPP_WARM_DB_PORT >= 15000 && EPP_WARM_DB_PORT <= 59999) )); }; then
+    die 'Set EPP_WARM_DB_PORT to 1–65535 (excluding 5432 and reserved 15000–59999)'
   fi
 fi
 
