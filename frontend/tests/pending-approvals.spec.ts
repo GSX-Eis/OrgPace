@@ -401,3 +401,25 @@ test("待审批按需翻页并打开第 101 条旧口头答复需求", async ({
     oldest.description,
   )
 })
+
+test("普通员工冷缓存打开待审批全部与画像页展示空态且不请求画像审批接口", async ({
+  page,
+  request,
+}) => {
+  const { base, open } = await setupProjectManagers(request)
+  const reviewRequests: string[] = []
+  page.on("request", (req) => {
+    const { pathname } = new URL(req.url())
+    if (pathname === `${base}/reviews`) reviewRequests.push(req.url())
+  })
+
+  await open(page, "C", "/reviews")
+  await expect(page.getByText("暂无待审批事项", { exact: true })).toBeVisible()
+  await expect(page.getByText("正在加载")).toHaveCount(0)
+  expect(reviewRequests).toEqual([])
+
+  await open(page, "C", "/reviews?type=profile")
+  await expect(page.getByText("0 条待审批", { exact: true })).toBeVisible()
+  await expect(page.getByText("正在加载")).toHaveCount(0)
+  expect(reviewRequests).toEqual([])
+})

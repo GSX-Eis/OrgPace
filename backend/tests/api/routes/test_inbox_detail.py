@@ -1720,6 +1720,28 @@ def test_inbox_target_migration_roundtrip(migration_engine: Engine) -> None:
             None,
             False,
         ),
+        (
+            InboxKind.CAPACITY,
+            "Historical notice\n/capacity?tab=incoming&demand=" + "-" * 36,
+            None,
+            None,
+            None,
+            None,
+            False,
+            InboxTargetType.CAPACITY,
+            False,
+        ),
+        (
+            InboxKind.CAPACITY,
+            "Legacy valid\n/capacity?tab=incoming&demand=00000000-0000-0000-0000-0000000000aa",
+            None,
+            None,
+            None,
+            None,
+            False,
+            InboxTargetType.CAPACITY_INCOMING,
+            True,
+        ),
     ],
 )
 def test_resolve_target_structured_and_legacy(
@@ -1744,6 +1766,8 @@ def test_resolve_target_structured_and_legacy(
     resolved_type, resolved_id = _resolve_target(item, wl_id, ext_id, redacted=redacted)
     assert resolved_type == expected_type
     assert (resolved_id is not None) == has_target_id
+    if "00000000-0000-0000-0000-0000000000aa" in message:
+        assert resolved_id == UUID("00000000-0000-0000-0000-0000000000aa")
 
 
 def test_structured_inbox_targets_bilingual_and_legacy_fallback(
@@ -1797,14 +1821,21 @@ def test_structured_inbox_targets_bilingual_and_legacy_fallback(
     )
     db.add(assignment)
     db.flush()
-    # Historical DB row with no target_type/target_id stored.
+    # Historical DB rows with no target_type/target_id stored (including malformed demand ID).
     legacy_item = InboxItem(
         org_id=e02.org_id,
         recipient_user_id=mgr_user_id,
         kind=InboxKind.CAPACITY,
         message="收到新的协作需求",
     )
+    malformed_legacy = InboxItem(
+        org_id=e02.org_id,
+        recipient_user_id=mgr_user_id,
+        kind=InboxKind.CAPACITY,
+        message="Historical notice\n/capacity?tab=incoming&demand=" + "-" * 36,
+    )
     add_item(db, legacy_item)
+    add_item(db, malformed_legacy)
     db.commit()
 
     wl_res = client.post(
@@ -1868,6 +1899,12 @@ def test_structured_inbox_targets_bilingual_and_legacy_fallback(
     assert [r["target_id"] for r in zh_rows] == [r["target_id"] for r in en_rows]
     assert any(
         r["id"] == str(legacy_item.id) and r["target_type"] == "reviews_demand"
+        for r in en_rows
+    )
+    assert any(
+        r["id"] == str(malformed_legacy.id)
+        and r["target_type"] == "capacity"
+        and r["target_id"] is None
         for r in en_rows
     )
     assert sum(1 for r in en_rows if r["target_type"] == "reviews_workload") >= 2

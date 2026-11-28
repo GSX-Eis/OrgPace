@@ -189,6 +189,10 @@ export function usePendingApprovals() {
       consent.data,
     ],
   )
+  const profileQueries = useMemo(
+    () => (gates.reviews ? [profile] : []),
+    [gates.reviews, profile],
+  )
   const workloadQueries = useMemo(
     () => (gates.workloads ? [workloads, extensions] : []),
     [gates.workloads, workloads, extensions],
@@ -209,7 +213,8 @@ export function usePendingApprovals() {
   )
   return {
     capacity,
-    profile,
+    profileData: gates.reviews ? profile.data : undefined,
+    profileQueries,
     ...summary,
     workloadQueries,
     demandQueries,

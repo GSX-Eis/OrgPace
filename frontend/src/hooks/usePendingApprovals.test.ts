@@ -1,5 +1,6 @@
 import { deepEqual, equal } from "node:assert/strict"
 import { test } from "node:test"
+import { QueryClient, QueryObserver } from "@tanstack/react-query"
 import type {
   BorrowRequest,
   DemandPublic,
@@ -112,4 +113,34 @@ test("summarizePendingApprovals filters pending items, non-actionable demands, a
     borrow: 2,
   })
   equal(result.totalCount, 7)
+})
+
+test("disabled QueryObserver stays pending/idle so gated-off profile must be omitted from section queries", () => {
+  const client = new QueryClient()
+  const profile = new QueryObserver(client, {
+    queryKey: ["reviews", "org-test"],
+    queryFn: async () => ({ count: 0, data: [] }),
+    enabled: false,
+  }).getCurrentResult()
+  equal(profile.fetchStatus, "idle")
+  equal(profile.isPending, true)
+  equal(profile.isSuccess, false)
+
+  const gates = pendingApprovalGates({
+    orgId: "org-test",
+    capacityEnabled: true,
+    canReview: false,
+    manages: false,
+    hasEmployee: true,
+  })
+  const sectionQueries = gates.reviews ? [profile] : []
+  equal(
+    sectionQueries.some((q) => q.isPending),
+    false,
+  )
+  equal(
+    sectionQueries.every((q) => q.isSuccess),
+    true,
+  )
+  client.clear()
 })

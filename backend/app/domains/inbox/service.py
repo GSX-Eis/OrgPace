@@ -203,7 +203,8 @@ def _is_unlinked_delegated_extension_receipt(item: InboxItem) -> bool:
 
 
 _LEGACY_DEMAND_LINK_RE = re.compile(
-    r"\n/capacity\?tab=(incoming|outgoing)&demand=([0-9a-f-]{36})(&plans=1)?$"
+    r"\n/capacity\?tab=(incoming|outgoing)&demand=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(&plans=1)?$",
+    re.IGNORECASE,
 )
 _LEGACY_CAPACITY_PREFIXES: tuple[tuple[tuple[str, ...], InboxTargetType], ...] = (
     (
@@ -264,14 +265,19 @@ def _resolve_target(
         return InboxTargetType.CAPACITY_BORROWS, None
     if match := _LEGACY_DEMAND_LINK_RE.search(item.message):
         tab, demand_id, plans = match.groups()
-        target_type = (
-            InboxTargetType.CAPACITY_PLANS
-            if tab == "incoming" and plans
-            else InboxTargetType.CAPACITY_INCOMING
-            if tab == "incoming"
-            else InboxTargetType.CAPACITY_OUTGOING
-        )
-        return target_type, UUID(demand_id)
+        try:
+            parsed_id = UUID(demand_id)
+        except ValueError:
+            parsed_id = None
+        if parsed_id is not None:
+            target_type = (
+                InboxTargetType.CAPACITY_PLANS
+                if tab == "incoming" and plans
+                else InboxTargetType.CAPACITY_INCOMING
+                if tab == "incoming"
+                else InboxTargetType.CAPACITY_OUTGOING
+            )
+            return target_type, parsed_id
     for prefixes, target_type in _LEGACY_CAPACITY_PREFIXES:
         if item.message.startswith(prefixes):
             return target_type, None
