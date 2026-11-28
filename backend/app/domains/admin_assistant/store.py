@@ -16,7 +16,7 @@ from app.domains.chat_runtime.store import (
     list_session_summaries,
     register_session_getter,
 )
-from app.domains.setup.wizard import read_setup
+from app.domains.setup import wizard
 from app.i18n import tr
 
 
@@ -24,7 +24,7 @@ def list_sessions(db: Session, principal: Principal) -> SessionList:
     if not principal.is_org_admin or principal.user_id is None:
         raise SessionNotFound()
     owner = col(AdminAssistantSession.user_id) == principal.user_id
-    pending_setup = not read_setup(db, principal.org_id).completed
+    pending_setup = not wizard.read_setup(db, principal.org_id).completed
     pinned = (
         (col(AdminAssistantSession.purpose) == "setup") if pending_setup else false()
     )
@@ -78,7 +78,7 @@ def ensure_setup_session(db: Session, principal: Principal) -> None:
 
     if not principal.is_org_admin or principal.user_id is None:
         raise SessionNotFound()
-    setup = read_setup(db, principal.org_id)
+    setup = wizard.read_setup(db, principal.org_id)
     if setup.completed:
         return
     row = AdminAssistantSession(
