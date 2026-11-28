@@ -17,6 +17,19 @@ from sqlalchemy import Engine, text
 from sqlalchemy.engine import make_url
 
 
+def _build_sim_run_prefixes(run_prefix: str, suffix: str) -> tuple[str, str]:
+    """Derive distinct <=20-char synthetic prefixes preserving outer run ownership when space allows."""
+    if len(run_prefix) <= 16:
+        extra_len = min(3, 20 - len(run_prefix) - 3)
+        return (
+            f"{run_prefix}_a_{suffix[:extra_len]}",
+            f"{run_prefix}_b_{suffix[:extra_len]}",
+        )
+    if len(run_prefix) <= 18:
+        return f"{run_prefix}_a", f"{run_prefix}_b"
+    return f"sa_{suffix}", f"sb_{suffix}"
+
+
 def test_database_isolation(migration_template: str) -> None:
     from app.core.config import settings
     from app.core.db import engine
@@ -118,6 +131,29 @@ def test_migration_fingerprint_and_db_prefix_validation(tmp_path: Path) -> None:
     ]
     # Fail-open on unwritable/missing directory path.
     record_db_metric("template", 0.5, metrics_file=tmp_path / "missing" / "m.jsonl")
+
+    matrix_prefixes = [
+        "r1579",
+        "r1603_12345678",
+        "r1603_123456789",
+        "r1603_1234567890",
+        "a" * 17,
+        "a" * 18,
+        "a" * 19,
+        "a" * 20,
+    ]
+    for sample_prefix in matrix_prefixes:
+        sim_a, sim_b = _build_sim_run_prefixes(sample_prefix, "abcdef01")
+        assert len(sim_a) <= 20 and len(sim_b) <= 20
+        assert sanitize_db_prefix(sim_a) == sim_a
+        assert sanitize_db_prefix(sim_b) == sim_b
+        assert sim_a != sim_b and sim_a != sample_prefix and sim_b != sample_prefix
+        if len(sample_prefix) <= 18:
+            assert sim_a.startswith(f"{sample_prefix}_")
+            assert sim_b.startswith(f"{sample_prefix}_")
+        else:
+            assert not sample_prefix.startswith(f"{sim_a}_")
+            assert not sample_prefix.startswith(f"{sim_b}_")
 
 
 @pytest.mark.unit
@@ -435,12 +471,12 @@ def test_shared_template_race_failure_readonly_cloning_and_pruning(
         with pytest.raises(ValueError, match="len <= 40"):
             migrations_mod.cleanup_run_databases(admin_dsn, "a" * 41)
 
-        extra_len = max(1, min(3, 20 - len(run_prefix) - 3))
-        sim_a = f"{run_prefix}_a_{suffix[:extra_len]}"
-        sim_b = f"{run_prefix}_b_{suffix[:extra_len]}"
-        assert len(sim_a) <= 20 and len(sim_b) <= 20
-        assert sim_a.startswith(f"{run_prefix}_") and sim_b.startswith(f"{run_prefix}_")
-        assert sim_a != sim_b
+        sim_a, sim_b = _build_sim_run_prefixes(run_prefix, suffix)
+        assert len(sim_a) <= 20 and len(sim_b) <= 20 and sim_a != sim_b
+        if len(run_prefix) <= 18:
+            assert sim_a.startswith(f"{run_prefix}_") and sim_b.startswith(
+                f"{run_prefix}_"
+            )
         # B1: Production ensure_shared_template staging DB uses run_scoped_db_name("stg")
         # when PYTEST_DB_PREFIX is set (and legacy prefix when unset), so crash cleanup reclaims it.
         real_stg_a: list[str] = []
@@ -480,7 +516,7 @@ def test_shared_template_race_failure_readonly_cloning_and_pruning(
 
         # B6: ensure_shared_template & isolated_database record template_s / db_clone_s fail-open.
         b6_metrics = tmp_path / "b6-metrics.jsonl"
-        b6_tpl = f"{sim_a}_m_tpl_{suffix}"
+        b6_tpl = f"{run_prefix}_m_tpl_{suffix}"
         try:
             with monkeypatch.context() as mp:
                 mp.setattr(migrations_mod, "migrate", lambda *_a: None)
@@ -492,7 +528,7 @@ def test_shared_template_race_failure_readonly_cloning_and_pruning(
                 )
             with migrations_mod.isolated_database(
                 engine.url,
-                f"{sim_a}_m_iso_{suffix}",
+                f"{run_prefix}_m_iso_{suffix}",
                 template=b6_tpl,
                 metrics_file=b6_metrics,
             ):
@@ -500,7 +536,7 @@ def test_shared_template_race_failure_readonly_cloning_and_pruning(
             # Fail-open with unwritable metrics path still clones cleanly.
             with migrations_mod.isolated_database(
                 engine.url,
-                f"{sim_a}_m_iso2_{suffix}",
+                f"{run_prefix}_m_iso2_{suffix}",
                 template=b6_tpl,
                 metrics_file=tmp_path / "no-such-dir" / "metrics.jsonl",
             ):
