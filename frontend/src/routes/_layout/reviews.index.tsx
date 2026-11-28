@@ -220,8 +220,8 @@ function ReviewsPage() {
                     }
                   />
                 ) : section.type === "profile" ||
-                  section.count ||
-                  (section.type === "workload" && section.queries.length) ? (
+                  section.type === "workload" ||
+                  section.count ? (
                   section.content
                 ) : (
                   <p

@@ -26,12 +26,17 @@ export function useOrg() {
     if (org) localStorage.setItem("current_org_id", org.id)
     else if (query.isSuccess) localStorage.removeItem("current_org_id")
   }, [org, query.isSuccess])
+  const roles = membership?.roles ?? []
+  const canReview =
+    membership?.can_review ??
+    (roles.includes("org_admin") || roles.includes("dept_manager"))
   return {
     ...query,
     isPending: !user || query.isPending,
     memberships,
     org,
-    roles: membership?.roles ?? [],
+    roles,
+    canReview,
     employeeId: membership?.employee_id,
     managedDepartmentIds: membership?.managed_department_ids ?? [],
     setOrg: (id: string) => {

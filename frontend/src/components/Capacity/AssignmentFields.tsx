@@ -154,12 +154,20 @@ export function useMyAssignments(orgId: string, enabled = true) {
   })
 }
 
-export function useExtensions(orgId: string, enabled = true) {
+export function useExtensions(
+  orgId: string,
+  enabled = true,
+  excludeOwn = false,
+) {
   return useQuery({
-    queryKey: capacityKeys.extensions(orgId),
+    queryKey: capacityKeys.extensions(orgId, excludeOwn),
     queryFn: async () =>
-      (await CapacityService.listExtensionRequests({ path: { org_id: orgId } }))
-        .data,
+      (
+        await CapacityService.listExtensionRequests({
+          path: { org_id: orgId },
+          query: excludeOwn ? { exclude_own: true } : undefined,
+        })
+      ).data,
     enabled,
   })
 }
