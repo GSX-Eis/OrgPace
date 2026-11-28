@@ -98,8 +98,10 @@ def _table(kind: SessionKind) -> type[ChatAttachment]:
 
 def _session(
     db: Session, p: Principal, kind: SessionKind, id: UUID, *, lock: bool = False
-) -> None:
-    (admin_store if kind == "admin" else store).get_session(db, p, id, lock=lock)
+) -> BotSession | AdminAssistantSession:
+    if kind == "admin":
+        return admin_store.get_session(db, p, id, lock=lock)
+    return store.get_session(db, p, id, lock=lock)
 
 
 def _cutoff(db: Session, p: Principal) -> datetime:
@@ -114,14 +116,16 @@ def get_session_attachment(
     session_id: UUID,
     attachment_id: UUID,
 ) -> ChatAttachment:
-    _session(db, principal, kind, session_id)
+    session = _session(db, principal, kind, session_id)
     table = _table(kind)
     row = db.exec(
         select(table).where(
             table.org_id == principal.org_id,
             table.session_id == session_id,
             table.id == attachment_id,
-            col(table.created_at) > _cutoff(db, principal),
+            True
+            if store.setup_in_progress(db, session)
+            else col(table.created_at) > _cutoff(db, principal),
         )
     ).one_or_none()
     if row is None:
@@ -154,14 +158,16 @@ def read_attachment(
 
 
 def manifest(db: Session, p: Principal, kind: SessionKind, session_id: UUID) -> str:
-    _session(db, p, kind, session_id)
+    session = _session(db, p, kind, session_id)
     table = _table(kind)
     rows = db.exec(
         select(table)
         .where(
             table.org_id == p.org_id,
             table.session_id == session_id,
-            col(table.created_at) > _cutoff(db, p),
+            True
+            if store.setup_in_progress(db, session)
+            else col(table.created_at) > _cutoff(db, p),
         )
         .order_by(col(table.created_at).desc(), col(table.id).desc())
         .limit(20)
@@ -283,9 +289,14 @@ def save_bytes(
     if len(data) > limit:
         raise AttachmentError("文件超出限制：图片不超过 5 MB，文件不超过 10 MB")
     session_table: type[BotSession] | type[AdminAssistantSession]
+    retained = col(table.created_at) > _cutoff(db, p)
     if kind == "admin":
+        from app.domains.setup.wizard import read_setup
+
         session_table = AdminAssistantSession
         owner = col(AdminAssistantSession.user_id) == p.user_id
+        if not read_setup(db, p.org_id).completed:
+            retained = retained | (col(AdminAssistantSession.purpose) == "setup")
     else:
         session_table = BotSession
         owner = col(BotSession.employee_id) == p.employee_id
@@ -301,7 +312,7 @@ def save_bytes(
             table.org_id == p.org_id,
             session_table.org_id == p.org_id,
             owner,
-            col(table.created_at) > _cutoff(db, p),
+            retained,
         )
     ).one()
     if total + len(data) > USER_LIMIT:
