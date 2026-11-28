@@ -10,7 +10,7 @@ from app.domains.audit.service import record_audit
 from app.domains.base import utc_now
 from app.domains.capacity.models import CapacitySetting
 from app.domains.capacity.schemas import CapacitySettingsInput, Via
-from app.domains.org.models import Organization
+from app.domains.org.service import lock_org
 
 
 class CapacityNotFound(HTTPException):
@@ -78,11 +78,7 @@ def save_settings(
 ) -> CapacitySettingsInput:
     if not principal.is_org_admin or principal.user_id is None:
         raise OrgAdminRequired()
-    session.exec(
-        select(Organization)
-        .where(Organization.id == principal.org_id)
-        .with_for_update()
-    ).one()
+    lock_org(session, principal.org_id)
     row = session.exec(
         select(CapacitySetting)
         .where(CapacitySetting.org_id == principal.org_id)

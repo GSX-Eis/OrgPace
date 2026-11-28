@@ -51,6 +51,7 @@ from app.domains.bot import settings as bot
 from app.domains.capability import department as department_capabilities
 from app.domains.capability import search
 from app.domains.capability.service import read_editor
+from app.domains.capability.templates import template_names
 from app.domains.capacity.demand import get_demand, list_demands
 from app.domains.capacity.demand_schemas import (
     DemandIdInput,
@@ -222,7 +223,9 @@ def _audit(db: Session, principal: Principal, args: AuditArgs) -> BaseModel:
         visible_employee(db, principal, args.employee_id)
     values = args.model_dump()
     values["target_ids"] = values.pop("target_id")
-    return audit.list_events(db, principal.org_id, **values)
+    return audit.list_events(
+        db, principal.org_id, **values, template_names=template_names()
+    )
 
 
 async def _im_test(db: Session, principal: Principal, args: ImArgs) -> BaseModel:

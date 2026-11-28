@@ -41,8 +41,8 @@ from app.domains.org.models import (
     Employee,
     EmploymentStatus,
     ExternalIdentity,
-    Organization,
 )
+from app.domains.org.service import lock_org
 from app.domains.org.timezone import read_timezone
 from app.domains.work.models import Task
 from app.i18n import tr, use_locale
@@ -116,11 +116,7 @@ def feedback_targets(
     assignment_id: UUID | None = None,
 ) -> list[FeedbackTarget]:
     if assignment_id is not None:
-        session.exec(
-            select(Organization)
-            .where(Organization.id == principal.org_id)
-            .with_for_update(read=True)
-        ).one()
+        lock_org(session, principal.org_id, read=True)
     require_enabled(principal, session)
     query = (
         select(CapacityAssignment, CapacityDemand, Employee.display_name)

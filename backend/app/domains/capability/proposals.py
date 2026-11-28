@@ -33,7 +33,8 @@ from app.domains.evidence.models import (
     EvidenceStatus,
     Visibility,
 )
-from app.domains.org.models import Employee, EmploymentStatus, Organization
+from app.domains.org.models import Employee, EmploymentStatus
+from app.domains.org.service import lock_org
 from app.i18n import tr
 
 if TYPE_CHECKING:
@@ -76,11 +77,7 @@ def suggest_capability(
         raise SuggestionEmployeeRequired()
     body = SuggestCapability(name=name, description=description, reason=reason)
     # Use the same lock as drafting, dictionary publication and proposal decisions.
-    session.exec(
-        select(Organization.id)
-        .where(Organization.id == principal.org_id)
-        .with_for_update()
-    ).one()
+    lock_org(session, principal.org_id)
     key = name_key(body.name)
     names = session.exec(
         select(CapabilityDefinition.name)
@@ -160,9 +157,7 @@ def store_proposals(
     try:
         with session.begin_nested():
             # Serialize same-name creation and terminal-state checks within the tenant.
-            session.exec(
-                select(Organization).where(Organization.id == org_id).with_for_update()
-            ).one()
+            lock_org(session, org_id)
             for candidate in proposals:
                 ids = set(
                     session.exec(
@@ -383,11 +378,7 @@ def dismiss_proposal(
 ) -> None:
     get_org_admin(principal)
     # Share the drafting and dictionary lock, including uniqueness checks on undo.
-    session.exec(
-        select(Organization.id)
-        .where(Organization.id == principal.org_id)
-        .with_for_update()
-    ).one()
+    lock_org(session, principal.org_id)
     row = get_proposal(session, principal, id_)
     if restore:
         require_restorable(session, principal, row)

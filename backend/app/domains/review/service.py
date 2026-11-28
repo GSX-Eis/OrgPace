@@ -38,7 +38,8 @@ from app.domains.evidence.service import (
 )
 from app.domains.inbox.models import InboxKind
 from app.domains.inbox.service import notify
-from app.domains.org.models import Department, Employee, Organization
+from app.domains.org.models import Department, Employee
+from app.domains.org.service import lock_org
 from app.domains.profile.models import EvidenceRelation
 from app.domains.profile.schemas import ClaimEvidencePublic, ClaimPublic
 from app.domains.review.publish import (
@@ -300,11 +301,7 @@ def decide(
     client_name: str | None = None,
 ) -> DecisionResult:
     # Dictionary saves take the exclusive organization lock before remapping requests.
-    session.exec(
-        select(Organization)
-        .where(Organization.id == principal.org_id)
-        .with_for_update(read=True)
-    ).one()
+    lock_org(session, principal.org_id, read=True)
     request = _request(principal, session, request_id, lock=True)
     reviewer = can_review(session, principal, request.subject_employee_id)
     if (

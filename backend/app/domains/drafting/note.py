@@ -9,7 +9,8 @@ from sqlmodel import Session, col, select
 from app.authz.principal import Principal
 from app.domains.audit.service import record_audit, user_label
 from app.domains.drafting.models import DraftingNote
-from app.domains.org.models import Organization, OrgMembership
+from app.domains.org.models import OrgMembership
+from app.domains.org.service import lock_org
 from app.models import User
 
 
@@ -53,11 +54,7 @@ def read_note(db: Session, org_id: UUID) -> DraftingNotePublic:
 def save_note(
     db: Session, principal: Principal, body: DraftingNoteInput, *, commit: bool = True
 ) -> DraftingNotePublic:
-    db.exec(
-        select(Organization)
-        .where(Organization.id == principal.org_id)
-        .with_for_update()
-    ).one()
+    lock_org(db, principal.org_id)
     before = latest_note(db, principal.org_id)
     if body.text != (before.text if before else ""):
         assert principal.user_id is not None

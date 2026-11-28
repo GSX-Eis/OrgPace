@@ -22,6 +22,7 @@ from app.domains.access_token.service import McpDisabled, get_setting
 from app.domains.audit.service import record_audit
 from app.domains.base import utc_now
 from app.domains.org.models import Organization
+from app.domains.org.service import lock_org
 from app.i18n import tr
 from app.mcp.oauth import resource_url
 
@@ -218,11 +219,7 @@ def consent(
     response: Response,
 ) -> ConsentResult:
     claims, client = validate_consent(session, body.request)
-    session.exec(
-        select(Organization)
-        .where(Organization.id == principal.org_id)
-        .with_for_update()
-    ).one()
+    lock_org(session, principal.org_id)
     check_eligibility(session, principal, client)
     assert principal.user_id is not None and principal.employee_id is not None
     now = utc_now()

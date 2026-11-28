@@ -39,7 +39,8 @@ from app.domains.inbox.models import InboxKind
 from app.domains.inbox.service import notify
 from app.domains.model.client import ModelRateLimited
 from app.domains.model.service import model_config, read_setting
-from app.domains.org.models import Employee, EmploymentStatus, Organization
+from app.domains.org.models import Employee, EmploymentStatus
+from app.domains.org.service import lock_org
 from app.domains.profile.models import (
     AssessmentStatus,
     ClaimEvidence,
@@ -230,9 +231,7 @@ def draft_employee(session: Session, org_id: UUID, employee_id: UUID) -> None:
         schema_version_id=str(schema.id), incremental_from=lower.isoformat()
     )
     # Match the review service's lock order; never hold these locks over a model call.
-    session.exec(
-        select(Organization).where(Organization.id == org_id).with_for_update(read=True)
-    ).one()
+    lock_org(session, org_id, read=True)
     locked = pending_requests(session, org_id, employee_id, lock=True)
     session.refresh(employee, with_for_update=True)
     latest = latest_version(session, org_id, employee_id)

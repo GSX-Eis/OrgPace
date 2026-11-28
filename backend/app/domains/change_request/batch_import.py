@@ -10,7 +10,8 @@ from app.domains.change_request.claim import EXPLANATION_MAX, ITEMS_MAX, STATEME
 from app.domains.change_request.import_json import InvalidImport
 from app.domains.change_request.models import ChangeOp
 from app.domains.change_request.schemas import ProfileInput
-from app.domains.org.models import Department, Employee, EmploymentStatus, Organization
+from app.domains.org.models import Department, Employee, EmploymentStatus
+from app.domains.org.service import lock_org
 from app.domains.profile.models import ProfileVersion
 from app.domains.review.direct import (
     DirectEditInput,
@@ -60,9 +61,7 @@ def import_profiles(
     org_id = principal.org_id
     # Match dictionary activation and drafting lock order before locking employees.
     if confirm:
-        session.exec(
-            select(Organization).where(Organization.id == org_id).with_for_update()
-        ).one()
+        lock_org(session, org_id)
     schema = get_schema(session, org_id)
     capabilities = {c.key: c for c in list_capabilities(session, org_id, schema.id)}
     emails = {p.employee_email.casefold() for p in people}

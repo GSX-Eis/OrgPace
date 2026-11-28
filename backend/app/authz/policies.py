@@ -1,3 +1,4 @@
+from fastapi import HTTPException
 from sqlalchemy import and_, or_, true
 from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import col
@@ -6,6 +7,11 @@ from app.authz.principal import Principal
 from app.domains.audit.models import ActorKind
 from app.domains.evidence.models import Visibility
 from app.domains.org.models import Employee, EmploymentStatus
+
+
+class OrgAdminRequired(HTTPException):
+    def __init__(self) -> None:
+        super().__init__(403, "需要企业管理员权限")
 
 
 def can_view_employee(p: Principal, employee: Employee) -> bool:

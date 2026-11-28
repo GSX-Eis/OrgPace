@@ -4,9 +4,9 @@ from pydantic import BaseModel, ConfigDict
 from sqlmodel import Session
 
 from app.authz.principal import Principal
-from app.domains.account.service import lock_org
 from app.domains.audit.service import record_audit
 from app.domains.org.models import EmployeeField
+from app.domains.org.service import lock_admin_org
 
 FIELD_LABELS: dict[EmployeeField, str] = {
     "job_family": "岗位序列",
@@ -23,7 +23,7 @@ class EmployeeFields(BaseModel):
 def save_employee_fields(
     db: Session, p: Principal, args: EmployeeFields, *, commit: bool = True
 ) -> EmployeeFields:
-    org = lock_org(db, p)
+    org = lock_admin_org(db, p)
     fields = [field for field in FIELD_LABELS if field in args.fields]
     if org.employee_fields != fields:
         before = list(org.employee_fields)

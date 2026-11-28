@@ -11,6 +11,7 @@ from app.domains.audit.service import record_audit
 from app.domains.base import utc_now
 from app.domains.drafting.models import UpdateSetting
 from app.domains.org.models import Organization
+from app.domains.org.service import lock_org
 from app.domains.source.schedule import add_period
 
 
@@ -53,11 +54,7 @@ def save_update_settings(
     *,
     commit: bool = True,
 ) -> UpdateSettingsPublic:
-    session.exec(
-        select(Organization)
-        .where(Organization.id == principal.org_id)
-        .with_for_update()
-    ).one()
+    lock_org(session, principal.org_id)
     old = read_update_settings(session, principal.org_id)
     if body.model_dump() != old.model_dump(
         include=set(UpdateSettingsInput.model_fields)

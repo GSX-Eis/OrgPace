@@ -6,12 +6,11 @@ from pydantic import BaseModel
 from sqlmodel import Session, col, select
 
 from app.authz.principal import Principal
-from app.domains.account.service import require_admin
 from app.domains.org.models import Employee, EmploymentStatus, ReportingLine
 from app.domains.org.roster.parser import validate_roster
 from app.domains.org.roster.schemas import ParsedRoster
 from app.domains.org.roster.single import current_roster
-from app.domains.org.service import visible_employee
+from app.domains.org.service import require_admin, visible_employee
 
 
 class PreviousManager(BaseModel):

@@ -7,7 +7,7 @@ from sqlmodel import Session, select
 from app.authz.principal import Principal
 from app.domains.audit.service import record_audit
 from app.domains.base import utc_now
-from app.domains.org.models import Organization
+from app.domains.org.service import lock_org
 from app.domains.setup import steps
 from app.domains.setup.models import SetupStatus, SetupStepState
 from app.domains.setup.schemas import SetupPublic, SetupStepPublic
@@ -68,11 +68,7 @@ def update_step(
     if step is None:
         raise SetupStepError(status_code=404, detail="没有这个设置步骤")
     # Serialize updates per organization so concurrent retries cannot duplicate audits.
-    session.exec(
-        select(Organization)
-        .where(Organization.id == principal.org_id)
-        .with_for_update()
-    ).one()
+    lock_org(session, principal.org_id)
     state = session.get(SetupStepState, (principal.org_id, key))
     completed = step.implicit or (state and state.status == SetupStatus.COMPLETED)
     if status == SetupStatus.SKIPPED:

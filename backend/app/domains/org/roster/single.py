@@ -10,7 +10,6 @@ from sqlmodel import Session, col, select
 
 from app.authz.policies import employee_scope_clause
 from app.authz.principal import Principal
-from app.domains.account.service import lock_org, require_admin
 from app.domains.change_request.models import ProfileChangeRequest, RequestStatus
 from app.domains.org.employee_fields import FIELD_LABELS
 from app.domains.org.models import (
@@ -30,7 +29,12 @@ from app.domains.org.roster.schemas import (
     RosterImportResult,
     RosterRow,
 )
-from app.domains.org.service import EmployeeNotFound, visible_employee
+from app.domains.org.service import (
+    EmployeeNotFound,
+    lock_admin_org,
+    require_admin,
+    visible_employee,
+)
 from app.i18n import tr
 
 
@@ -225,7 +229,7 @@ def prepare(
 def preview(
     db: Session, p: Principal, args: SingleChange, *, commit: bool = True
 ) -> RosterImportPreview:
-    lock_org(db, p)
+    lock_admin_org(db, p)
     return service.create_import(db, p, prepare(db, p, args), "人员变动", commit=commit)
 
 

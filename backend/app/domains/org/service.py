@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+from typing import Literal, overload
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -9,7 +10,7 @@ from sqlalchemy.sql.selectable import Subquery
 from sqlmodel import Session, col, select
 from sqlmodel.sql.expression import Select
 
-from app.authz.policies import employee_scope_clause
+from app.authz.policies import OrgAdminRequired, employee_scope_clause
 from app.authz.principal import Principal
 from app.domains.audit.service import record_audit
 from app.domains.change_request.models import (
@@ -515,14 +516,72 @@ def list_employees(
     )
 
 
+@overload
+def lock_org(
+    session: Session,
+    org_id: UUID,
+    *,
+    read: bool = False,
+    skip_locked: Literal[False] = False,
+) -> Organization: ...
+
+
+@overload
+def lock_org(
+    session: Session,
+    org_id: UUID,
+    *,
+    read: bool = False,
+    skip_locked: Literal[True],
+) -> Organization | None: ...
+
+
+def lock_org(
+    session: Session,
+    org_id: UUID,
+    *,
+    read: bool = False,
+    skip_locked: bool = False,
+) -> Organization | None:
+    """Acquire a tenant row lock on Organization with optional share/skip_locked."""
+    query = (
+        select(Organization)
+        .where(Organization.id == org_id)
+        .with_for_update(read=read, skip_locked=skip_locked)
+    )
+    return (
+        session.exec(query).one_or_none() if skip_locked else session.exec(query).one()
+    )
+
+
+def require_admin(principal: Principal) -> None:
+    """Ensure the principal holds an organization-admin claim."""
+    if not principal.is_org_admin:
+        raise OrgAdminRequired()
+
+
+def lock_admin_org(session: Session, principal: Principal) -> Organization:
+    """Lock the organization row and re-verify the caller's live ORG_ADMIN grant."""
+    require_admin(principal)
+    org = lock_org(session, principal.org_id)
+    if not session.exec(
+        select(RoleGrant.id)
+        .join(OrgMembership, col(OrgMembership.id) == RoleGrant.membership_id)
+        .where(
+            RoleGrant.org_id == principal.org_id,
+            OrgMembership.org_id == principal.org_id,
+            OrgMembership.user_id == principal.user_id,
+            RoleGrant.role == Role.ORG_ADMIN,
+        )
+    ).first():
+        raise OrgAdminRequired()
+    return org
+
+
 def rename_organization(
     session: Session, principal: Principal, name: str, *, commit: bool = True
 ) -> OrganizationPublic:
-    organization = session.exec(
-        select(Organization)
-        .where(Organization.id == principal.org_id)
-        .with_for_update()
-    ).one()
+    organization = lock_org(session, principal.org_id)
     old_name = organization.name
     organization.name = name
     session.add(organization)

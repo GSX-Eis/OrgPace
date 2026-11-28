@@ -20,7 +20,7 @@ from app.connectors.jira.client import (
 from app.core.secrets import SecretUnavailable, encrypt_secret
 from app.domains.audit.service import record_audit
 from app.domains.base import utc_now
-from app.domains.org.models import Organization
+from app.domains.org.service import lock_org
 from app.domains.source.models import SourceConnection, SyncRun
 from app.domains.source.schedule import next_sync_time
 from app.domains.source.schemas import (
@@ -68,11 +68,7 @@ def save_jira(
     commit: bool = True,
 ) -> JiraConnectionPublic:
     assert principal.user_id is not None
-    session.exec(
-        select(Organization)
-        .where(Organization.id == principal.org_id)
-        .with_for_update()
-    ).one()
+    lock_org(session, principal.org_id)
     connection = read_jira(session, principal.org_id)
     if connection is not None:
         session.refresh(connection, with_for_update=True)

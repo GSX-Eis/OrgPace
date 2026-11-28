@@ -9,8 +9,8 @@ from app.authz.principal import Principal
 from app.domains.audit.service import record_audit
 from app.domains.base import utc_now
 from app.domains.drafting.models import DraftingSetting
-from app.domains.org.models import Employee, Organization
-from app.domains.org.service import EmployeeNotFound
+from app.domains.org.models import Employee
+from app.domains.org.service import EmployeeNotFound, lock_org
 
 
 class DraftingSettingsUpdate(BaseModel):
@@ -71,11 +71,7 @@ def save_settings(
     *,
     commit: bool = True,
 ) -> DraftingSettingsPublic:
-    session.exec(
-        select(Organization)
-        .where(Organization.id == principal.org_id)
-        .with_for_update()
-    ).one()
+    lock_org(session, principal.org_id)
     before = read_settings(session, principal.org_id).enabled
     if body.enabled != before:
         assert principal.user_id is not None

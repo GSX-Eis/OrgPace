@@ -28,8 +28,9 @@ from app.domains.model.client import (
 )
 from app.domains.model.pi_client import PiModelConfig, ToolDefinition, run_turn
 from app.domains.model.service import model_config, read_setting
-from app.domains.org.models import Department, Employee, EmploymentStatus, Organization
+from app.domains.org.models import Department, Employee, EmploymentStatus
 from app.domains.org.paths import department_paths
+from app.domains.org.service import lock_org
 from app.domains.profile.models import ProfileClaim
 
 logger = logging.getLogger(__name__)
@@ -204,11 +205,7 @@ def fill_department_defaults(p: Principal) -> None:
                     department_id,
                 )
                 continue
-            db.exec(
-                select(Organization)
-                .where(Organization.id == p.org_id)
-                .with_for_update()
-            ).one()
+            lock_org(db, p.org_id)
             db.refresh(department)
             db.refresh(schema)
             # Admin writes and dictionary activation take the same organization lock.

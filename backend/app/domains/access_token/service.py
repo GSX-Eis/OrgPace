@@ -17,8 +17,7 @@ from app.domains.access_token.schemas import (
 from app.domains.audit.service import record_audit
 from app.domains.base import utc_now
 from app.domains.change_request.employee import employee_id
-from app.domains.org.models import Organization
-from app.domains.org.service import visible_employee
+from app.domains.org.service import lock_org, visible_employee
 
 
 class McpDisabled(HTTPException):
@@ -48,11 +47,7 @@ def save_setting(
     commit: bool = True,
 ) -> McpSettingPublic:
     assert principal.user_id is not None
-    session.exec(
-        select(Organization)
-        .where(Organization.id == principal.org_id)
-        .with_for_update()
-    ).one()
+    lock_org(session, principal.org_id)
     row = session.get(McpSetting, principal.org_id)
     if row is None:
         row = McpSetting(org_id=principal.org_id, updated_by=principal.user_id)
@@ -86,11 +81,7 @@ def create_token(session: Session, principal: Principal, name: str) -> TokenCrea
     subject = employee_id(principal)
     visible_employee(session, principal, subject)
     # Serialize creation with enterprise switch changes.
-    session.exec(
-        select(Organization)
-        .where(Organization.id == principal.org_id)
-        .with_for_update()
-    ).one()
+    lock_org(session, principal.org_id)
     if not get_setting(session, principal).enabled:
         raise McpDisabled()
     plaintext = "epp_" + secrets.token_urlsafe(32)

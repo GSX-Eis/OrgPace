@@ -10,12 +10,12 @@ import anyio
 from anyio.lowlevel import checkpoint_if_cancelled
 from anyio.to_thread import run_sync
 from fastapi import HTTPException
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from app.authz.deps import get_org_principal
 from app.domains.bot import schemas as s
 from app.domains.bot import store
-from app.domains.org.models import Organization
+from app.domains.org.service import lock_org
 from app.i18n import tr
 from app.models import User
 
@@ -89,11 +89,7 @@ def guard(db: Session, response: s.TurnResponse) -> Generator[s.TurnResponse]:
     try:
         if response._principal is not None:
             # Personnel, role and capacity-setting writes take this row FOR UPDATE.
-            db.exec(
-                select(Organization)
-                .where(Organization.id == response._principal.org_id)
-                .with_for_update(read=True)
-            ).one()
+            lock_org(db, response._principal.org_id, read=True)
         # Keep this transaction open through ASGI send / IM render.
         yield protect(db, response)
     finally:

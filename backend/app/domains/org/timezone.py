@@ -6,6 +6,7 @@ from app.authz.principal import Principal
 from app.domains.audit.service import record_audit
 from app.domains.org.models import Organization
 from app.domains.org.schemas import OrganizationTimezone
+from app.domains.org.service import lock_org
 
 
 def read_timezone(session: Session, org_id: UUID) -> OrganizationTimezone:
@@ -18,11 +19,7 @@ def read_timezone(session: Session, org_id: UUID) -> OrganizationTimezone:
 def save_timezone(
     session: Session, principal: Principal, body: OrganizationTimezone
 ) -> OrganizationTimezone:
-    org = session.exec(
-        select(Organization)
-        .where(Organization.id == principal.org_id)
-        .with_for_update()
-    ).one()
+    org = lock_org(session, principal.org_id)
     if org.timezone != body.timezone:
         before = org.timezone
         org.timezone = body.timezone

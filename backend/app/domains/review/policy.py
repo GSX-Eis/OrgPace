@@ -23,7 +23,7 @@ from app.domains.change_request.models import (
 from app.domains.change_request.service import transition
 from app.domains.inbox.models import InboxKind
 from app.domains.inbox.service import notify
-from app.domains.org.models import Organization
+from app.domains.org.service import lock_org
 from app.domains.profile.models import AssessmentStatus, ProfileVersion
 from app.domains.review.models import ApprovalPolicy
 from app.models import User
@@ -143,11 +143,7 @@ def save_policy(
 ) -> PolicyView:
     if not principal.is_org_admin or principal.user_id is None:
         raise OrgAdminRequired()
-    session.exec(
-        select(Organization)
-        .where(Organization.id == principal.org_id)
-        .with_for_update()
-    ).one()
+    lock_org(session, principal.org_id)
     old = policy_view(session, principal.org_id)
     if (body.category_overrides.keys() | body.no_approval_category_overrides.keys()) - (
         set(old.categories)

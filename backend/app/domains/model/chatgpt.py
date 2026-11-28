@@ -20,7 +20,7 @@ from app.domains.base import utc_now
 from app.domains.model.client import ModelUnavailable
 from app.domains.model.models import ModelSetting
 from app.domains.model.schemas import ChatGPTAccount, ChatGPTLogin
-from app.domains.org.models import Organization
+from app.domains.org.service import lock_org
 from app.i18n import tr
 
 RELOGIN = "ChatGPT 登录已失效，请在设置页重新连接"
@@ -72,11 +72,7 @@ def auth_request(
 
 
 def locked_setting(session: Session, principal: Principal) -> ModelSetting:
-    session.exec(
-        select(Organization)
-        .where(Organization.id == principal.org_id)
-        .with_for_update()
-    ).one()
+    lock_org(session, principal.org_id)
     setting = session.exec(
         select(ModelSetting)
         .where(ModelSetting.org_id == principal.org_id)

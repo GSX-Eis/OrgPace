@@ -8,7 +8,7 @@ from sqlalchemy import String, case, cast, func, or_
 from sqlalchemy.sql.elements import Case
 from sqlmodel import Session, col, select
 
-from app.authz.policies import employee_scope_clause
+from app.authz.policies import OrgAdminRequired, employee_scope_clause
 from app.authz.principal import Principal
 from app.core.config import settings
 from app.core.security import get_password_hash
@@ -40,6 +40,7 @@ from app.domains.org.models import (
 )
 from app.domains.org.paths import department_paths
 from app.domains.org.schemas import DepartmentSummary
+from app.domains.org.service import lock_admin_org
 from app.domains.profile.models import ProgressReviewStatus
 from app.i18n import tr
 from app.models import User, uses_email_login
@@ -55,25 +56,11 @@ def require_admin(principal: Principal) -> None:
 
 
 def lock_org(session: Session, principal: Principal) -> Organization:
-    require_admin(principal)
     # Serialize account/role writes so concurrent removals cannot remove every admin.
-    org = session.exec(
-        select(Organization)
-        .where(Organization.id == principal.org_id)
-        .with_for_update()
-    ).one()
-    if not session.exec(
-        select(RoleGrant.id)
-        .join(OrgMembership, col(OrgMembership.id) == RoleGrant.membership_id)
-        .where(
-            RoleGrant.org_id == principal.org_id,
-            OrgMembership.org_id == principal.org_id,
-            OrgMembership.user_id == principal.user_id,
-            RoleGrant.role == Role.ORG_ADMIN,
-        )
-    ).first():
-        raise AccountError(403, "需要企业管理员权限")
-    return org
+    try:
+        return lock_admin_org(session, principal)
+    except OrgAdminRequired as exc:
+        raise AccountError(exc.status_code, exc.detail) from None
 
 
 def audit(

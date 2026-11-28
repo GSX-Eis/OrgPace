@@ -50,7 +50,8 @@ from app.domains.model.client import (
     ModelUnavailable,
 )
 from app.domains.model.service import model_config, read_setting, validate_capabilities
-from app.domains.org.models import Employee, EmploymentStatus, Organization
+from app.domains.org.models import Employee, EmploymentStatus
+from app.domains.org.service import lock_org
 from app.domains.profile.models import (
     AssessmentStatus,
     EvidenceRelation,
@@ -213,9 +214,7 @@ def write_initial_request(
 
     if employee.org_id != org_id:
         raise InvalidDraft("员工不属于当前企业")
-    session.exec(
-        select(Organization).where(Organization.id == org_id).with_for_update()
-    ).one()
+    lock_org(session, org_id)
     active = get_schema(session, org_id)
     active_capabilities = list_capabilities(session, org_id, active.id)
     active_ids = {c.id for c in active_capabilities}
@@ -525,11 +524,7 @@ def run_drafting(principal: Principal, employee_ids: list[str] | None) -> None:
                     session, org_id, employee, items, capabilities, groups
                 )
                 generated_by["schema_version_id"] = str(schema.id)
-                session.exec(
-                    select(Organization)
-                    .where(Organization.id == org_id)
-                    .with_for_update(read=True)
-                ).one()
+                lock_org(session, org_id, read=True)
                 if not read_settings(session, org_id).enabled:
                     return
                 session.refresh(employee)
@@ -692,9 +687,7 @@ def queue_drafting(
 ) -> int:
     from app.worker.tasks import draft_initial
 
-    session.exec(
-        select(Organization).where(Organization.id == org_id).with_for_update()
-    ).one()
+    lock_org(session, org_id)
     require_auto_drafting(session, org_id)
     setting = read_setting(session, org_id)
     if setting is None or not setting.enabled:

@@ -24,7 +24,8 @@ from app.core.secrets import SecretUnavailable
 from app.domains.audit.models import ActorKind
 from app.domains.audit.service import record_audit
 from app.domains.base import utc_now
-from app.domains.org.models import Organization
+from app.domains.org.service import lock_org
+from app.domains.source.linking import auto_link_identities
 from app.domains.source.models import SourceConnection, SyncRun
 from app.domains.source.schemas import JiraConfig, SyncRunPublic
 from app.domains.work.ingest import (
@@ -59,12 +60,6 @@ def public_run(run: SyncRun, kind: str) -> SyncRunPublic:
     )
 
 
-def _lock_org(session: Session, org_id: UUID) -> None:
-    session.exec(
-        select(Organization).where(Organization.id == org_id).with_for_update()
-    ).one()
-
-
 def active_sync(session: Session, connection: SourceConnection) -> bool:
     return (
         session.exec(
@@ -95,7 +90,7 @@ def create_run(
     commit: bool = True,
 ) -> SyncRunPublic:
     assert principal.user_id is not None
-    _lock_org(session, principal.org_id)
+    lock_org(session, principal.org_id)
     connection = session.exec(
         select(SourceConnection)
         .where(
@@ -148,7 +143,7 @@ def create_run(
 def retry_run(
     session: Session, principal: Principal, run_id: UUID, *, commit: bool = True
 ) -> SyncRunPublic:
-    _lock_org(session, principal.org_id)
+    lock_org(session, principal.org_id)
     run = session.exec(
         select(SyncRun)
         .where(
@@ -269,7 +264,9 @@ def _batch(
     records: list[SourceRecord],
     cursor: dict[str, JsonValue],
 ) -> None:
-    added = prepare_identities(session, run.org_id, records)
+    added = prepare_identities(
+        session, run.org_id, records, auto_link=auto_link_identities
+    )
     counts = dict(run.counts)
     for key, value in added.model_dump().items():
         counts[key] = counts.get(key, 0) + value

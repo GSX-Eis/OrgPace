@@ -1,6 +1,6 @@
 """Shared Jira/CSV ingestion; the caller owns the transaction and source-run lock."""
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID, uuid7
@@ -32,8 +32,11 @@ from app.domains.evidence.service import (
     supersede_evidence,
 )
 from app.domains.org.models import ExternalIdentity
-from app.domains.source.linking import auto_link_identities
 from app.domains.work.models import SyncRunTask, Task, WorkEvent
+
+type AutoLinkIdentities = Callable[
+    [Session, UUID, Sequence[ExternalIdentity]], list[ExternalIdentity]
+]
 
 
 class SourcePerson(BaseModel):
@@ -256,7 +259,11 @@ def _derive(
 
 
 def prepare_identities(
-    session: Session, org_id: UUID, records: Sequence[SourceRecord]
+    session: Session,
+    org_id: UUID,
+    records: Sequence[SourceRecord],
+    *,
+    auto_link: AutoLinkIdentities | None = None,
 ) -> IngestCounts:
     identities = {
         (identity.source, identity.external_id): identity
@@ -282,7 +289,9 @@ def prepare_identities(
                 session.add(identities[key])
             identity = identities[key]
             identity.display_name, identity.email = person.display_name, person.email
-    linked = auto_link_identities(session, org_id, list(identities.values()))
+    if auto_link is None:
+        return IngestCounts()
+    linked = auto_link(session, org_id, list(identities.values()))
     return rederive_identities(session, org_id=org_id, identities=linked)
 
 
@@ -294,11 +303,12 @@ def ingest_record(
     provenance: dict[str, JsonValue],
     identities_prepared: bool = False,
     sync_run_id: UUID | None = None,
+    auto_link: AutoLinkIdentities | None = None,
 ) -> IngestCounts:
     counts = (
         IngestCounts()
         if identities_prepared
-        else prepare_identities(session, org_id, [record])
+        else prepare_identities(session, org_id, [record], auto_link=auto_link)
     )
     data = record.model_dump(mode="json")
     attributes = {

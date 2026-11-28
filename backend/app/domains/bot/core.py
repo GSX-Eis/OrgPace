@@ -5,7 +5,7 @@ from time import monotonic
 from uuid import UUID
 
 from pydantic import JsonValue
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from app.authz.deps import get_org_principal
 from app.authz.principal import Principal
@@ -35,7 +35,7 @@ from app.domains.inbox import service as inbox
 from app.domains.model import pi_client
 from app.domains.model.client import ModelServiceError, ModelUnavailable
 from app.domains.model.service import model_config, read_setting, supports_images
-from app.domains.org.models import Organization
+from app.domains.org.service import lock_org
 from app.domains.review import direct
 from app.i18n import tr
 from app.models import User
@@ -318,11 +318,7 @@ def act(
     if isinstance(action, s.ProjectDraftAction):
         if not web_project_confirmation:
             raise project_drafts.DraftUnavailable()
-        db.exec(
-            select(Organization)
-            .where(Organization.id == p.org_id)
-            .with_for_update(read=True)
-        ).one()
+        lock_org(db, p.org_id, read=True)
         user = db.get(User, p.user_id, populate_existing=True) if p.user_id else None
         if user is None or not user.is_active:
             raise store.BotSessionNotFound()

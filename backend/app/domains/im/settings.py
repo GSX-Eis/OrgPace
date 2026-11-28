@@ -23,7 +23,7 @@ from app.domains.im.schemas import (
     ImSettingUpdate,
     Platform,
 )
-from app.domains.org.models import Organization
+from app.domains.org.service import lock_org
 from app.domains.org.timezone import read_timezone
 from app.i18n import tr
 
@@ -65,11 +65,7 @@ def save_setting(
         raise InvalidImSetting(tr("凭据字段不适用于该平台"))
     if body.enabled and not body.data_transfer_acknowledged:
         raise InvalidImSetting(tr("请先勾选已知晓数据外发提示"))
-    db.exec(
-        select(Organization)
-        .where(Organization.id == principal.org_id)
-        .with_for_update()
-    ).one()
+    lock_org(db, principal.org_id)
     row = db.get(ImSetting, (principal.org_id, platform)) or ImSetting(
         org_id=principal.org_id, platform=platform, updated_by_user_id=principal.user_id
     )

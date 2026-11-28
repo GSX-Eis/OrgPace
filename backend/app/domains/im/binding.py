@@ -25,7 +25,7 @@ from app.domains.org.models import (
     Organization,
     OrgMembership,
 )
-from app.domains.org.service import EmployeeNotFound, visible_employee
+from app.domains.org.service import EmployeeNotFound, lock_org, visible_employee
 from app.i18n import Locale
 from app.models import User
 
@@ -39,12 +39,6 @@ def user_locale(db: Session, principal: Principal | None) -> Locale:
         select(User.preferred_locale).where(User.id == principal.user_id)
     ).first()
     return "en" if preferred == "en" else "zh-CN"
-
-
-def _lock(db: Session, org_id: UUID) -> None:
-    db.exec(
-        select(Organization).where(Organization.id == org_id).with_for_update()
-    ).one()
 
 
 def _audit(db: Session, p: Principal, action: str, target: str) -> None:
@@ -71,7 +65,7 @@ def create_code(db: Session, p: Principal) -> BindingCode:
     if p.employee_id is None:
         raise EmployeeNotFound()
     visible_employee(db, p, p.employee_id)
-    _lock(db, p.org_id)
+    lock_org(db, p.org_id)
     db.exec(
         delete(ImBindCode).where(
             col(ImBindCode.org_id) == p.org_id,
@@ -154,7 +148,7 @@ def bind(
     identifier = f"im:{org_id}:{platform}:{external_user_id}"
     ip = f"im:{org_id}:{platform}"
     check_login_limit(db, identifier, ip)
-    _lock(db, org_id)
+    lock_org(db, org_id)
     setting = db.get(ImSetting, (org_id, platform), populate_existing=True)
     if not setting or not setting.enabled or setting.bot_identity != bot_identity:
         return False
@@ -233,7 +227,7 @@ def wants_email(db: Session, event: Event, identity: str) -> bool:
 def bind_email(
     db: Session, event: Event, identity: str, credentials: str, email: str
 ) -> bool:
-    _lock(db, event.org_id)
+    lock_org(db, event.org_id)
     setting = db.get(ImSetting, (event.org_id, event.platform), populate_existing=True)
     if (
         not event.private
@@ -327,7 +321,7 @@ def list_bindings(db: Session, p: Principal) -> list[BindingPublic]:
 def set_notify(db: Session, p: Principal, platform: Platform, notify: bool) -> None:
     if p.employee_id is None:
         raise EmployeeNotFound()
-    _lock(db, p.org_id)
+    lock_org(db, p.org_id)
     row = db.exec(
         select(ImBinding).where(
             ImBinding.org_id == p.org_id,
@@ -346,7 +340,7 @@ def set_notify(db: Session, p: Principal, platform: Platform, notify: bool) -> N
 
 
 def unbind(db: Session, p: Principal, platform: Platform) -> None:
-    _lock(db, p.org_id)
+    lock_org(db, p.org_id)
     if p.employee_id is not None:
         cancel_pending(db, p.org_id, platform, p.employee_id)
     db.exec(
