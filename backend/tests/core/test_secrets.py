@@ -110,11 +110,17 @@ def _tok(a: str, r: str, dt: int) -> dict[str, Any]:
 
 def _cfg(**kw: Any) -> Settings:
     url = "postgresql://postgres:p@localhost/app"
-    base = {
+    base: dict[str, Any] = {
         "PROJECT_NAME": "t",
         "SECRET_KEY": "s",
         "PI_SERVICE_TOKEN": "t",
         "DATABASE_URL": url,
+        "FASTAPI_ENV": None,
+        "FIRST_SUPERUSER": None,
+        "FIRST_SUPERUSER_PASSWORD": None,
+        "SEED_DEMO_DATA": False,
+        "DEMO_USER_PASSWORD": None,
+        "CHATGPT_LOCAL_AUTH": False,
     }
     return Settings(_env_file=None, **{**base, **kw})  # type: ignore[call-arg, arg-type]
 
