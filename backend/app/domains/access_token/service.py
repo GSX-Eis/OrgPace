@@ -29,6 +29,11 @@ class TokenNotFound(HTTPException):
         super().__init__(404, "令牌不存在")
 
 
+class EmployeeRecordNotFound(HTTPException):
+    def __init__(self) -> None:
+        super().__init__(404, "记录不存在")
+
+
 def get_setting(session: Session, principal: Principal) -> McpSettingPublic:
     row = session.get(McpSetting, principal.org_id)
     return (
@@ -78,7 +83,7 @@ def save_setting(
 def create_token(session: Session, principal: Principal, name: str) -> TokenCreated:
     assert principal.user_id is not None
     if principal.employee_id is None:
-        raise HTTPException(404, "记录不存在")
+        raise EmployeeRecordNotFound()
     subject = principal.employee_id
     visible_employee(session, principal, subject)
     # Serialize creation with enterprise switch changes.

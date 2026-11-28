@@ -12,7 +12,8 @@ pytestmark = pytest.mark.unit
 DOMAINS = Path(__file__).resolve().parents[1] / "app" / "domains"
 
 LAYER_BY_DOMAIN: dict[str, int] = {
-    # L0: core domain foundations
+    # L0: core domain foundations (including root base.py)
+    "base": 0,
     "org": 0,
     "account": 0,
     "audit": 0,
@@ -23,7 +24,7 @@ LAYER_BY_DOMAIN: dict[str, int] = {
     "model": 1,
     "access_token": 1,
     "chat_runtime": 1,
-    # L2: business workflows
+    # L2: business workflows (including root business tool registries)
     "change_request": 2,
     "review": 2,
     "drafting": 2,
@@ -32,6 +33,8 @@ LAYER_BY_DOMAIN: dict[str, int] = {
     "capacity": 2,
     "planning": 2,
     "inbox": 2,
+    "employee_tools": 2,
+    "manager_tools": 2,
     # L3: entrypoints & assistants
     "bot": 3,
     "admin_assistant": 3,
@@ -71,8 +74,6 @@ L3_BOT_ADMIN_ASSISTANT_WHITELIST: set[tuple[str, str]] = {
     ("bot/admission.py", "app.domains.admin_assistant.store"),
     ("bot/attachments.py", "app.domains.admin_assistant.store"),
 }
-
-NON_LAYERED_MODULES = {"base", "employee_tools", "manager_tools"}
 
 
 @dataclass(frozen=True)
@@ -167,7 +168,11 @@ def analyze_domains(
         for p in domains_dir.iterdir()
         if p.is_dir() and not p.name.startswith("__")
     )
-    unknown_packages = [pkg for pkg in packages if pkg not in LAYER_BY_DOMAIN]
+    root_modules = sorted(
+        p.stem for p in domains_dir.glob("*.py") if p.name != "__init__.py"
+    )
+    domain_nodes = [*packages, *root_modules]
+    unknown_packages = [pkg for pkg in domain_nodes if pkg not in LAYER_BY_DOMAIN]
     edges: dict[str, set[str]] = defaultdict(set)
     seen_upward: set[tuple[str, str]] = set()
     seen_bot_aa: set[tuple[str, str]] = set()
@@ -176,13 +181,14 @@ def analyze_domains(
 
     for path in sorted(domains_dir.rglob("*.py")):
         rel = path.relative_to(domains_dir)
-        if len(rel.parts) < 2:
-            continue
         if path.name in ("models.py", "schemas.py") or path.name.endswith(
             "_schemas.py"
         ):
             continue
-        src_pkg = rel.parts[0]
+        if len(rel.parts) == 1:
+            src_pkg = "base" if path.name == "__init__.py" else path.stem
+        else:
+            src_pkg = rel.parts[0]
         if src_pkg not in LAYER_BY_DOMAIN:
             continue
         rel_posix = rel.as_posix()
@@ -195,11 +201,7 @@ def analyze_domains(
                 continue
             dst_pkg = parts[2]
             tail = parts[3] if len(parts) > 3 else ""
-            if (
-                dst_pkg in NON_LAYERED_MODULES
-                or tail in ("models", "schemas")
-                or tail.endswith("_schemas")
-            ):
+            if tail in ("models", "schemas") or tail.endswith("_schemas"):
                 continue
             if dst_pkg not in LAYER_BY_DOMAIN:
                 unknown_packages.append(f"{rel_posix}: {dst_pkg}")
@@ -222,7 +224,7 @@ def analyze_domains(
 
     stale_upward = [f"{f}: {m}" for f, m in sorted(upward_whitelist - seen_upward)]
     stale_bot_aa = [f"{f}: {m}" for f, m in sorted(bot_aa_whitelist - seen_bot_aa)]
-    known_nodes = [pkg for pkg in packages if pkg in LAYER_BY_DOMAIN]
+    known_nodes = [pkg for pkg in domain_nodes if pkg in LAYER_BY_DOMAIN]
     sccs = _tarjan_sccs(known_nodes, edges)
     return AnalysisResult(
         unknown_packages=sorted(set(unknown_packages)),
@@ -289,13 +291,28 @@ def test_domain_4layer_architecture_and_scc_convergence() -> None:
             "def f():\n    from .. import admin\n",
             "capacity/bad_rel.py (L2) -> app.domains.admin (L3)",
         ),
+        (
+            "org/review_probe.py",
+            "from app.domains.employee_tools import EMPLOYEE_TOOLS\n",
+            "org/review_probe.py (L0) -> app.domains.employee_tools.EMPLOYEE_TOOLS (L2)",
+        ),
+        (
+            "account/bad_manager_tools.py",
+            "from app.domains import manager_tools\n",
+            "account/bad_manager_tools.py (L0) -> app.domains.manager_tools (L2)",
+        ),
+        (
+            "base.py",
+            "from app.domains.im import notifications\n",
+            "base.py (L0) -> app.domains.im.notifications (L3)",
+        ),
     ],
 )
 def test_upward_import_counterexamples(
     tmp_path: Path, relative: str, source: str, expected_fragment: str
 ) -> None:
     path = tmp_path / relative
-    path.parent.mkdir(parents=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(source)
     result = analyze_domains(tmp_path, upward_whitelist=set(), bot_aa_whitelist=set())
     assert expected_fragment in result.upward_violations
