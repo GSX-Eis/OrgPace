@@ -10,9 +10,8 @@ from sqlmodel import Session, select
 from app.core.db import engine
 from app.domains.admin.overview import AdminOverviewPublic, build_overview
 from app.domains.base import utc_now
-from app.domains.im import notifications
+from app.domains.im import admin_todos, notifications
 from app.domains.im.models import ImBinding, ImNotification, ImSetting
-from app.domains.inbox import admin_todos
 from app.domains.inbox.models import InboxItem, InboxKind
 from app.domains.org.models import ExternalIdentity, OrgMembership, Role, RoleGrant
 from tests.admin_assistant.test_registry import principal

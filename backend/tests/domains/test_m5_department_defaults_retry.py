@@ -10,8 +10,8 @@ from app.authz.principal import Principal
 from app.core.secrets import SecretUnavailable
 from app.domains.audit.models import AuditEvent
 from app.domains.base import utc_now
-from app.domains.capability import department_defaults as d
 from app.domains.capability.service import activate_template, read_editor, save_version
+from app.domains.drafting import department_defaults as d
 from app.domains.model.client import (
     ModelOutputInvalid,
     ModelRateLimited,

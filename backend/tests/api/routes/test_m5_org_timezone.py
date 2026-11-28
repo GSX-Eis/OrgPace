@@ -9,7 +9,7 @@ from sqlmodel import Session, select
 from app.core.db import engine
 from app.domains.admin_assistant import store
 from app.domains.audit.models import AuditEvent
-from app.domains.inbox import admin_todos
+from app.domains.im import admin_todos
 from app.domains.inbox.models import InboxItem, InboxKind
 from app.domains.org.models import Organization
 from app.domains.review import direct

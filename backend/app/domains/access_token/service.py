@@ -16,7 +16,6 @@ from app.domains.access_token.schemas import (
 )
 from app.domains.audit.service import record_audit
 from app.domains.base import utc_now
-from app.domains.change_request.employee import employee_id
 from app.domains.org.service import lock_org, visible_employee
 
 
@@ -78,7 +77,9 @@ def save_setting(
 
 def create_token(session: Session, principal: Principal, name: str) -> TokenCreated:
     assert principal.user_id is not None
-    subject = employee_id(principal)
+    if principal.employee_id is None:
+        raise HTTPException(404, "记录不存在")
+    subject = principal.employee_id
     visible_employee(session, principal, subject)
     # Serialize creation with enterprise switch changes.
     lock_org(session, principal.org_id)

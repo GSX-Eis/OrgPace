@@ -12,10 +12,10 @@ from app.domains.admin_assistant import files, registry, store
 from app.domains.base import utc_now
 from app.domains.bot import settings as bot
 from app.domains.bot import store as messages
+from app.domains.im import admin_todos
 from app.domains.im import settings as im
 from app.domains.im.models import ImBinding, ImSetting
 from app.domains.im.schemas import ImSettingUpdate
-from app.domains.inbox import admin_todos
 from app.domains.inbox.models import InboxItem, InboxKind
 from app.domains.model import service as model
 from app.domains.org.models import (
