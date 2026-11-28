@@ -1,4 +1,4 @@
-# ADR-0028：CI 浏览器运行在 runner 上并复用服务镜像
+# ADR-0028（0028b）：CI 浏览器运行在 runner 上并复用服务镜像
 
 状态：接受（NERE-277）
 
@@ -22,4 +22,4 @@ Chromium 安装与系统依赖安装有成本，但省去了整套浏览器镜�
 
 热缓存后台两轮均为四个 worker；model 组先串行执行，但之后该 worker 继续领取其他任务，末尾与其他 worker 的差距约十秒，因此保留现有 loadgroup 隔离。Runner 性能和大量数据库/fixture 操作仍会影响耗时，不能用单轮结果承诺稳定低于五分钟。
 
-详见 [测量记录](../ci-performance.md)；PR 的实际数据写入 issue 结果评论。
+PR 的实际数据写入 issue 结果评论。

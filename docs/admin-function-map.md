@@ -103,6 +103,6 @@
 
 对话附件上传和原文下载属于助手自身的会话接口（NOT_FOR_ASSISTANT），仅本人通过鉴权接口操作。文件提取文字随当前对话轮作为数据交给模型，不提供模型上传、下载或读取任意文件的工具；原有带预览的业务导入上传保持独立。
 
-M4.2 的登记表与接口对照由 `backend/tests/admin_assistant/test_registry.py` 校验。真实模型与确定性评测任务共用 `backend/tests/eval/admin_assistant/tasks/`，新增覆盖开关、三个档案字段、组织架构、起草建议、补充说明、对话材料与对抗请求。旧 `import_profiles` 已删除，`draft_profiles_from_material` 在管理员确认后直接发布画像，系统自动起草仍先交本人过目。详见 [M4.2 验收](m4.2-acceptance.md)。
+M4.2 的登记表与接口对照由 `backend/tests/admin_assistant/test_registry.py` 校验。真实模型与确定性评测任务共用 `backend/tests/eval/admin_assistant/tasks/`，新增覆盖开关、三个档案字段、组织架构、起草建议、补充说明、对话材料与对抗请求。旧 `import_profiles` 已删除，`draft_profiles_from_material` 在管理员确认后直接发布画像，系统自动起草仍先交本人过目。
 
-M4.3 的角色界面、直接发布和部门默认能力验证见 [M4.3 验收](m4.3-acceptance.md)。系统自动起草仍先交本人过目；员工固定格式 JSON 导入已改为助手附件，外部 MCP / PAT / OAuth 入口自 E53 起默认关闭（`EXTERNAL_MCP_ENABLED=false`），内部工具层与只读历史溯源保留。
+M4.3 保留角色界面、直接发布与部门默认能力，系统自动起草仍先交本人过目；员工固定格式 JSON 导入已改为助手附件，外部 MCP / PAT / OAuth 入口自 E53 起默认关闭（`EXTERNAL_MCP_ENABLED=false`），内部工具层与只读历史溯源保留。

@@ -54,7 +54,7 @@ if [[ ! -e .env ]]; then
     access=${EPP_ACCESS:-http}
     port=${EPP_HTTP_PORT:-80}
     email=${EPP_ACME_EMAIL:-}
-    project=${COMPOSE_PROJECT_NAME:-employee-profile}
+    project=${COMPOSE_PROJECT_NAME:-orgpace}
     if "$interactive"; then
         read -r -p "访问地址（IP 或域名）[$address]：" answer
         address=${answer:-$address}
@@ -107,7 +107,7 @@ if [[ ! -e .env ]]; then
     database_password=$(random_secret)
     pi_service_token=$(random_secret)
     cat > "$env_temp" <<ENV
-PROJECT_NAME="Employee Profile Platform"
+PROJECT_NAME="OrgPace"
 SECRET_KEY=$secret_key
 PI_SERVICE_TOKEN=$pi_service_token
 # 登录限流：NAT、Docker Desktop、反向代理后面的所有人可能共用一个 IP，按人数调整 LOGIN_MAX_FAILURES_PER_IP

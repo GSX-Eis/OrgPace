@@ -187,7 +187,7 @@ fi
 
 # Scope all Compose calls to an explicit test project and synthetic settings.
 export FASTAPI_ENV=development API_BIND=127.0.0.1 COMPOSE_ANSI=never COMPOSE_PROGRESS=plain
-export PROJECT_NAME='Employee Profile Remote Test'
+export PROJECT_NAME='OrgPace Remote Test'
 export SECRET_KEY PI_SERVICE_TOKEN POSTGRES_PASSWORD FIRST_SUPERUSER_PASSWORD DEMO_USER_PASSWORD
 SECRET_KEY=$(openssl rand -hex 32)
 PI_SERVICE_TOKEN=$(openssl rand -hex 32)

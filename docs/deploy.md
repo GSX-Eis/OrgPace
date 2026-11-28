@@ -66,7 +66,7 @@ HTTPS 代理只读取本 Compose 项目的容器，路由和服务名也带项�
 
 自签证书适用于本机或受控内网试用。飞书目前使用出站长连接，不需要填写公网回调 URL；其他 IM 连接方式见本页开头。
 
-本机 HTTPS 实测结果和限制见 [M9 HTTPS 实测](m9-https-test.md)。登录返回 Bearer token，由网页保存在 localStorage，退出时清除；没有登录 Cookie，Secure/HttpOnly Cookie 验收对当前认证机制不适用，无需引入 Cookie 认证。未实现邮件通道，邮件投递验收不适用。
+登录返回 Bearer token，由网页保存在 localStorage，退出时清除；没有登录 Cookie，Secure/HttpOnly Cookie 验收对当前认证机制不适用，无需引入 Cookie 认证。未实现邮件通道，邮件投递验收不适用。
 
 ### 初始化链接与局域网访问
 
@@ -329,7 +329,7 @@ Jira、API key、IM 凭据与会话密文在未设置 `ENCRYPTION_KEYS` 时默�
 
 ## M1 验证范围
 
-M1 部署流程使用 macOS 26.4.1 / Docker Desktop，全新克隆测试 HTTP、浏览器向导、改密、备份恢复、升级及自签 HTTPS；具体结果和截图见 [M1 验收记录](m1-acceptance.md)。Linux 安装由 PR 的 Ubuntu `test-production-install` job 验证，不能把本机通过当作 Linux 已通过。Safari 和 Let's Encrypt 公网签发没有实测，也没有验证真实企业网络或生产数据恢复。
+M1 部署流程使用 macOS 26.4.1 / Docker Desktop，全新克隆测试 HTTP、浏览器向导、改密、备份恢复、升级及自签 HTTPS。Linux 安装由 PR 的 Ubuntu `test-production-install` job 验证，不能把本机通过当作 Linux 已通过。Safari 和 Let's Encrypt 公网签发没有实测，也没有验证真实企业网络或生产数据恢复。
 
 
 ### 外部 MCP 部署开关（默认关闭）

@@ -1,5 +1,5 @@
 x-backend: &backend
-  image: ${COMPOSE_PROJECT_NAME:-employee-profile}-backend:latest
+  image: ${COMPOSE_PROJECT_NAME:-orgpace}-backend:latest
   pull_policy: never
   environment:
     PROJECT_NAME: ${PROJECT_NAME:?Variable not set}
@@ -25,7 +25,7 @@ x-backend: &backend
 
 services:
   pi:
-    image: ${COMPOSE_PROJECT_NAME:-employee-profile}-pi:latest
+    image: ${COMPOSE_PROJECT_NAME:-orgpace}-pi:latest
     build: ./pi
     environment:
       PI_SERVICE_TOKEN: ${PI_SERVICE_TOKEN:?Variable not set}
