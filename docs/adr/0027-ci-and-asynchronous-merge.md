@@ -18,4 +18,4 @@ Playwright 共用演示企业，单个数据库中增加 worker 会使账号和�
 
 三个 shard 增加 runner 和首次构建开销，但隔离不需要修改业务测试数据。缓存首次运行无命中，PR 缓存的可见性受 GitHub 分支范围约束。
 
-Multica 关闭 issue 会禁用 wakeup，可能与 GitHub 自动合并竞争；必须实测并记录，不能声称仅注册规则就已完成验证。具体流程和替代方案见 [agent-workflow.md](../agent-workflow.md)。这份文档不覆盖 agent 指令，由 Mika 决定何时更新。
+Multica 关闭 issue 会禁用 wakeup，可能与 GitHub 自动合并竞争；必须实测并记录，不能声称仅注册规则就已完成验证。这份文档不覆盖 agent 指令，由 Mika 决定何时更新。

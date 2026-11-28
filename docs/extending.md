@@ -22,8 +22,7 @@
   或审批权限。聊天原文不作为证据保存，只有员工确认的陈述能成为 restricted 自述证据。
 - 示例和测试只用合成数据、模拟 HTTP / WebSocket，不访问真实员工系统或外部模型。
 
-开始前阅读 [开发与测试](development.md)、[agent 检查与交付](agent-workflow.md) 和
-[ADR-0035](adr/0035-nocobase-reference.md)。以下路径均相对仓库根目录。
+开始前阅读 [开发与测试](development.md) 和 [ADR-0035](adr/0035-nocobase-reference.md)。以下路径均相对仓库根目录。
 测试使用 `docs/development.md` 的独立测试库；写数据用函数级 `demo`，只读用 `shared_demo`，
 不能依赖测试执行顺序。涉及对话或起草的测试还需要先在 `pi/` 执行 `npm ci`（Node 版本
 须满足 `pi/package.json`），只使用本地模拟模型。所有扩展先运行 `backend/tests/test_extension_points.py`。

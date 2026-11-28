@@ -97,7 +97,7 @@ if [[ -f $config ]]; then
 fi
 [[ ${GCP_PROJECT:-} =~ ^[a-z][a-z0-9-]+$ && ${GCP_ZONE:-} =~ ^[a-z0-9-]+$ &&
    ${GCP_INSTANCE:-} =~ ^[a-z][a-z0-9-]*$ ]] || die \
-  "Set GCP_PROJECT, GCP_ZONE and GCP_INSTANCE in $config or export them. See docs/cloud-testing.md."
+  "Set GCP_PROJECT, GCP_ZONE and GCP_INSTANCE in $config or export them (also requires SPOT_HOURLY_RATE_USD; optional: MONTHLY_BUDGET_USD, SOFT_CAP_USD, DISK_FIXED_MONTHLY_USD)."
 [[ -n ${SPOT_HOURLY_RATE_USD:-} ]] || die "Set SPOT_HOURLY_RATE_USD in $config or export it."
 export GCP_PROJECT GCP_ZONE GCP_INSTANCE
 export PATH

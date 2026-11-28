@@ -1,5 +1,5 @@
 {
-  "name": "employee-profile-pi-research",
+  "name": "orgpace-pi-runtime",
   "private": true,
   "type": "module",
   "engines": { "node": ">=22.19.0" },
