@@ -699,6 +699,122 @@ warm_env=(env PATH="$scratch/warm-bin:$PATH" EPP_WARM_DB_DIR="$warm_test_dir/dot
   if grep -Fq 'epp-warm-db' "$warm_test_dir/docker.log"; then exit 1; fi
 )
 
+python3 - "$metadata" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("metadata", sys.argv[1])
+assert spec and spec.loader
+m = importlib.util.module_from_spec(spec); sys.dont_write_bytecode = True; spec.loader.exec_module(m)
+fmt = lambda **kw: "\n".join(m.build_summary_lines(queue_wait_s="0.250", sync_s="0.800", total_s="4.642", vm_summary="VM: RUNNING | Cost $10", **kw))
+
+p_lines = m.build_summary_lines(
+    mode="pytest", project="nere1580", exit_code=0, queue_wait_s="0.250", sync_s="0.800", total_s="4.642",
+    vm_summary="VM: RUNNING | Cost $10",
+    raw_output="\x1b[32mNetwork epp-warm-db_default Creating\x1b[0m\nContainer epp-warm-db-db-1 Healthy\ntests/test_a.py::test_one PASSED\n=== slowest 10 durations ===\n1.84s call     tests/test_a.py::test_slow\n0.42s setup    tests/test_a.py::test_one\n====== 12 passed, 2 skipped, 1 xfailed in 3.45s ======\nEPP_METRIC db_mode=warm db_prep_s=0.142 template_status=hit test_exec_s=3.450\n",
+)
+p_txt = "\n".join(p_lines)
+assert 8 <= len(p_lines) <= 20, len(p_lines)
+for tok in ("[remote-test] PASS", "queue_wait=0.250s", "sync=0.800s", "db_prep=0.142s", "exec=3.450s", "total=4.642s", "db_mode=warm", "template_status=hit", "passed=12 skipped=2 failed=0 errors=0 xfailed=1", "1.84s call tests/test_a.py::test_slow"):
+    assert tok in p_txt, tok
+assert "Network epp-warm-db_default Creating" not in p_txt
+
+pw_txt = fmt(mode="playwright", project="nere1580", exit_code=0, raw_output="  1 skipped\n  4 passed (8.1s)\nEPP_METRIC db_mode=ephemeral db_prep_s=1.200 template_status=ephemeral test_exec_s=8.100\n")
+assert "db_mode=ephemeral template_status=ephemeral" in pw_txt and "passed=4 skipped=1 failed=0 errors=0 xfailed=0" in pw_txt and "top_slow: n/a" in pw_txt
+
+for kw, must, forbid in (
+    (dict(mode="pytest", project="nere1580", exit_code=1, raw_output="tests/test_a.py::test_ok PASSED\n=== FAILURES ===\n___ test_boom ___\nE       assert 1 == 2\n=== short test summary info ===\nFAILED tests/test_a.py::test_boom - assert 1 == 2\n=== 1 failed, 1 passed in 0.25s ===\nCompose cleanup failed for nere1580.\nEPP_METRIC db_mode=warm db_prep_s=0.100 template_status=built test_exec_s=0.250\n"),
+     ("[remote-test] FAIL", "exit_code: 1", "template_status=built", "=== FAILURES ===", "E       assert 1 == 2", "FAILED tests/test_a.py::test_boom - assert 1 == 2", "Compose cleanup failed for nere1580."), ("test_ok PASSED",)),
+    (dict(mode="pytest", project="nere1580", exit_code=2, raw_output="=== ERRORS ===\n___ ERROR collecting tests/test_bad.py ___\nImportError: boom\n!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!\n"),
+     ("ImportError: boom", "Interrupted: 1 error during collection"), ()),
+    (dict(mode="pytest", project="nere1580", exit_code=137, raw_output="Killed\nSyntaxError: bad token in conftest.py\n"),
+     ("exit_code: 137", "Killed", "SyntaxError: bad token in conftest.py"), ()),
+    (dict(mode="preflight", project="nere1580", exit_code=1, raw_output="ruff failed on app/main.py:12\n自检汇总（exit=1）\n同步检查: 通过 (0s)\n单一head: 通过 (1s)\npre-commit: 失败 (3s)\n数据库环境: 跳过 (0s)\npytest: 跳过 (0s)\n手动提示: 跳过 (0s)\n总耗时: 4s\n"),
+     ("ruff failed on app/main.py:12", "pre-commit=失败(3s)", "3s pre-commit (失败)"), ()),
+    (dict(mode="playwright", project="nere1580", exit_code=1, raw_output="  1) [chromium] › tests/smoke.spec.ts:5:1 › fails\n    Error: expect(1).toBe(2)\n  1 failed\n", playwright_artifacts="/tmp/epp-playwright.fixture"),
+     ("Playwright artifacts: /tmp/epp-playwright.fixture", "Error: expect(1).toBe(2)"), ()),
+):
+    txt = fmt(**kw)
+    for m_tok in must: assert m_tok in txt, (m_tok, txt)
+    for f_tok in forbid: assert f_tok not in txt, (f_tok, txt)
+PY
+
+mkdir -p "$scratch/e2e-bin"
+cat > "$scratch/e2e-bin/gcloud" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  'compute instances describe example-instance --project sample-project '*) printf '%s\n' '{"status":"RUNNING"}' ;;
+  'compute ssh '*)
+    for arg in "$@"; do [[ $arg == --command=* ]] && printf '%s\n' "${arg#--command=}" >> "$MOCK_E2E_SSH_LOG"; done
+    [[ -n ${MOCK_WORKER_OUTPUT_FILE:-} ]] && cat "$MOCK_WORKER_OUTPUT_FILE"
+    exit "${MOCK_WORKER_EXIT:-0}" ;;
+  *) echo "Unexpected gcloud: $*" >&2; exit 3 ;;
+esac
+MOCK
+printf '#!/usr/bin/env bash\nexit 0\n' > "$scratch/e2e-bin/rsync"
+cat > "$scratch/e2e-bin/queue-delay" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+sleep 0.15
+while [[ $# -gt 0 ]]; do [[ $1 == -- ]] && { shift; break; }; shift; done
+exec env CLOUD_TEST_QUEUE_HELD=1 CLOUD_TEST_QUEUE_SLOTS=2 "$@"
+MOCK
+chmod +x "$scratch/e2e-bin/"*
+
+cat > "$scratch/worker-pass.txt" <<'OUT'
+Network epp-warm-db_default Creating
+Container epp-warm-db-db-1 Healthy
+tests/test_a.py::test_ok PASSED
+=== slowest 5 durations ===
+1.11s call     tests/test_a.py::test_ok
+====== 3 passed in 1.25s ======
+EPP_METRIC db_mode=warm db_prep_s=0.120 template_status=hit test_exec_s=1.250
+OUT
+run_e2e() {
+  : > "$scratch/e2e-ssh.log"
+  env -u CLOUD_TEST_ENQUEUED_AT PATH="$scratch/e2e-bin:$PATH" MOCK_E2E_SSH_LOG="$scratch/e2e-ssh.log" \
+    MOCK_WORKER_OUTPUT_FILE="${MOCK_WORKER_OUTPUT_FILE:-$scratch/worker-pass.txt}" \
+    COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-nere123}" "$@"
+}
+compact_out=$(CLOUD_TEST_QUEUE_BIN="$scratch/e2e-bin/queue-delay" run_e2e "$runner" --force pytest tests/test_a.py -q)
+grep -Fq '[remote-test] PASS' <<< "$compact_out" && grep -Fq 'vm_budget: VM: RUNNING |' <<< "$compact_out"
+[[ $(grep -c 'Observed VM uptime\|observed VM uptime' <<< "$compact_out") -eq 1 ]]
+if grep -Fq 'Network epp-warm-db_default Creating' <<< "$compact_out"; then exit 1; fi
+python3 -c 'import re, sys; m = re.search(r"queue_wait=([0-9.]+)s", sys.argv[1]); assert m and float(m.group(1)) >= 0.10, sys.argv[1]' "$compact_out"
+
+cached_hit_out=$(COMPOSE_PROJECT_NAME=nere124 run_e2e "$runner" pytest tests/test_a.py -q)
+grep -Fq '[cloud-test-cache] HIT' <<< "$cached_hit_out" && grep -Fq '[remote-test] PASS' <<< "$cached_hit_out"
+if grep -Fq 'Network epp-warm-db_default Creating' <<< "$cached_hit_out"; then exit 1; fi
+
+printf 'FATAL_UNKNOWN_CRASH_SIGNAL\n' > "$scratch/worker-crash.txt"
+set +e
+fail_out=$(CLOUD_TEST_QUEUE_BIN="" MOCK_WORKER_EXIT=42 MOCK_WORKER_OUTPUT_FILE="$scratch/worker-crash.txt" run_e2e "$runner" --force --no-cache pytest tests/test_a.py 2>&1)
+fail_rc=$?
+set -e
+[[ $fail_rc == 42 ]] && grep -Fq '[remote-test] FAIL' <<< "$fail_out" && grep -Fq 'exit_code: 42' <<< "$fail_out" && grep -Fq 'FATAL_UNKNOWN_CRASH_SIGNAL' <<< "$fail_out"
+
+verb_env_out=$(CLOUD_TEST_QUEUE_BIN="" VERBOSE=1 run_e2e "$runner" --force --no-cache pytest tests/test_a.py -q)
+grep -Fq 'Network epp-warm-db_default Creating' <<< "$verb_env_out" && grep -Fq 'EPP_VERBOSE=1' "$scratch/e2e-ssh.log"
+for v_cmd in "--verbose pytest tests/test_a.py" "pytest --verbose tests/test_a.py"; do
+  # shellcheck disable=SC2086
+  verb_cli_out=$(CLOUD_TEST_QUEUE_BIN="" run_e2e "$runner" --force --no-cache $v_cmd)
+  grep -Fq 'Network epp-warm-db_default Creating' <<< "$verb_cli_out" && grep -Fq 'EPP_VERBOSE=1' "$scratch/e2e-ssh.log" && grep -Fq -- '--verbose' "$scratch/e2e-ssh.log"
+done
+pf_verb_out=$(CLOUD_TEST_QUEUE_BIN="" run_e2e "$runner" --force --no-cache preflight --verbose --full)
+grep -Fq 'Network epp-warm-db_default Creating' <<< "$pf_verb_out" && grep -Fq 'EPP_VERBOSE=1' "$scratch/e2e-ssh.log"
+if grep -Fq -- '--verbose' "$scratch/e2e-ssh.log"; then exit 1; fi
+sep_out=$(CLOUD_TEST_QUEUE_BIN="" run_e2e "$runner" --force --no-cache pytest tests/test_a.py -- --verbose)
+grep -Fq '[remote-test] PASS' <<< "$sep_out"
+if grep -Fq 'EPP_VERBOSE=1' "$scratch/e2e-ssh.log"; then exit 1; fi
+
+(
+  cd "$scratch/warm-repo"
+  quiet_out=$("${warm_env[@]}" env EPP_WARM_DB=0 bash scripts/remote-test-worker.sh run_quiet nere123 pytest '' tests/test_a.py -q)
+  if grep -Fq '跳过 npm ci' <<< "$quiet_out"; then exit 1; fi
+  grep -Fq 'EPP_METRIC db_mode=ephemeral' <<< "$quiet_out"
+  loud_out=$("${warm_env[@]}" env EPP_WARM_DB=0 EPP_VERBOSE=1 bash scripts/remote-test-worker.sh run_loud nere123 pytest '' tests/test_a.py -q)
+  grep -Fq '跳过 npm ci' <<< "$loud_out"
+)
+
 grep -q -- '-oControlMaster=auto' "$runner"
 grep -q -- '-oControlPersist=10m' "$runner"
 grep -q -- '-oControlPath=' "$runner"

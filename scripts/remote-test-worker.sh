@@ -201,8 +201,13 @@ unset SENTRY_DSN COMPOSE_PROFILES
 
 EPP_WARM_DB=${EPP_WARM_DB:-1}
 EPP_WARM_DB_PORT=${EPP_WARM_DB_PORT:-14532}
+EPP_VERBOSE=${EPP_VERBOSE:-0}
 if [[ $EPP_WARM_DB != 0 && $EPP_WARM_DB != 1 ]]; then
   echo "Invalid EPP_WARM_DB (expected 0 or 1): $EPP_WARM_DB" >&2
+  exit 2
+fi
+if [[ $EPP_VERBOSE != 0 && $EPP_VERBOSE != 1 ]]; then
+  echo "Invalid EPP_VERBOSE (expected 0 or 1): $EPP_VERBOSE" >&2
   exit 2
 fi
 if ! [[ $EPP_WARM_DB_PORT =~ ^[1-9][0-9]*$ ]] || (( EPP_WARM_DB_PORT >= 65536 || EPP_WARM_DB_PORT == 5432 )); then
@@ -217,6 +222,35 @@ started=false
 warm_active=false
 warm_fd_open=false
 artifacts=
+emit_metric=false
+db_mode=ephemeral
+db_prep_s=0.000
+template_status=ephemeral
+test_exec_started=
+test_exec_s=0.000
+
+mono_now() {
+  python3 -c 'import time; print(f"{time.monotonic():.6f}")'
+}
+
+mono_elapsed() {
+  python3 -c 'import sys, time; print(f"{max(0.0, time.monotonic() - float(sys.argv[1])):.3f}")' "$1"
+}
+
+run_quiet_on_success() {
+  local log_file=$1
+  shift
+  if [[ $EPP_VERBOSE == 1 ]]; then
+    "$@"
+    return $?
+  fi
+  local rc=0
+  "$@" >"$log_file" 2>&1 || rc=$?
+  if [[ $rc != 0 ]]; then
+    cat "$log_file" >&2
+  fi
+  return "$rc"
+}
 
 run_backend_python() {
   if [[ -x backend/.venv/bin/python ]]; then
@@ -226,10 +260,44 @@ run_backend_python() {
   fi
 }
 
+check_shared_template_exists() {
+  run_backend_python - <<'PY' 2>/dev/null || true
+import os
+import psycopg
+from sqlalchemy.engine import make_url
+from tests.utils.migrations import shared_template_name
+
+admin_url = make_url(os.environ["DATABASE_URL"]).set(
+    drivername="postgresql", database="postgres"
+).render_as_string(hide_password=False)
+tpl = shared_template_name()
+with psycopg.connect(admin_url, connect_timeout=5) as conn:
+    row = conn.execute(
+        "SELECT datistemplate AND NOT datallowconn FROM pg_database WHERE datname = %s",
+        (tpl,),
+    ).fetchone()
+print("1" if (row and row[0]) else "0")
+PY
+}
+
 cleanup() {
   local code=$?
   trap - EXIT
   trap '' HUP INT TERM
+  if [[ -n $test_exec_started ]]; then
+    test_exec_s=$(mono_elapsed "$test_exec_started")
+  fi
+  if $warm_active && [[ $template_status == pending ]]; then
+    local tpl_after
+    tpl_after=$(check_shared_template_exists)
+    if [[ $tpl_after == 1 ]]; then
+      template_status=built
+    elif [[ $tpl_after == 0 ]]; then
+      template_status=n/a
+    else
+      template_status=unknown
+    fi
+  fi
   if $warm_active && [[ -n ${PYTEST_DB_PREFIX:-} ]]; then
     if ! run_backend_python -c 'import os; from sqlalchemy.engine import make_url; from tests.utils.migrations import cleanup_run_databases; cleanup_run_databases(make_url(os.environ["DATABASE_URL"]).set(drivername="postgresql", database="postgres").render_as_string(hide_password=False), os.environ["PYTEST_DB_PREFIX"])'; then
       echo "Warm DB leftover cleanup failed for prefix $PYTEST_DB_PREFIX." >&2
@@ -241,7 +309,7 @@ cleanup() {
     warm_fd_open=false
   fi
   if $started; then
-    if ! "${compose[@]}" down -v --remove-orphans; then
+    if ! run_quiet_on_success "$scratch/compose-down.log" "${compose[@]}" down -v --remove-orphans; then
       echo "Compose cleanup failed for $project." >&2
       if [[ $code == 0 ]]; then code=1; fi
     fi
@@ -249,6 +317,10 @@ cleanup() {
   if [[ -n $artifacts ]]; then
     rm -rf -- frontend/playwright/.auth
     if [[ $code == 0 ]]; then rm -rf -- "$artifacts"; fi
+  fi
+  if $emit_metric; then
+    printf 'EPP_METRIC db_mode=%s db_prep_s=%s template_status=%s test_exec_s=%s\n' \
+      "$db_mode" "$db_prep_s" "$template_status" "$test_exec_s"
   fi
   rm -rf -- "$scratch"
   exit "$code"
@@ -376,7 +448,7 @@ Path(out_path).write_text(
 )
 PY
     mv -f "$warm_override.tmp" "$warm_override"
-    POSTGRES_PASSWORD="$pw" "${warm_compose[@]}" up -d --wait db || exit 1
+    run_quiet_on_success "$scratch/warm-up.log" env POSTGRES_PASSWORD="$pw" "${warm_compose[@]}" up -d --wait db || exit 1
     [[ $("${warm_compose[@]}" port db 5432) == "127.0.0.1:$EPP_WARM_DB_PORT" ]] || exit 1
     probe_select_1 || exit 1
     printf '%s\n' "$fp" > "$warm_fp_file.tmp"
@@ -385,6 +457,8 @@ PY
   )
 }
 
+emit_metric=true
+db_prep_started=$(mono_now)
 if [[ $mode != playwright && $EPP_WARM_DB == 1 ]]; then
   set +e
   mkdir -p "$warm_dir" && chmod 700 "$warm_dir" && command exec 9>"$warm_use_lock"
@@ -399,6 +473,7 @@ if [[ $mode != playwright && $EPP_WARM_DB == 1 ]]; then
   set -e
   if [[ $warm_rc == 0 ]]; then
     warm_active=true
+    db_mode=warm
     warm_password=$(cat "$warm_pw_file")
     run8=$(python3 -c 'import hashlib, sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:8])' "$run_id")
     export POSTGRES_PASSWORD="$warm_password"
@@ -416,6 +491,8 @@ if [[ $mode != playwright && $EPP_WARM_DB == 1 ]]; then
 fi
 
 if ! $warm_active; then
+  db_mode=ephemeral
+  template_status=ephemeral
   check_port "$POSTGRES_PORT"
   if [[ $mode == playwright ]]; then check_port "$API_PORT"; fi
   cat > "$scratch/ports.yml" <<EOF
@@ -426,19 +503,33 @@ services:
 EOF
 
   started=true
-  "${compose[@]}" up -d --wait db
+  run_quiet_on_success "$scratch/ephemeral-up.log" "${compose[@]}" up -d --wait db
   [[ $("${compose[@]}" port db 5432) == "127.0.0.1:$POSTGRES_PORT" ]]
+fi
+db_prep_s=$(mono_elapsed "$db_prep_started")
+if $warm_active; then
+  tpl_before=$(check_shared_template_exists)
+  if [[ $tpl_before == 1 ]]; then
+    template_status=hit
+  elif [[ $tpl_before == 0 ]]; then
+    template_status=pending
+  else
+    template_status=unknown
+  fi
 fi
 if [[ $mode != playwright ]]; then
   pi_lock_hash=$(sha256sum pi/package-lock.json | awk '{print $1}')
   pi_hash_file=pi/node_modules/.package-lock.sha256
   if [[ -d pi/node_modules && -f $pi_hash_file && $(cat "$pi_hash_file") == "$pi_lock_hash" ]]; then
-    echo 'pi/node_modules: 跳过 npm ci（package-lock.json 未变化）'
+    if [[ $EPP_VERBOSE == 1 ]]; then
+      echo 'pi/node_modules: 跳过 npm ci（package-lock.json 未变化）'
+    fi
   else
-    npm ci --prefix pi --ignore-scripts --no-audit --no-fund
+    run_quiet_on_success "$scratch/npm-ci.log" npm ci --prefix pi --ignore-scripts --no-audit --no-fund
     printf '%s\n' "$pi_lock_hash" > "$pi_hash_file"
   fi
 fi
+test_exec_started=$(mono_now)
 case "$mode" in
   preflight)
     # Share host mypy and ruff caches across ~/epp-runs/nere* safely; fall back to
@@ -460,9 +551,11 @@ case "$mode" in
       fe_lock_hash=$(sha256sum bun.lock | awk '{print $1}')
       fe_hash_file=node_modules/.bun.lock.sha256
       if [[ -d node_modules && -f $fe_hash_file && $(cat "$fe_hash_file") == "$fe_lock_hash" ]]; then
-        echo 'node_modules: 跳过 bun install（bun.lock 未变化）'
+        if [[ $EPP_VERBOSE == 1 ]]; then
+          echo 'node_modules: 跳过 bun install（bun.lock 未变化）'
+        fi
       else
-        bun install --frozen-lockfile
+        run_quiet_on_success "$scratch/bun-install.log" bun install --frozen-lockfile
         mkdir -p node_modules
         printf '%s\n' "$fe_lock_hash" > "$fe_hash_file"
       fi
@@ -478,11 +571,11 @@ case "$mode" in
       export EXTERNAL_MCP_ENABLED=true
     fi
     # Use the existing host-browser CI flow, with the backend serving its UI.
-    "${compose[@]}" build backend pi
-    "${compose[@]}" up -d --no-build --wait backend worker mock-jira
+    run_quiet_on_success "$scratch/pw-build.log" "${compose[@]}" build backend pi
+    run_quiet_on_success "$scratch/pw-up.log" "${compose[@]}" up -d --no-build --wait backend worker mock-jira
     (
       cd frontend
-      bun install --frozen-lockfile
+      run_quiet_on_success "$scratch/pw-bun.log" bun install --frozen-lockfile
       export PLAYWRIGHT_BASE_URL=$FRONTEND_HOST VITE_API_URL=$FRONTEND_HOST
       export MODEL_TEST_HOST
       MODEL_TEST_HOST=${MODEL_TEST_HOST:-$(hostname -I | awk '{print $1}')}
