@@ -13,7 +13,7 @@ from app.authz.deps import get_org_principal
 from app.authz.principal import Principal
 from app.core.security import create_access_token
 from app.domains.base import utc_now
-from app.domains.capacity import extension, workload
+from app.domains.capacity import extension, workload, workload_requests
 from app.domains.capacity.models import (
     CapacityAssignment,
     CapacityDemand,
@@ -106,7 +106,7 @@ def test_request_candidates_and_review_cache(
             loaded.append(instance.id)
 
     calls: list[set[UUID]] = []
-    module = workload if kind == "workload" else extension
+    module = workload_requests if kind == "workload" else extension
     list_requests = (
         workload.list_workload_requests
         if kind == "workload"

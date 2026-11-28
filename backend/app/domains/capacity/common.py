@@ -4,7 +4,7 @@ from uuid import UUID
 
 from fastapi import HTTPException
 from pydantic import JsonValue
-from sqlmodel import Session, col, select
+from sqlmodel import Session, col, func, select
 
 from app.authz.principal import Principal
 from app.domains.audit.service import record_audit
@@ -12,9 +12,19 @@ from app.domains.capacity.models import CapacityInboxLink
 from app.domains.capacity.schemas import Via
 from app.domains.inbox.models import InboxItem, InboxKind
 from app.domains.inbox.service import add_item
-from app.domains.org.models import Employee, EmploymentStatus, OrgMembership
+from app.domains.org.models import (
+    Employee,
+    EmploymentStatus,
+    ExternalIdentity,
+    OrgMembership,
+)
+from app.domains.source.models import SourceConnection
+from app.domains.work.models import Task
 from app.i18n import tr
 from app.models import User
+
+WORKLOAD_REVIEW_NOTICE = "有负荷调整申请等你审批"
+EXTENSION_REVIEW_NOTICE = "有延期申请等你审批"
 
 
 class CapacityNotFound(HTTPException):
@@ -137,3 +147,47 @@ def notify_employee(
         workload_request_id=workload_request_id,
         extension_request_id=extension_request_id,
     )
+
+
+def open_jira_task_counts(
+    session: Session, org_id: UUID, employee_ids: list[UUID]
+) -> dict[UUID, int]:
+    """Return open Jira task counts per employee (absent if Jira is not linked)."""
+    if not employee_ids:
+        return {}
+    # shortcut: Unsynced or stale unresolved tasks still count; revisit when Jira sync freshness is exposed.
+    jira_connected = session.exec(
+        select(
+            select(SourceConnection.id)
+            .where(SourceConnection.org_id == org_id, SourceConnection.kind == "jira")
+            .exists()
+        )
+    ).one()
+    if not jira_connected:
+        return {}
+    rows = session.exec(
+        select(ExternalIdentity.employee_id, func.count(func.distinct(Task.id)))
+        .outerjoin(
+            Task,
+            (col(Task.org_id) == ExternalIdentity.org_id)
+            & (col(Task.source) == ExternalIdentity.source)
+            & col(Task.attributes)["resolved"].astext.is_(None)
+            & col(Task.attributes).contains(
+                func.jsonb_build_object(
+                    "people",
+                    func.jsonb_build_array(
+                        func.jsonb_build_object(
+                            "id", ExternalIdentity.external_id, "role", "assignee"
+                        )
+                    ),
+                )
+            ),
+        )
+        .where(
+            ExternalIdentity.org_id == org_id,
+            ExternalIdentity.source == "jira",
+            col(ExternalIdentity.employee_id).in_(employee_ids),
+        )
+        .group_by(col(ExternalIdentity.employee_id))
+    ).all()
+    return {eid: count for eid, count in rows if eid is not None}

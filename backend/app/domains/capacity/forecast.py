@@ -5,7 +5,7 @@ from uuid import UUID
 
 from pydantic import JsonValue
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlmodel import Session, col, delete, func, or_, select
+from sqlmodel import Session, col, delete, or_, select
 
 from app.authz.policies import (
     can_manage_department,
@@ -24,6 +24,9 @@ from app.domains.capacity.common import (
 )
 from app.domains.capacity.common import (
     employee as load_employee,
+)
+from app.domains.capacity.common import (
+    open_jira_task_counts as open_jira_task_counts,
 )
 from app.domains.capacity.forecast_policy import (
     DEFAULT_RETENTION_RATE,
@@ -48,15 +51,13 @@ from app.domains.capacity.schemas import (
     WorkloadList,
 )
 from app.domains.capacity.settings import require_enabled
+from app.domains.capacity.workload_views import views
 from app.domains.org.models import (
     Department,
     Employee,
     EmploymentStatus,
-    ExternalIdentity,
 )
 from app.domains.org.service import department_ancestry
-from app.domains.source.models import SourceConnection
-from app.domains.work.models import Task
 from app.i18n import tr
 
 FORECAST_HORIZON_WEEKS = calendar.MAX_WORKLOAD_WEEKS
@@ -65,50 +66,6 @@ _INSERT_CHUNK_SIZE = 500
 
 def _round_5(value: float) -> int:
     return min(200, max(0, int((value + 2.5) // 5) * 5))
-
-
-def open_jira_task_counts(
-    session: Session, org_id: UUID, employee_ids: list[UUID]
-) -> dict[UUID, int]:
-    """Return open Jira task counts per employee (absent if Jira is not linked)."""
-    if not employee_ids:
-        return {}
-    # shortcut: Unsynced or stale unresolved tasks still count; revisit when Jira sync freshness is exposed.
-    jira_connected = session.exec(
-        select(
-            select(SourceConnection.id)
-            .where(SourceConnection.org_id == org_id, SourceConnection.kind == "jira")
-            .exists()
-        )
-    ).one()
-    if not jira_connected:
-        return {}
-    rows = session.exec(
-        select(ExternalIdentity.employee_id, func.count(func.distinct(Task.id)))
-        .outerjoin(
-            Task,
-            (col(Task.org_id) == ExternalIdentity.org_id)
-            & (col(Task.source) == ExternalIdentity.source)
-            & col(Task.attributes)["resolved"].astext.is_(None)
-            & col(Task.attributes).contains(
-                func.jsonb_build_object(
-                    "people",
-                    func.jsonb_build_array(
-                        func.jsonb_build_object(
-                            "id", ExternalIdentity.external_id, "role", "assignee"
-                        )
-                    ),
-                )
-            ),
-        )
-        .where(
-            ExternalIdentity.org_id == org_id,
-            ExternalIdentity.source == "jira",
-            col(ExternalIdentity.employee_id).in_(employee_ids),
-        )
-        .group_by(col(ExternalIdentity.employee_id))
-    ).all()
-    return {eid: count for eid, count in rows if eid is not None}
 
 
 def _forecast_row_values(rec: CapacityWeekForecast) -> dict[str, object]:
@@ -521,8 +478,6 @@ def override_forecasts(
     via: Via = "web",
     client_name: str | None = None,
 ) -> WorkloadList:
-    from app.domains.capacity.workload import views
-
     require_enabled(principal, session)
     subject = _managed_subject(principal, session, body.employee_id)
     assert principal.user_id is not None
@@ -596,8 +551,6 @@ def reset_forecasts(
     via: Via = "web",
     client_name: str | None = None,
 ) -> WorkloadList:
-    from app.domains.capacity.workload import views
-
     require_enabled(principal, session)
     subject = _managed_subject(principal, session, query.employee_id)
     weeks_count = (query.end_week - query.start_week).days // 7 + 1
