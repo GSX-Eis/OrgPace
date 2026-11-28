@@ -39,7 +39,7 @@ scripts/remote-test.sh preflight
 4. 门禁 1 批准并移入「待合入dev」列后，由 `OP·Leader` 严格按以下**防 `skipped` 假绿误秒合竞态规程**放行自动合并（只对当前子单创建的 PR 执行，不用 `--admin`，不直接 push `dev`/`master`，不 force push）：
    1. 核对当前 `headRefOid` 与 `OP·Reviewer` 批准的 40 位 SHA 一致（`gh pr view <PR> --json headRefOid,mergeable,mergeStateStatus`）；
    2. 记录当前 UTC 时间戳（或既有 check-runs 状态）后执行 `gh pr ready <PR>`；
-   3. 执行**有界短时核验**（最多 30 秒、每 3 秒检查一次 `GH_TOKEN="$(gh auth token --user GSX-Eis)" gh api repos/GSX-Eis/OrgPace/commits/<SHA>/check-runs`，严禁同步等 CI 跑完，仅消除 `ready_for_review` 注册空窗），确认 `ready_for_review` 已为 `<SHA>` 创建非 `skipped` 的新一轮 check runs（`queued` / `in_progress`，或晚于 ready 时间且 `conclusion != "skipped"` 的 `completed`）；若 30 秒后仍只有旧的 Draft `skipped` 记录，**禁止**开启 `--auto`，改查 `gh run list --commit <SHA>` 排查或上报；
+   3. 执行**有界短时核验**（最多 30 秒、每 3 秒检查一次 `gh api repos/{owner}/{repo}/commits/<SHA>/check-runs`，严禁同步等 CI 跑完，仅消除 `ready_for_review` 注册空窗），确认 `ready_for_review` 已为 `<SHA>` 创建非 `skipped` 的新一轮 check runs（`queued` / `in_progress`，或晚于 ready 时间且 `conclusion != "skipped"` 的 `completed`）；若 30 秒后仍只有旧的 Draft `skipped` 记录，**禁止**开启 `--auto`，改查 `gh run list --commit <SHA>` 排查或上报；
    4. 确认新检查已注册后再执行：
 
       ```bash
