@@ -9,10 +9,10 @@ from openpyxl import Workbook
 from sqlalchemy import Engine, inspect, text
 from sqlmodel import Session, select
 
-from app.domains.capability import service
 from app.domains.capability.files import HEADERS, dictionary_xlsx, parse_dictionary
 from app.domains.capability.models import CapabilitySchemaVersion
 from app.domains.capability.schemas import DictionaryDefinition
+from app.domains.change_request import handover
 from app.domains.change_request.models import ChangeItem, ProfileChangeRequest
 from app.domains.evidence.models import Evidence
 from app.domains.model.models import ModelSetting
@@ -304,7 +304,7 @@ def test_concurrent_versions_and_atomic_rollback(
     def fail(*_args: object, **_kwargs: object) -> None:
         raise RuntimeError("Synthetic inbox failure")
 
-    monkeypatch.setattr(service, "notify", fail)
+    monkeypatch.setattr(handover, "notify", fail)
     with pytest.raises(RuntimeError, match="Synthetic"):
         save(client, url, auth["admin"], preview, method)
     assert (
