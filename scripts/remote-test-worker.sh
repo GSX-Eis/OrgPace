@@ -210,8 +210,8 @@ if [[ $EPP_VERBOSE != 0 && $EPP_VERBOSE != 1 ]]; then
   echo "Invalid EPP_VERBOSE (expected 0 or 1): $EPP_VERBOSE" >&2
   exit 2
 fi
-if ! [[ $EPP_WARM_DB_PORT =~ ^[1-9][0-9]*$ ]] || (( EPP_WARM_DB_PORT >= 65536 || EPP_WARM_DB_PORT == 5432 )); then
-  echo "Invalid EPP_WARM_DB_PORT (expected 1-65535 and != 5432): $EPP_WARM_DB_PORT" >&2
+if ! [[ $EPP_WARM_DB_PORT =~ ^[1-9][0-9]*$ ]] || (( EPP_WARM_DB_PORT >= 65536 || EPP_WARM_DB_PORT == 5432 || (EPP_WARM_DB_PORT >= 15000 && EPP_WARM_DB_PORT <= 59999) )); then
+  echo "Invalid EPP_WARM_DB_PORT (expected 1-65535, != 5432, and outside 15000-59999): $EPP_WARM_DB_PORT" >&2
   exit 2
 fi
 
@@ -306,8 +306,44 @@ cleanup() {
     if [[ $code == 0 ]]; then rm -rf -- "$artifacts"; fi
   fi
   if $emit_metric; then
-    printf 'EPP_METRIC db_mode=%s db_prep_s=%s template_status=%s test_exec_s=%s\n' \
-      "$db_mode" "$db_prep_s" "$template_status" "$test_exec_s"
+    local db_container_s=$db_prep_s template_s=n/a db_clone_s=n/a db_clone_max_s=n/a db_clone_count=0
+    if [[ -s ${EPP_DB_METRICS_FILE:-} ]]; then
+      read -r template_s db_clone_s db_clone_max_s db_clone_count < <(
+        python3 - "${EPP_DB_METRICS_FILE}" 2>/dev/null <<'PY' || printf 'n/a n/a n/a 0\n'
+import json, math, sys
+from pathlib import Path
+
+tpl, clones = [], []
+try:
+    for raw in Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace").splitlines():
+        if not raw.strip():
+            continue
+        try:
+            ev = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(ev, dict):
+            continue
+        val = ev.get("seconds")
+        if isinstance(val, bool) or not isinstance(val, (int, float)) or not math.isfinite(val) or val < 0:
+            continue
+        if ev.get("kind") == "template":
+            tpl.append(float(val))
+        elif ev.get("kind") == "db_clone":
+            clones.append(float(val))
+except OSError:
+    pass
+print(
+    f"{sum(tpl):.3f}" if tpl else "n/a",
+    f"{sum(clones):.3f}" if clones else "n/a",
+    f"{max(clones):.3f}" if clones else "n/a",
+    len(clones),
+)
+PY
+      ) || { template_s=n/a; db_clone_s=n/a; db_clone_max_s=n/a; db_clone_count=0; }
+    fi
+    printf 'EPP_METRIC db_mode=%s db_prep_s=%s db_container_s=%s template_status=%s template_s=%s db_clone_s=%s db_clone_max_s=%s db_clone_count=%s test_exec_s=%s\n' \
+      "$db_mode" "$db_prep_s" "$db_container_s" "$template_status" "$template_s" "$db_clone_s" "$db_clone_max_s" "$db_clone_count" "$test_exec_s"
   fi
   rm -rf -- "$scratch"
   exit "$code"
@@ -498,6 +534,7 @@ fi
 db_prep_s=$(mono_elapsed "$db_prep_started")
 db_prep_done=true
 if [[ $mode != playwright ]]; then
+  export EPP_DB_METRICS_FILE="$scratch/db-metrics.jsonl"
   pi_lock_hash=$(sha256sum pi/package-lock.json | awk '{print $1}')
   pi_hash_file=pi/node_modules/.package-lock.sha256
   if [[ -d pi/node_modules && -f $pi_hash_file && $(cat "$pi_hash_file") == "$pi_lock_hash" ]]; then

@@ -1,5 +1,6 @@
 import os
 import re
+import time
 from contextlib import ExitStack
 from pathlib import Path
 from uuid import uuid4
@@ -79,12 +80,14 @@ def _create_template(stack: ExitStack, url: URL) -> str:
         ensure_shared_template,
         isolated_database,
         migrate,
+        record_db_metric,
         run_scoped_db_name,
     )
 
     if _shared_template_mode():
         return ensure_shared_template(url, lease_stack=stack)
 
+    started = time.monotonic()
     template = (
         run_scoped_db_name("tpl")
         if os.environ.get("PYTEST_DB_PREFIX", "").strip()
@@ -93,6 +96,7 @@ def _create_template(stack: ExitStack, url: URL) -> str:
     engine = stack.enter_context(isolated_database(url, template))
     migrate(engine, "upgrade", "head")
     engine.dispose()
+    record_db_metric("template", time.monotonic() - started)
     return template
 
 
