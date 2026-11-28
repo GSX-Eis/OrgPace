@@ -1,628 +1,77 @@
-from typing import Annotated
-from uuid import UUID
+from fastapi import APIRouter
+from fastapi.routing import APIRoute
 
-from fastapi import APIRouter, Query
-
-from app.api.deps import SessionDep
-from app.authz.deps import OrgAdminDep, OrgPrincipalDep
-from app.domains.capacity import (
-    assignment,
-    demand,
-    extension,
-    forecast,
-    forecast_policy,
-    inbox_detail,  # noqa: F401  # Registers CapacityInboxProvider on router import.
-    project,
-    proposal,
-    settings,
-    workload,
-)
-from app.domains.capacity.assignment_schemas import (
-    AssignmentInput,
-    AssignmentPublic,
-    AssignmentUpdateInput,
-    DemandAssignmentList,
-    DepartedAssignmentCancelled,
-    MyAssignmentList,
-)
-from app.domains.capacity.demand_schemas import (
-    BorrowDecisionInput,
-    BorrowRequest,
-    CapacityReference,
-    ChangeProposalInput,
-    DemandBasis,
-    DemandHistory,
-    DemandInput,
-    DemandList,
-    DemandListInput,
-    DemandPublic,
-    PlanReplyInput,
-    ProjectDetail,
-    ProjectInput,
-    ProjectSummary,
-    ProposalWithdrawInput,
-    ReferenceInput,
-    RespondInput,
-)
-from app.domains.capacity.extension_schemas import (
-    ExtensionDecisionInput,
-    ExtensionInput,
-    ExtensionList,
-    ExtensionPublic,
-)
-from app.domains.capacity.models import (
-    CapacityDemandEvent,
-    DemandEventKind,
-    DemandStatus,
-)
-from app.domains.capacity.schemas import (
-    CapacitySettingsInput,
-    CarryOverBatchPublic,
-    CarryOverCommitInput,
-    CarryOverPreview,
-    CarryOverQuery,
-    CarryOverRevertInput,
-    CarryOverRevertPreview,
-    ForecastConfigPublic,
-    ForecastEventInput,
-    ForecastEventList,
-    ForecastEventMutationResult,
-    ForecastOverrideInput,
-    ForecastPolicyInput,
-    ForecastPolicyMutationResult,
-    ForecastRefreshInput,
-    ForecastRefreshResult,
-    ForecastResetQuery,
-    MyWorkload,
-    UnavailabilityInput,
-    UnavailabilityList,
-    UnavailabilityPublic,
-    UnavailabilityQuery,
-    WorkloadDecisionInput,
-    WorkloadList,
-    WorkloadListQuery,
-    WorkloadQuery,
-    WorkloadRequestInput,
-    WorkloadRequestList,
-    WorkloadRequestPublic,
-    WorkloadWeeksInput,
-)
-from app.domains.org.schemas import DepartmentsPublic
-from app.domains.planning import compose as planning_compose
-
-router = APIRouter(prefix="/orgs/{org_id}", tags=["capacity"])
-playwright_router = APIRouter(
-    prefix="/private", tags=["private"], include_in_schema=False
+from app.api.routes import (
+    capacity_assignments,
+    capacity_demands,
+    capacity_forecast,
+    capacity_workload,
 )
 
+# Preserve OpenAPI path insertion order so clean-checkout client generation produces zero diff.
+_LEGACY_ROUTE_ORDER = (
+    "list_unavailability",
+    "register_unavailability",
+    "delete_unavailability",
+    "list_demand_assignments",
+    "create_assignment",
+    "update_assignment",
+    "list_my_assignments",
+    "list_capacity_departments",
+    "capacity_reference",
+    "submit_project",
+    "list_projects",
+    "get_project",
+    "submit_demand",
+    "list_demands",
+    "get_demand",
+    "get_demand_history",
+    "get_demand_basis",
+    "reply_demand",
+    "propose_change",
+    "respond_demand",
+    "list_borrow_requests",
+    "decide_borrow_request",
+    "withdraw_proposal",
+    "get_capacity_settings",
+    "put_capacity_settings",
+    "get_my_workload",
+    "list_workloads",
+    "set_capacity_weeks",
+    "override_capacity_forecasts",
+    "reset_capacity_forecasts",
+    "refresh_capacity_forecasts",
+    "list_capacity_forecast_policies",
+    "upsert_capacity_forecast_policy",
+    "delete_capacity_forecast_policy",
+    "list_capacity_forecast_events",
+    "create_capacity_forecast_event",
+    "update_capacity_forecast_event",
+    "delete_capacity_forecast_event",
+    "preview_capacity_carry_over",
+    "commit_capacity_carry_over",
+    "preview_capacity_carry_over_revert",
+    "revert_capacity_carry_over",
+    "request_workload_change",
+    "list_workload_requests",
+    "decide_workload_request",
+    "request_extension",
+    "list_extension_requests",
+    "decide_extension_request",
+)
+_ROUTE_RANK = {name: idx for idx, name in enumerate(_LEGACY_ROUTE_ORDER)}
 
-@router.get("/capacity/unavailability")
-def list_unavailability(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-    query: Annotated[UnavailabilityQuery, Query()],
-) -> UnavailabilityList:
-    return workload.list_unavailability(principal, session, **query.model_dump())
-
-
-@router.post("/capacity/unavailability")
-def register_unavailability(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-    body: UnavailabilityInput,
-) -> UnavailabilityPublic:
-    result = workload.register_unavailability(principal, session, body)
-    session.commit()
-    return result
-
-
-@router.delete("/capacity/unavailability/{unavailability_id}")
-def delete_unavailability(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-    unavailability_id: UUID,
-) -> UnavailabilityPublic:
-    result = workload.delete_unavailability(principal, session, unavailability_id)
-    session.commit()
-    return result
-
-
-@router.get("/capacity/demands/{demand_id}/assignments")
-def list_demand_assignments(
-    principal: OrgPrincipalDep, session: SessionDep, demand_id: UUID
-) -> DemandAssignmentList:
-    return assignment.list_demand_assignments(principal, session, demand_id)
-
-
-@router.post("/capacity/demands/{demand_id}/assignments")
-def create_assignment(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-    demand_id: UUID,
-    body: AssignmentInput,
-) -> AssignmentPublic:
-    result = assignment.create_assignment(principal, session, demand_id, body)
-    session.commit()
-    return result
-
-
-@router.patch("/capacity/assignments/{assignment_id}")
-def update_assignment(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-    assignment_id: UUID,
-    body: AssignmentUpdateInput,
-) -> AssignmentPublic | DepartedAssignmentCancelled:
-    result = assignment.update_assignment(principal, session, assignment_id, body)
-    session.commit()
-    return result
-
-
-@router.get("/capacity/assignments/me")
-def list_my_assignments(
-    principal: OrgPrincipalDep, session: SessionDep
-) -> MyAssignmentList:
-    return assignment.list_my_assignments(principal, session)
-
-
-@router.get("/capacity/departments")
-def list_capacity_departments(
-    principal: OrgPrincipalDep, session: SessionDep
-) -> DepartmentsPublic:
-    return demand.list_capacity_departments(principal, session)
-
-
-@router.get("/capacity/reference")
-def capacity_reference(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-    query: Annotated[ReferenceInput, Query()],
-) -> CapacityReference:
-    return demand.capacity_reference(principal, session, **query.model_dump())
-
-
-@router.post("/capacity/projects")
-def submit_project(
-    principal: OrgPrincipalDep, session: SessionDep, body: ProjectInput
-) -> ProjectSummary:
-    result = project.submit_project(principal, session, body)
-    session.commit()
-    return result
-
-
-@router.get("/capacity/projects")
-def list_projects(
-    principal: OrgPrincipalDep, session: SessionDep
-) -> list[ProjectSummary]:
-    return project.list_projects(principal, session)
-
-
-@router.get("/capacity/projects/{project_id}")
-def get_project(
-    principal: OrgPrincipalDep, session: SessionDep, project_id: UUID
-) -> ProjectDetail:
-    return project.get_project(principal, session, project_id)
-
-
-@router.post("/capacity/demands")
-def submit_demand(
-    principal: OrgPrincipalDep, session: SessionDep, body: DemandInput
-) -> DemandPublic:
-    result = demand.submit_demand(principal, session, **body.model_dump())
-    session.commit()
-    return result
-
-
-@router.get("/capacity/demands")
-def list_demands(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-    query: Annotated[DemandListInput, Query()],
-) -> DemandList:
-    return demand.list_demands(principal, session, **query.model_dump())
-
-
-@router.get("/capacity/demands/{demand_id}")
-def get_demand(
-    principal: OrgPrincipalDep, session: SessionDep, demand_id: UUID
-) -> DemandPublic:
-    return demand.get_demand(principal, session, demand_id, include_previous=True)
-
-
-@router.get("/capacity/demands/{demand_id}/history")
-def get_demand_history(
-    principal: OrgPrincipalDep, session: SessionDep, demand_id: UUID
-) -> DemandHistory:
-    return planning_compose.demand_snapshot_history(principal, session, demand_id)
-
-
-@router.get("/capacity/demands/{demand_id}/basis")
-def get_demand_basis(
-    principal: OrgPrincipalDep, session: SessionDep, demand_id: UUID
-) -> DemandBasis:
-    return demand.get_demand_basis(principal, session, demand_id)
-
-
-@router.post("/capacity/demands/{demand_id}/reply")
-def reply_demand(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-    demand_id: UUID,
-    body: PlanReplyInput,
-) -> DemandPublic:
-    if body.option_id is None:
-        if body.lender_department_id is not None or body.borrow_headcount is not None:
-            raise proposal.ProposalConflict("只有借调方案可以指定借出部门和人数")
-        result = demand.reply_demand(
-            principal,
-            session,
-            demand_id,
-            **body.model_dump(exclude={"lender_department_id", "borrow_headcount"}),
-        )
-    else:
-        result = planning_compose.propose_plan(
-            principal, session, demand_id, body, include_previous=True
-        )
-    session.commit()
-    return result
-
-
-@router.post("/capacity/demands/{demand_id}/change")
-def propose_change(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-    demand_id: UUID,
-    body: ChangeProposalInput,
-) -> DemandPublic:
-    result = planning_compose.propose_plan(
-        principal, session, demand_id, body, include_previous=True
+router = APIRouter()
+_sub_routes = [
+    route
+    for sub_router in (
+        capacity_workload.router,
+        capacity_assignments.router,
+        capacity_demands.router,
+        capacity_forecast.router,
     )
-    session.commit()
-    return result
-
-
-@router.post("/capacity/demands/{demand_id}/respond")
-def respond_demand(
-    principal: OrgPrincipalDep, session: SessionDep, demand_id: UUID, body: RespondInput
-) -> DemandPublic:
-    try:
-        result = demand.respond_demand(
-            principal, session, demand_id, **body.model_dump()
-        )
-    except proposal.ProposalFailed:
-        session.commit()
-        raise
-    session.commit()
-    return result
-
-
-@router.get("/capacity/borrow-requests")
-def list_borrow_requests(
-    principal: OrgPrincipalDep, session: SessionDep, mine: bool = False
-) -> list[BorrowRequest]:
-    return proposal.borrow_requests(principal, session, mine=mine)
-
-
-@router.post("/capacity/borrow-requests/{line_id}/decision", status_code=204)
-def decide_borrow_request(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-    line_id: UUID,
-    body: BorrowDecisionInput,
-) -> None:
-    try:
-        proposal.decide_borrow(principal, session, line_id, body)
-    except proposal.ProposalFailed:
-        session.commit()
-        raise
-    session.commit()
-
-
-@router.post("/capacity/proposals/{proposal_id}/withdraw")
-def withdraw_proposal(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-    proposal_id: UUID,
-    body: ProposalWithdrawInput,
-) -> DemandPublic:
-    try:
-        result = proposal.withdraw(principal, session, proposal_id, body.revision)
-    except proposal.ProposalFailed:
-        session.commit()
-        raise
-    session.commit()
-    return result
-
-
-@router.get("/capacity-settings")
-def get_capacity_settings(
-    principal: OrgPrincipalDep, session: SessionDep
-) -> CapacitySettingsInput:
-    return settings.read_settings(principal, session)
-
-
-@router.put("/capacity-settings")
-def put_capacity_settings(
-    principal: OrgPrincipalDep, session: SessionDep, body: CapacitySettingsInput
-) -> CapacitySettingsInput:
-    result = settings.save_settings(principal, session, body)
-    session.commit()
-    return result
-
-
-@router.get("/capacity/workloads/me")
-def get_my_workload(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-    query: Annotated[WorkloadQuery, Query()],
-) -> MyWorkload:
-    return workload.get_my_workload(principal, session, **query.model_dump())
-
-
-@router.get("/capacity/workloads")
-def list_workloads(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-    query: Annotated[WorkloadListQuery, Query()],
-) -> WorkloadList:
-    return workload.list_workloads(principal, session, **query.model_dump())
-
-
-@router.put("/capacity/weeks")
-def set_capacity_weeks(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-    body: WorkloadWeeksInput,
-) -> WorkloadList:
-    result = workload.set_weeks(principal, session, body)
-    session.commit()
-    return result
-
-
-@router.put("/capacity/forecasts")
-def override_capacity_forecasts(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-    body: ForecastOverrideInput,
-) -> WorkloadList:
-    result = forecast.override_forecasts(principal, session, body)
-    session.commit()
-    return result
-
-
-@router.delete("/capacity/forecasts")
-def reset_capacity_forecasts(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-    query: Annotated[ForecastResetQuery, Query()],
-) -> WorkloadList:
-    result = forecast.reset_forecasts(principal, session, query)
-    session.commit()
-    return result
-
-
-@router.post("/capacity/forecasts/refresh")
-def refresh_capacity_forecasts(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-    department_id: UUID | None = None,
-    body: ForecastRefreshInput | None = None,
-) -> ForecastRefreshResult:
-    result = forecast.refresh_forecasts_for_actor(
-        principal,
-        session,
-        department_id=(body.department_id if body else None) or department_id,
-    )
-    session.commit()
-    return result
-
-
-@router.get("/capacity/forecast-policies")
-def list_capacity_forecast_policies(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-) -> ForecastConfigPublic:
-    return forecast_policy.get_forecast_config(principal, session)
-
-
-@router.put("/capacity/forecast-policies")
-def upsert_capacity_forecast_policy(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-    body: ForecastPolicyInput,
-) -> ForecastPolicyMutationResult:
-    result = forecast_policy.upsert_forecast_policy(principal, session, body)
-    session.commit()
-    return result
-
-
-@router.delete("/capacity/forecast-policies/{policy_id}")
-def delete_capacity_forecast_policy(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-    policy_id: UUID,
-) -> ForecastRefreshResult:
-    result = forecast_policy.delete_forecast_policy(principal, session, policy_id)
-    session.commit()
-    return result
-
-
-@router.get("/capacity/forecast-events")
-def list_capacity_forecast_events(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-    department_id: UUID | None = None,
-    include_past: bool = False,
-) -> ForecastEventList:
-    return forecast_policy.list_forecast_events(
-        principal,
-        session,
-        department_id=department_id,
-        include_past=include_past,
-    )
-
-
-@router.post("/capacity/forecast-events")
-def create_capacity_forecast_event(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-    body: ForecastEventInput,
-) -> ForecastEventMutationResult:
-    result = forecast_policy.create_forecast_event(principal, session, body)
-    session.commit()
-    return result
-
-
-@router.put("/capacity/forecast-events/{event_id}")
-def update_capacity_forecast_event(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-    event_id: UUID,
-    body: ForecastEventInput,
-) -> ForecastEventMutationResult:
-    result = forecast_policy.update_forecast_event(principal, session, event_id, body)
-    session.commit()
-    return result
-
-
-@router.delete("/capacity/forecast-events/{event_id}")
-def delete_capacity_forecast_event(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-    event_id: UUID,
-) -> ForecastRefreshResult:
-    result = forecast_policy.delete_forecast_event(principal, session, event_id)
-    session.commit()
-    return result
-
-
-@router.get("/capacity/weeks/carry-over/preview")
-def preview_capacity_carry_over(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-    query: Annotated[CarryOverQuery, Query()],
-) -> CarryOverPreview:
-    return workload.preview_carry_over(principal, session, query.department_id)
-
-
-@router.post("/capacity/weeks/carry-over")
-def commit_capacity_carry_over(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-    body: CarryOverCommitInput,
-) -> CarryOverBatchPublic:
-    result = workload.commit_carry_over(principal, session, body)
-    session.commit()
-    return result
-
-
-@router.get("/capacity/weeks/carry-over/revert/preview")
-def preview_capacity_carry_over_revert(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-) -> CarryOverRevertPreview:
-    return workload.preview_carry_over_revert(principal, session)
-
-
-@router.post("/capacity/weeks/carry-over/revert")
-def revert_capacity_carry_over(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-    body: CarryOverRevertInput | None = None,
-) -> CarryOverBatchPublic:
-    result = workload.revert_carry_over(
-        principal, session, batch_id=body.batch_id if body else None
-    )
-    session.commit()
-    return result
-
-
-@router.post("/capacity/workloads/me/requests")
-def request_workload_change(
-    principal: OrgPrincipalDep, session: SessionDep, body: WorkloadRequestInput
-) -> WorkloadRequestPublic:
-    result = workload.request_workload_change(principal, session, **body.model_dump())
-    session.commit()
-    return result
-
-
-@router.get("/capacity/workload-requests")
-def list_workload_requests(
-    principal: OrgPrincipalDep, session: SessionDep
-) -> WorkloadRequestList:
-    return workload.list_workload_requests(principal, session)
-
-
-@router.post("/capacity/workload-requests/{request_id}/decision")
-def decide_workload_request(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-    request_id: UUID,
-    body: WorkloadDecisionInput,
-) -> WorkloadRequestPublic:
-    result = workload.decide_workload_request(principal, session, request_id, body)
-    session.commit()
-    return result
-
-
-@router.post("/capacity/assignments/{assignment_id}/extension-requests")
-def request_extension(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-    assignment_id: UUID,
-    body: ExtensionInput,
-) -> ExtensionPublic:
-    result = extension.request_extension(
-        principal, session, assignment_id, **body.model_dump()
-    )
-    session.commit()
-    return result
-
-
-@router.get("/capacity/extension-requests")
-def list_extension_requests(
-    principal: OrgPrincipalDep, session: SessionDep
-) -> ExtensionList:
-    return extension.list_extension_requests(principal, session)
-
-
-@router.post("/capacity/extension-requests/{request_id}/decision")
-def decide_extension_request(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-    request_id: UUID,
-    body: ExtensionDecisionInput,
-) -> ExtensionPublic:
-    result = extension.decide_extension_request(principal, session, request_id, body)
-    session.commit()
-    return result
-
-
-@playwright_router.post(
-    "/orgs/{org_id}/legacy-accepted-demands/{demand_id}", status_code=204
-)
-def seed_legacy_accepted_demand(
-    principal: OrgAdminDep, session: SessionDep, demand_id: UUID
-) -> None:
-    row = demand.demand_row(principal, session, demand_id, lock=True)
-    if (
-        not demand.is_legacy_verbal_reply(session, row)
-        or proposal.latest(session, principal.org_id, row.id) is not None
-        or row.committed_start_date is None
-        or row.committed_end_date is None
-    ):
-        raise settings.CapacityConflict()
-    row.status = DemandStatus.ACCEPTED
-    row.revision += 1
-    session.add(row)
-    session.add(
-        CapacityDemandEvent(
-            org_id=principal.org_id,
-            demand_id=row.id,
-            actor_user_id=row.requester_user_id,
-            kind=DemandEventKind.ACCEPTED,
-            text="",
-            via="web",
-        )
-    )
-    session.commit()
+    for route in sub_router.routes
+    if isinstance(route, APIRoute)
+]
+_sub_routes.sort(key=lambda route: _ROUTE_RANK.get(route.name, len(_ROUTE_RANK)))
+router.routes.extend(_sub_routes)

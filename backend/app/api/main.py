@@ -98,7 +98,7 @@ if settings.FASTAPI_ENV == "development":
 def include_playwright_fixtures(router: APIRouter) -> None:
     if settings.FASTAPI_ENV == "development" and settings.PLAYWRIGHT_FIXTURES_ENABLED:
         router.include_router(appeals.playwright_router)
-        router.include_router(capacity.playwright_router)
+        router.include_router(private.playwright_router)
 
 
 include_playwright_fixtures(api_router)
