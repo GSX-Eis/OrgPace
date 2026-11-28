@@ -38,32 +38,35 @@ scripts/remote-test.sh preflight
 3. 用 `"$MULTICA_CLI_PATH" issue pull-requests <子issue> --output json` 确认 PR 已关联。记录当前 head SHA，并在子单发交付评论后移入「门禁1审查」，由 `OP·Reviewer` 执行纯只读审查。
 4. 门禁 1 批准并移入「待合入dev」列后，由 `OP·Leader` 严格按以下**防 `skipped` 假绿误秒合竞态规程**放行自动合并（只对当前子单创建的 PR 执行，不用 `--admin`，不直接 push `dev`/`master`，不 force push）：
    1. 核对当前 `headRefOid` 与 `OP·Reviewer` 批准的 40 位 SHA 一致（`gh pr view <PR> --json headRefOid,mergeable,mergeStateStatus`）；
-   2. 记录当前 UTC 时间戳（或既有 check-runs 状态）后执行 `gh pr ready <PR>`；
-   3. 执行**有界短时核验**（最多 30 秒、每 3 秒检查一次 `gh api repos/{owner}/{repo}/commits/<SHA>/check-runs`，严禁同步等 CI 跑完，仅消除 `ready_for_review` 注册空窗），确认 `ready_for_review` 已为 `<SHA>` 创建非 `skipped` 的新一轮 check runs（`queued` / `in_progress`，或晚于 ready 时间且 `conclusion != "skipped"` 的 `completed`）；若 30 秒后仍只有旧的 Draft `skipped` 记录，**禁止**开启 `--auto`，改查 `gh run list --commit <SHA>` 排查或上报；
-   4. 确认新检查已注册后再执行：
+   2. 记录当前 UTC 时间戳以及 `<SHA>` 上既有 Draft `check-runs` 的 `id` / `started_at`（作为旧记录基线），随后执行 `gh pr ready <PR>`；
+   3. 执行**有界短时核验**（最多 30 秒、每 3 秒检查一次 `gh api repos/{owner}/{repo}/commits/<SHA>/check-runs`，严禁同步等 CI 跑完，仅消除 `ready_for_review` 注册空窗），以**全部 8 项必需检查名**（`changes`、`test-playwright`、`test-backend`、`test-docker-compose`、`test-production-install`、`test-pi`、`pre-commit`、`Run zizmor`）作为核验集合逐项确认：
+      - 属于当前 PR 与已批准的 40 位 `<SHA>`，且为本次 `gh pr ready` 之后新创建/触发的新一轮记录（对比此前记录的 `id`、登记时间及对应 workflow run，绝不采信旧 Draft 记录）；
+      - 8 项中**每一项**的状态均已达到 `queued` / `in_progress`，或晚于 `ready` 时间完成且 `conclusion != "skipped"`（非必需检查如 `playwright-shard` 因路径过滤合法跳过不受此限）；
+      - 只要 8 项中任一项缺失、仍为旧记录、仅 `skipped` 或来源不可确认，均**不得放行**；若满 30 秒后仍未齐备，**禁止**开启 `--auto`，改查 `gh run list --commit <SHA>` 排查或上报；
+   4. 确认上述全部 8 项新检查已注册后再执行：
 
       ```bash
       gh pr merge <PR> --auto --merge --match-head-commit <SHA>
       gh pr view <PR> --json autoMergeRequest,headRefOid,state
       ```
 
-      `--match-head-commit` 保证开启时的 head 没被意外替换；之后每次自己 push 都需重新自审并核实新的 head 与 auto-merge 状态。保护不要求 strict，所以不为单纯落后 `dev` 而重复合并；有冲突时仍 fetch、merge `dev`、验证、普通 push。
+      `--match-head-commit` 保证开启时的 head 没被意外替换。保护不要求 strict，所以不为单纯落后 `dev` 而重复合并；但凡因 CI 失败或冲突需要追加任何新提交，必须按第 6 步退回流程先停用 `--auto` 并恢复 Draft、经 `OP·Reviewer` 批准新 SHA 后再重新执行完整 Ready 登记核验，**严禁未经复审的 SHA 自动合入**。
 5. 用已核实的条件参数注册下一次运行，然后结束当前运行，不执行 `gh pr checks --watch`：
 
    ```bash
    "$MULTICA_CLI_PATH" issue wakeup create <子issue> \
      --until-pr checks --expires-in 2h --on-timeout wake \
      --parent <结果评论ID> \
-     --instruction "检查当前 PR 的 CI：失败则修复，成功则确认 GitHub 自动合并及 issue 状态；回复合并 SHA。"
+     --instruction "检查当前 PR 的 8 项必需检查结果：全部为本轮 Ready 后的真实成功则确认自动合并及 issue 状态；若 CI 失败或有冲突需改代码，停用 auto 放行并转回 Draft 后退回开发中（started_8）。"
    "$MULTICA_CLI_PATH" issue wakeup list <子issue> --output json
    ```
 
    条件只观察本 issue 直接关联的 PR；缺失链接或 GitHub snapshot 会记入 `last_error` 后重试。它只等待注册之后完成的新结果，不能拿它等待已经完成的检查；注册前若发现检查已完成，当前运行直接处理结果。多个 PR 时须核对实际触发的 PR 和 head，不能把旧 PR 的成功当作新 PR 的结果。
 6. 唤醒后读取 issue、评论、规则和当前 PR 的所有 checks，记录触发时间与结果：
-   - 有失败：读取 `gh run view <run-id> --log-failed`，按原规则最多修 3 轮；不删除、跳过或放宽检查。普通 push 后核实 auto-merge 仍有效，必要时对新 head 重新开启，然后注册新的 checks wakeup。与本次无关且本地通过的偶发失败只重跑一次。
+   - 有失败：读取 `gh run view <run-id> --log-failed`。若与本次改动无关且已在本地/云端验证通过的偶发失败，可在不改 HEAD SHA 的前提下重跑一次失败任务（`gh run rerun <run-id> --failed`），确认新非 `skipped` 检查已注册后重新挂 `--until-pr checks`；若需要改代码修复（同一子单最多修 3 轮；不删除、跳过或放宽检查），`OP·Leader` 须先停止现有 auto 放行（如存在 `autoMergeRequest` 则执行 `gh pr merge <PR> --disable-auto`）、将 PR 恢复为 Draft（`gh pr ready <PR> --undo`）并把子单退回「开发中」（`started_8`），由 `OP·Dev` 追加新 commit、完成复验与自审后重新移入「门禁1审查」（`1`），待 `OP·Reviewer` 批准新的 40 位 SHA 并移回「待合入dev」后，再由 `OP·Leader` 重新执行第 4 步完整 Ready 登记核验。
    - 尚有运行中的检查：对新完成结果重新注册条件后退出。超时唤醒则检查是否卡住，说明原因，必要时 blocked 并提及技术规划。
-   - 全部成功或 skipped：确认 `state=MERGED`；若 GitHub 尚未完成合并，注册 `--until-pr merged` 后退出，不能手动绕过自动合并。
-   - 有冲突：merge 最新 master，重新检查、自审并 push，再等新结果。
+   - 全部 8 项必需检查本轮真实成功：逐项核对 `changes`、`test-playwright`、`test-backend`、`test-docker-compose`、`test-production-install`、`test-pi`、`pre-commit`、`Run zizmor` 均属于本次 `ready` 后的新一轮执行且 `conclusion == "success"`（非必需 `playwright-shard` 因路径过滤合法 `skipped` 不受影响）。确认 `state=MERGED`；若 GitHub 尚未完成合并，注册 `--until-pr merged` 后退出，不能手动绕过自动合并。
+   - 有冲突：`OP·Leader` 须先停止现有 auto 放行（`gh pr merge <PR> --disable-auto`）、执行 `gh pr ready <PR> --undo` 恢复 Draft，并将子单退回「开发中」（`started_8`）；由 `OP·Dev` fetch 并 merge 最新 `origin/dev`（严禁 rebase / force push）、重新检查与自审并普通 push 新提交后移入「门禁1审查」（`1`），待 `OP·Reviewer` 批准新的 40 位 SHA 后再由 `OP·Leader` 重新执行第 4 步放行。
    - 已合并：确认 issue 已 done。成功路径无需另启运行回复 SHA，技术规划在阶段核对时读取关联 PR 的合并信息；还有本 issue 明确要求的验收事项（例如提速测量）时，仍需完成后再 done。
 
 ### 条件唤醒的边界
@@ -72,7 +75,7 @@ scripts/remote-test.sh preflight
 
 ## 合并后 master CI
 
-技术规划在阶段核对时检查 master 最新提交的 push workflow，失败则处理；PR 分支保护保证合并前检查通过。不为成功路径另建 master CI 定时唤醒，因为自动关单同样会禁用它。PR 条件观察的是 PR head 的检查，不能用它冒充 master 合并提交的检查。pre-commit 目前只在 PR 上运行。
+技术规划在阶段核对时检查 master 最新提交的 push workflow，失败则处理；PR 分支保护保证合并前检查通过。不为成功路径另建 master CI 定时唤醒，因为自动关单同样会禁用它。PR 条件观察的是 PR head 的检查，不能用它冒充 master 合并提交的检查。`pre-commit` 在 PR 与 `push` 到 `master`/`dev` 上均会运行。
 
 ## CI 门禁与并行边界
 
