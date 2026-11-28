@@ -721,8 +721,8 @@ pw_txt = fmt(mode="playwright", project="nere1580", exit_code=0, raw_output="  1
 assert "db_mode=ephemeral template_status=ephemeral" in pw_txt and "passed=4 skipped=1 failed=0 errors=0 xfailed=0" in pw_txt and "top_slow: n/a" in pw_txt
 
 for kw, must, forbid in (
-    (dict(mode="pytest", project="nere1580", exit_code=1, raw_output="tests/test_a.py::test_ok PASSED\n=== FAILURES ===\n___ test_boom ___\nE       assert 1 == 2\n=== short test summary info ===\nFAILED tests/test_a.py::test_boom - assert 1 == 2\n=== 1 failed, 1 passed in 0.25s ===\nCompose cleanup failed for nere1580.\nEPP_METRIC db_mode=warm db_prep_s=0.100 template_status=built test_exec_s=0.250\n"),
-     ("[remote-test] FAIL", "exit_code: 1", "template_status=built", "=== FAILURES ===", "E       assert 1 == 2", "FAILED tests/test_a.py::test_boom - assert 1 == 2", "Compose cleanup failed for nere1580."), ("test_ok PASSED",)),
+    (dict(mode="pytest", project="nere1580", exit_code=1, raw_output="tests/test_a.py::test_ok PASSED\n=== FAILURES ===\n___ test_boom ___\nE       assert 1 == 2\n=== short test summary info ===\nFAILED tests/test_a.py::test_boom - assert 1 == 2\n1 failed, 1 passed in 0.25s\nCompose cleanup failed for nere1580.\nEPP_METRIC db_mode=warm db_prep_s=0.100 template_status=built test_exec_s=0.250\nShared connection to compute.123 closed.\n"),
+     ("[remote-test] FAIL", "exit_code: 1", "template_status=built", "=== FAILURES ===", "E       assert 1 == 2", "FAILED tests/test_a.py::test_boom - assert 1 == 2", "Compose cleanup failed for nere1580."), ("test_ok PASSED", "Shared connection to")),
     (dict(mode="pytest", project="nere1580", exit_code=2, raw_output="=== ERRORS ===\n___ ERROR collecting tests/test_bad.py ___\nImportError: boom\n!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!\n"),
      ("ImportError: boom", "Interrupted: 1 error during collection"), ()),
     (dict(mode="pytest", project="nere1580", exit_code=137, raw_output="Killed\nSyntaxError: bad token in conftest.py\n"),

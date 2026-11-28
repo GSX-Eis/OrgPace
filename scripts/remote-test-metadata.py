@@ -1435,6 +1435,12 @@ def _extract_failure_diagnostics(
             cur = t if t in {"FAILURES", "ERRORS", "short test summary info"} else None
             if cur:
                 sections.setdefault(cur, []).append(ln)
+        elif cur == "short test summary info" and (
+            _PYTEST_SUMMARY_RE.match(ln.strip())
+            or ln.startswith("EPP_METRIC ")
+            or re.match(r"^Shared connection to .* closed\.$", ln.strip())
+        ):
+            cur = None
         elif cur:
             sections[cur].append(ln)
 
