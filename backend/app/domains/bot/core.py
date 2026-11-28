@@ -1,7 +1,6 @@
 import logging
 from collections.abc import Callable
 from dataclasses import replace
-from time import monotonic
 from uuid import UUID
 
 from pydantic import JsonValue
@@ -13,27 +12,17 @@ from app.domains import manager_tools
 from app.domains.base import utc_now
 from app.domains.bot import attachments, delivery, project_drafts, store, tools
 from app.domains.bot import schemas as s
-from app.domains.bot.admission import (
-    BotBusy,
-    BotDraftingPriority,
-    BotQuotaPaused,
-    BotRateLimited,
-    begin_turn,
-)
+from app.domains.bot.admission import begin_turn
 from app.domains.bot.levels import name_levels
 from app.domains.bot.models import BotSession
-from app.domains.bot.presentation import (
-    DEADLINE_MESSAGE,
-    manual_failure,
-    retry_time,
-)
+from app.domains.bot.presentation import manual_failure
 from app.domains.bot.prompts import system_prompt
 from app.domains.capacity import assistant as capacity
 from app.domains.change_request import employee
 from app.domains.change_request.models import ReviewVia
+from app.domains.chat_runtime.turn import PiTurnSpec, TurnErrorCopy, execute_turn
 from app.domains.inbox import service as inbox
 from app.domains.model import pi_client
-from app.domains.model.client import ModelServiceError, ModelUnavailable
 from app.domains.model.service import model_config, read_setting, supports_images
 from app.domains.org.service import lock_org
 from app.domains.review import direct
@@ -41,6 +30,13 @@ from app.i18n import tr
 from app.models import User
 
 logger = logging.getLogger(__name__)
+BOT_ERROR_COPY = TurnErrorCopy(
+    drafting_priority="正在起草画像，请稍后再试",
+    busy="当前请求较多，请稍后再试",
+    rate_limited="每小时 30 轮已用完，{retry_time} 恢复",
+    quota_paused="模型额度暂时用完，预计 {retry_time} 恢复",
+    model_unavailable="模型服务暂时不可用，请稍后再试",
+)
 
 
 def _save(
@@ -90,8 +86,6 @@ def turn(
     user_payload = s.UserMessage(text=text, attachments=snapshot).model_dump(
         mode="json", exclude_defaults=True
     )
-    admitted = False
-    started = monotonic()
     steps: list[s.ToolStep] = []
     cards: list[s.Message] = []
     drafted_ids: list[UUID] = []
@@ -99,10 +93,11 @@ def turn(
     refreshed_forecast = [False]
     project_draft_attempted = False
     project_draft_error: str | None = None
-    manual_fallback = False
     # Keep the scope that admitted inherited state, not a later persistence snapshot.
     scope = store.session_scope(db, p)
+    visible_scope = dict(scope)
     employee_ids: set[str] = set()
+    session_state: dict[str, JsonValue] | None = None
 
     def report_reads(ids: set[str]) -> None:
         employee_ids.update(ids)
@@ -152,8 +147,8 @@ def turn(
         finally:
             if not reported:
                 # Unknown tools retain both admission and post-call visibility.
-                for snapshot in (visible_scope, store.session_scope(db, p)):
-                    ids = snapshot["visible_employee_ids"]
+                for current_scope in (visible_scope, store.session_scope(db, p)):
+                    ids = current_scope["visible_employee_ids"]
                     if isinstance(ids, list):
                         report_reads({str(id) for id in ids})
         ok = not (isinstance(result, dict) and "error" in result)
@@ -166,143 +161,116 @@ def turn(
             stream.on_tool(title, "end", ok)
         return result
 
-    def on_text(text: str) -> None:
+    def on_text(chunk: str) -> None:
         if stream and not project_draft_attempted:
-            stream.on_text(text)
+            stream.on_text(chunk)
 
-    try:
-        visible_scope = dict(scope)
+    def before_admit() -> None:
+        nonlocal session_state
         scope.pop("visible_employee_ids")
         scope["read_scope_format"] = store.READ_SCOPE_FORMAT
         report_reads(set())
         session_state = store.state_for_turn(
             db, p, session, scope=visible_scope, on_read=report_reads
         )
-        with begin_turn(
-            db, p, session, user_payload, stream.cancelled if stream else None
-        ):
-            admitted = True
-            if on_started:
-                try:
-                    on_started()
-                except Exception:
-                    logger.warning("Bot processing receipt failed")
-            if setting is None or not setting.enabled or not setting.model:
-                return _save(
-                    db,
-                    session,
-                    [
-                        manual_failure(
-                            db,
-                            p,
-                            "\n".join(
-                                filter(
-                                    None,
-                                    [
-                                        notice,
-                                        tr(
-                                            "工作助手需要先配置模型，你也可以在「我的画像」直接修改"
-                                        ),
-                                    ],
-                                )
-                            ),
-                            intent_text=text,
-                        )
-                    ],
-                    principal=p,
-                    scope=scope,
-                )
-            config = model_config(setting)
-            images = []
-            if notice and supports_images(config):
-                images = attachments.model_images(db, p, "bot", session_id, snapshot)
-                notice = ""
-            if notice and stream:
-                stream.on_text(notice + "\n")
-            result = pi_client.run_turn(
-                config,
-                mode="chat",
-                images=images,
-                session_state=session_state,
-                system_prompt=system_prompt(db, p, session.channel, session),
-                input=tools.redact_text(model_input),
-                tools=tools.definitions(p, db=db, channel=session.channel),
-                on_tool_call=call,
-                stream=replace(stream, on_text=on_text, on_tool=lambda *_: None)
-                if stream
-                else None,
+
+    def on_admitted() -> s.TurnResponse | None:
+        if on_started:
+            try:
+                on_started()
+            except Exception:
+                logger.warning("Bot processing receipt failed")
+        if setting is None or not setting.enabled or not setting.model:
+            return _save(
+                db,
+                session,
+                [
+                    manual_failure(
+                        db,
+                        p,
+                        "\n".join(
+                            filter(
+                                None,
+                                [
+                                    notice,
+                                    tr(
+                                        "工作助手需要先配置模型，你也可以在「我的画像」直接修改"
+                                    ),
+                                ],
+                            )
+                        ),
+                        intent_text=text,
+                    )
+                ],
+                principal=p,
+                scope=scope,
             )
-            if stream:
-                stream.check()
-            # Only completed model turns may leave drafts or replies behind.
-            if result.stop_reason != "stop":
-                raise ModelUnavailable()
-            store.save_scoped_state(db, p, session, result.session_state, scope=scope)
-            messages: list[s.Message] = []
-            reply_text = project_draft_error if project_draft_attempted else result.text
-            if notice or reply_text:
-                messages.append(
-                    s.TextMessage(text="\n".join(filter(None, [notice, reply_text])))
-                )
-            messages.extend(cards)
-            if stream:
-                stream.check()
-            return _save(db, session, messages, steps, principal=p, scope=scope)
-    except pi_client.TurnCancelled:
-        return s.TurnResponse(messages=[])
-    except BotBusy:
-        message = tr("当前请求较多，请稍后再试")
-    except BotDraftingPriority:
-        message = tr("正在起草画像，请稍后再试")
-    except BotRateLimited as error:
-        message = tr(
-            "每小时 30 轮已用完，{retry_time} 恢复",
-            retry_time=retry_time(error.retry_at),
+        return None
+
+    def build_turn() -> PiTurnSpec:
+        config = model_config(setting)
+        images = []
+        active_notice = notice
+        if active_notice and supports_images(config):
+            images = attachments.model_images(db, p, "bot", session_id, snapshot)
+            active_notice = ""
+        return PiTurnSpec(
+            config=config,
+            images=images,
+            session_state=session_state,
+            system_prompt=system_prompt(db, p, session.channel, session),
+            input_text=tools.redact_text(model_input),
+            tools=tools.definitions(p, db=db, channel=session.channel),
+            on_tool_call=call,
+            stream=replace(stream, on_text=on_text, on_tool=lambda *_: None)
+            if stream
+            else None,
+            notice=active_notice,
         )
-    except BotQuotaPaused as error:
-        message = tr(
-            "模型额度暂时用完，预计 {retry_time} 恢复",
-            retry_time=retry_time(error.retry_at),
-        )
-    except pi_client.PiSessionInvalid:
-        store.save_state(db, session, None)
-        logger.warning("session_id=%s code=bad_request", session.id)
-        message = tr("之前的对话上下文已失效，已经重新开始，请再说一次")
-    except ModelUnavailable as error:
-        manual_fallback = True
-        logger.warning(
-            "session_id=%s code=%s elapsed_ms=%d",
-            session.id,
-            error.code,
-            (monotonic() - started) * 1000,
-        )
-        message = (
-            tr(DEADLINE_MESSAGE)
-            if error.code == "deadline"
-            else tr(str(error))
-            if isinstance(error, ModelServiceError)
-            else tr("模型服务暂时不可用，请稍后再试")
-        )
-    reply_text = "\n".join(filter(None, [notice, message]))
-    messages = [
-        manual_failure(db, p, reply_text, intent_text=text)
-        if manual_fallback
-        else s.TextMessage(text=reply_text)
-    ]
-    if stream and stream.cancelled.is_set():
-        db.rollback()
-        return s.TurnResponse(messages=[])
-    if admitted:
+
+    def on_success(result: pi_client.TurnResult, active_notice: str) -> s.TurnResponse:
+        store.save_scoped_state(db, p, session, result.session_state, scope=scope)
+        messages: list[s.Message] = []
+        reply_text = project_draft_error if project_draft_attempted else result.text
+        if active_notice or reply_text:
+            messages.append(
+                s.TextMessage(text="\n".join(filter(None, [active_notice, reply_text])))
+            )
+        messages.extend(cards)
         if stream:
-            session.turn_count += 1
-            store.append_message(db, session, "user", user_payload)
-        response = _save(db, session, messages, steps, principal=p, scope=scope)
-        if stream and stream.cancelled.is_set():
-            db.rollback()
-            return s.TurnResponse(messages=[])
-        db.commit()
-        return response
-    return s.TurnResponse(messages=messages)
+            stream.check()
+        return _save(db, session, messages, steps, principal=p, scope=scope)
+
+    def build_fallback(reply_text: str, model_unavailable: bool) -> s.TurnResponse:
+        return s.TurnResponse(
+            messages=[
+                manual_failure(db, p, reply_text, intent_text=text)
+                if model_unavailable
+                else s.TextMessage(text=reply_text)
+            ]
+        )
+
+    def save_fallback(response: s.TurnResponse) -> s.TurnResponse:
+        return _save(db, session, response.messages, steps, principal=p, scope=scope)
+
+    return execute_turn(
+        db,
+        p,
+        session,
+        user_payload,
+        notice=notice,
+        stream=stream,
+        logger=logger,
+        error_copy=BOT_ERROR_COPY,
+        begin_turn_fn=begin_turn,
+        before_admit=before_admit,
+        on_admitted=on_admitted,
+        build_turn=build_turn,
+        on_success=on_success,
+        on_cancelled=lambda: s.TurnResponse(messages=[]),
+        build_fallback=build_fallback,
+        save_fallback=save_fallback,
+    )
 
 
 def act(

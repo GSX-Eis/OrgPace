@@ -536,4 +536,6 @@ def save_scoped_state(
 
 
 def cleanup_messages(db: Session, now: datetime) -> None:
-    _chat_store.cleanup_messages(db, now, read_settings_fn=read_settings)
+    _chat_store.cleanup_messages(
+        db, now, read_settings_fn=read_settings, error_logger=logger
+    )

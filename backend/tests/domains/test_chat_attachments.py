@@ -24,9 +24,9 @@ from app.domains.admin_assistant import store as admin_store
 from app.domains.admin_assistant.models import AdminAssistantAttachment
 from app.domains.admin_assistant.schemas import AdminTurnInput
 from app.domains.base import utc_now
-from app.domains.bot import attachments as a
 from app.domains.bot import core, store
 from app.domains.bot.models import BotAttachment, BotSetting
+from app.domains.chat_runtime import attachments as a
 from app.domains.model import pi_client
 from app.domains.model import service as model_service
 from app.domains.model.client import ModelUnavailable

@@ -338,8 +338,10 @@ def cleanup_messages(
     now: datetime,
     *,
     read_settings_fn: Callable[[Session, UUID], BotSettings] | None = None,
+    error_logger: logging.Logger | None = None,
 ) -> None:
     get_settings = read_settings_fn or read_settings
+    active_logger = error_logger or logger
     org_ids = db.exec(select(Organization.id)).all()
     db.commit()
     for org_id in org_ids:
@@ -445,4 +447,4 @@ def cleanup_messages(
             db.commit()
         except Exception as error:
             db.rollback()
-            logger.error("org_id=%s error_type=%s", org_id, type(error).__name__)
+            active_logger.error("org_id=%s error_type=%s", org_id, type(error).__name__)

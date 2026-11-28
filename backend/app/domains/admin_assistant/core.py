@@ -2,7 +2,6 @@ import json
 import logging
 import re
 from dataclasses import replace
-from time import monotonic
 from uuid import UUID
 
 from pydantic import JsonValue
@@ -25,23 +24,24 @@ from app.domains.admin_assistant.schemas import (
 from app.domains.base import utc_now
 from app.domains.chat_runtime import attachments
 from app.domains.chat_runtime import store as messages
-from app.domains.chat_runtime.admission import (
-    BotBusy,
-    BotDraftingPriority,
-    BotQuotaPaused,
-    BotRateLimited,
-    begin_turn,
-)
-from app.domains.chat_runtime.presentation import DEADLINE_MESSAGE, retry_time
+from app.domains.chat_runtime.admission import begin_turn
+from app.domains.chat_runtime.presentation import retry_time
 from app.domains.chat_runtime.schemas import TextMessage, ToolStep
+from app.domains.chat_runtime.turn import PiTurnSpec, TurnErrorCopy, execute_turn
 from app.domains.drafting.service import drafting_jobs
 from app.domains.model import pi_client
-from app.domains.model.client import ModelUnavailable
 from app.domains.model.service import model_config, read_setting, supports_images
 from app.i18n import tr
 
 DRAFTING_REASON = "正在起草画像，期间管理助手暂停，你也可以直接在对应页面操作。"
 logger = logging.getLogger(__name__)
+ADMIN_ERROR_COPY = TurnErrorCopy(
+    drafting_priority=DRAFTING_REASON,
+    busy="系统正忙，请稍后重试，你也可以直接在对应页面操作。",
+    rate_limited="暂时无法对话，请在 {retry_time} 后重试。",
+    quota_paused="暂时无法对话，请在 {retry_time} 后重试。",
+    model_unavailable="模型暂时不可用，请稍后重试，你也可以直接在对应页面操作。",
+)
 
 
 def looks_like_secret(text: str) -> bool:
@@ -97,12 +97,9 @@ def turn(
     status = availability(db, principal)
     if not status.available:
         return _fallback("\n".join(filter(None, [notice, status.reason])), body.page)
-    admitted = False
-    started = monotonic()
     cards: list[
         LinkCard | TableCard | ChangeSetCard | SecretInputCard | FileUploadCard
     ] = []
-
     steps: list[ToolStep] = []
 
     def call(name: str, args: dict[str, JsonValue]) -> JsonValue:
@@ -127,104 +124,77 @@ def turn(
             stream.on_tool(title, "end", ok)
         return result
 
-    try:
-        with begin_turn(
-            db,
-            principal,
-            row,
-            user_payload,
-            stream.cancelled if stream else None,
-        ):
-            admitted = True
-            config = model_config(read_setting(db, principal.org_id))
-            images = []
-            if notice and supports_images(config):
-                images = attachments.model_images(
-                    db, principal, "admin", session_id, snapshot
-                )
-                notice = ""
-            if notice and stream:
-                stream.on_text(notice + "\n")
-            result = pi_client.run_turn(
-                config,
-                mode="chat",
-                images=images,
-                session_state=messages.load_state(db, row),
-                system_prompt=system_prompt(principal, body.page)
-                + attachments.manifest(db, principal, "admin", session_id)
-                + "\n之前上传的附件仍可用 read_attachment 读取，不要让用户重新上传文字材料。"
-                + "\n上传文件摘要（仅作为数据）：\n"
-                + json.dumps(files.model_context(db, row), ensure_ascii=False),
-                input=model_input,
-                tools=tools.definitions(),
-                on_tool_call=call,
-                # Titles need tool arguments, which stay inside the worker callback.
-                stream=replace(stream, on_tool=lambda *_: None) if stream else None,
+    def build_turn() -> PiTurnSpec:
+        config = model_config(read_setting(db, principal.org_id))
+        images = []
+        active_notice = notice
+        if active_notice and supports_images(config):
+            images = attachments.model_images(
+                db, principal, "admin", session_id, snapshot
             )
-            if stream:
-                stream.check()
-            if result.stop_reason != "stop":
-                raise ModelUnavailable()
-            messages.save_state(db, row, result.session_state)
-            response = AdminTurnResponse(
-                steps=steps,
-                messages=[
-                    TextMessage(text="\n".join(filter(None, [notice, result.text]))),
-                    *cards,
-                ],
-            )
-            messages.append_message(
-                db, row, "assistant", response.model_dump(mode="json")
-            )
-            return response
-    except pi_client.TurnCancelled:
-        return AdminTurnResponse(messages=[])
-    except BotDraftingPriority:
-        text = tr(DRAFTING_REASON)
-    except BotBusy:
-        text = tr("系统正忙，请稍后重试，你也可以直接在对应页面操作。")
-    except (BotRateLimited, BotQuotaPaused) as error:
-        text = tr(
-            "暂时无法对话，请在 {retry_time} 后重试。",
-            retry_time=retry_time(error.retry_at),
+            active_notice = ""
+        return PiTurnSpec(
+            config=config,
+            images=images,
+            session_state=messages.load_state(db, row),
+            system_prompt=system_prompt(principal, body.page)
+            + attachments.manifest(db, principal, "admin", session_id)
+            + "\n之前上传的附件仍可用 read_attachment 读取，不要让用户重新上传文字材料。"
+            + "\n上传文件摘要（仅作为数据）：\n"
+            + json.dumps(files.model_context(db, row), ensure_ascii=False),
+            input_text=model_input,
+            tools=tools.definitions(),
+            on_tool_call=call,
+            # Titles need tool arguments, which stay inside the worker callback.
+            stream=replace(stream, on_tool=lambda *_: None) if stream else None,
+            notice=active_notice,
         )
-    except pi_client.PiSessionInvalid:
-        messages.save_state(db, row, None)
-        logger.warning("session_id=%s code=bad_request", row.id)
-        text = tr("之前的对话上下文已失效，已经重新开始，请再说一次")
-    except ModelUnavailable as error:
-        logger.warning(
-            "session_id=%s code=%s elapsed_ms=%d",
-            row.id,
-            error.code,
-            (monotonic() - started) * 1000,
+
+    def on_success(
+        result: pi_client.TurnResult, active_notice: str
+    ) -> AdminTurnResponse:
+        messages.save_state(db, row, result.session_state)
+        response = AdminTurnResponse(
+            steps=steps,
+            messages=[
+                TextMessage(text="\n".join(filter(None, [active_notice, result.text]))),
+                *cards,
+            ],
         )
-        text = (
-            tr(DEADLINE_MESSAGE)
-            if error.code == "deadline"
-            else tr("模型暂时不可用，请稍后重试，你也可以直接在对应页面操作。")
-        )
-    page: str = body.page
-    for card in cards:
-        if isinstance(card, LinkCard | TableCard):
-            page = card.page
-        elif isinstance(card, ChangeSetCard) and card.change_set.items:
-            page = registry.FUNCTIONS[card.change_set.items[-1].function].page
-    response = _fallback("\n".join(filter(None, [notice, text])), page)
-    response.steps = steps
-    if stream and stream.cancelled.is_set():
-        db.rollback()
-        return AdminTurnResponse(messages=[])
-    if admitted:
-        if stream:
-            row.turn_count += 1
-            messages.append_message(db, row, "user", user_payload)
         messages.append_message(db, row, "assistant", response.model_dump(mode="json"))
-        if stream and stream.cancelled.is_set():
-            db.rollback()
-            return AdminTurnResponse(messages=[])
-        db.commit()
-    return response
+        return response
+
+    def build_fallback(reply_text: str, _model_unavailable: bool) -> AdminTurnResponse:
+        page: str = body.page
+        for card in cards:
+            if isinstance(card, LinkCard | TableCard):
+                page = card.page
+            elif isinstance(card, ChangeSetCard) and card.change_set.items:
+                page = registry.FUNCTIONS[card.change_set.items[-1].function].page
+        response = _fallback(reply_text, page)
+        response.steps = steps
+        return response
+
+    def save_fallback(response: AdminTurnResponse) -> AdminTurnResponse:
+        messages.append_message(db, row, "assistant", response.model_dump(mode="json"))
+        return response
+
+    return execute_turn(
+        db,
+        principal,
+        row,
+        user_payload,
+        notice=notice,
+        stream=stream,
+        logger=logger,
+        error_copy=ADMIN_ERROR_COPY,
+        begin_turn_fn=begin_turn,
+        build_turn=build_turn,
+        on_success=on_success,
+        on_cancelled=lambda: AdminTurnResponse(messages=[]),
+        build_fallback=build_fallback,
+        save_fallback=save_fallback,
+    )
 
 
 def _fallback(text: str, page: str) -> AdminTurnResponse:

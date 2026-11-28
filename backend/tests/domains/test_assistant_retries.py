@@ -163,7 +163,7 @@ def test_cooldown_is_beijing_time(
 ) -> None:
     now = datetime(2026, 11, 13, 15, 59, tzinfo=UTC)
     retry = now + timedelta(minutes=2, seconds=1)
-    from app.domains.bot import presentation
+    from app.domains.chat_runtime import presentation
 
     monkeypatch.setattr(presentation, "utc_now", lambda: now)
     p = (admin if channel == "admin" else principal_for)(db, demo[1]["E02"].org_id)
