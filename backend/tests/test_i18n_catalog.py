@@ -124,8 +124,91 @@ def scan_i18n_catalog(root: Path, catalog: dict[str, str] | None = None) -> list
     return errors
 
 
+def _docstring_node_ids(tree: ast.AST) -> set[int]:
+    ids: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(
+            node,
+            (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef),
+        ) and (
+            node.body
+            and isinstance(node.body[0], ast.Expr)
+            and isinstance(node.body[0].value, ast.Constant)
+            and isinstance(node.body[0].value.value, str)
+        ):
+            ids.add(id(node.body[0].value))
+    return ids
+
+
+def find_orphan_catalog_keys(
+    root: Path, catalog: dict[str, str] | None = None
+) -> list[str]:
+    active_catalog = EN_CATALOG if catalog is None else catalog
+    referenced: set[str] = set()
+    for file_path in sorted(root.rglob("*.py")):
+        rel = file_path.relative_to(root).as_posix()
+        if rel.startswith("i18n/") or rel.startswith("alembic/"):
+            continue
+        tree = ast.parse(file_path.read_text(encoding="utf-8"), filename=str(file_path))
+        docstrings = _docstring_node_ids(tree)
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and id(node) not in docstrings
+            ):
+                referenced.add(node.value)
+    return sorted(key for key in active_catalog if key not in referenced)
+
+
 def test_backend_i18n_catalog_covers_all_chinese_literals() -> None:
     assert scan_i18n_catalog(APP_DIR) == []
+
+
+def test_backend_i18n_catalog_has_no_orphan_keys() -> None:
+    assert find_orphan_catalog_keys(APP_DIR) == []
+
+
+def test_i18n_catalog_orphan_detector_rejects_unused_keys(tmp_path: Path) -> None:
+    sample = tmp_path / "sample.py"
+    sample.write_text(
+        "\n".join(
+            [
+                '"""仅文档字符串中的废话"""',
+                "from fastapi import HTTPException",
+                "from app.i18n import bilingual, tr",
+                "",
+                'CONST_MSG = "模块常量文案"',
+                'LABELS = {"a": "字典文案"}',
+                'ITEMS = ["列表文案", ("元组文案",)]',
+                "",
+                "def handle(flag: bool, msg: str = '默认参数文案') -> str:",
+                "    if flag:",
+                '        raise ValueError("异常字面量")',
+                '    HTTPException(400, detail="接口报错")',
+                '    bilingual("双语文案")',
+                '    return tr("翻译文案")',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    fake_catalog = {
+        "模块常量文案": "Const copy",
+        "字典文案": "Dict copy",
+        "列表文案": "List copy",
+        "元组文案": "Tuple copy",
+        "默认参数文案": "Default arg copy",
+        "异常字面量": "Exception literal",
+        "接口报错": "API error",
+        "双语文案": "Bilingual copy",
+        "翻译文案": "Translated copy",
+        "仅文档字符串中的废话": "Docstring only",
+        "彻底废弃的文案": "Completely unused",
+    }
+    assert find_orphan_catalog_keys(tmp_path, catalog=fake_catalog) == [
+        "仅文档字符串中的废话",
+        "彻底废弃的文案",
+    ]
 
 
 def test_i18n_catalog_scanner_rejects_missing_fstring_and_mismatch(

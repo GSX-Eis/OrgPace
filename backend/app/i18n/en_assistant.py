@@ -14,7 +14,6 @@ EN: dict[str, str] = {
     "不允许调用此工具": "Not allowed to call this tool",
     "不允许调用此工具，请使用卡片动作": "Not allowed to call this tool; please use the card actions",
     "请通过 coordination 调用此工具": "Please call this tool via coordination",
-    "请先启用或查看能力词典": "Please enable or view the capability dictionary first",
     # Tool titles (employee bot & capacity)
     "查看我的待确认问题": "View my pending questions",
     "确认回答并存为受限自述证据，不修改画像": "Submit answer as restricted self-report evidence without modifying profile",

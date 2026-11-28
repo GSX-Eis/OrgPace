@@ -64,7 +64,7 @@ from app.domains.review.policy import (
     publish_no_approval,
     read_policy,
 )
-from app.i18n import bilingual
+from app.i18n import bilingual, tr
 from app.worker.health import write_heartbeat
 
 
@@ -569,7 +569,7 @@ def run_drafting(principal: Principal, employee_ids: list[str] | None) -> None:
                     message = (
                         str(error)
                         if "ChatGPT 登录" in str(error)
-                        else f"连不上模型服务：{error}"
+                        else tr("连不上模型服务：{error}", error=error)
                     )
                 progress_row(
                     session, org_id, employee_id, InferenceStatus.FAILED, message
@@ -608,7 +608,11 @@ def pause_drafting(
                 org_id,
                 employee_id,
                 InferenceStatus.PENDING,
-                f"模型用量已到上限（{error.reason}），预计 {retry_at.isoformat()} 自动继续",
+                tr(
+                    "模型用量已到上限（{reason}），预计 {retry_at} 自动继续",
+                    reason=error.reason,
+                    retry_at=retry_at.isoformat(),
+                ),
             )
         session.flush()
         # The running Worker's async connector cannot use this sync transaction.
