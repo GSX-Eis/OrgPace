@@ -637,6 +637,9 @@ def test_demand_split_has_no_delayed_cycle_imports_and_keeps_facade() -> None:
     expected_reexports = {
         "DEMAND_NOT_FOUND": common,
         "LOAD_WORDS": common,
+        "CapacityConflict": common,
+        "CapacityForbidden": common,
+        "CapacityNotFound": common,
         "DemandReplyInvalid": common,
         "DemandReplyLoadInvalid": common,
         "RejectionReasonInvalid": common,
