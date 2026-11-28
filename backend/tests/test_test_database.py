@@ -2,10 +2,17 @@ import asyncio
 import os
 import subprocess
 import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
+from uuid import uuid4
 
+import psycopg
 import pytest
-from sqlalchemy import text
+from psycopg import sql
+from sqlalchemy import Engine, text
 from sqlalchemy.engine import make_url
 
 
@@ -13,12 +20,26 @@ def test_database_isolation(migration_template: str) -> None:
     from app.core.config import settings
     from app.core.db import engine
     from app.worker.app import app as worker_app
+    from tests.utils.migrations import sanitize_db_prefix
 
     url = make_url(os.environ["DATABASE_URL"])
     worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
-    assert f"_{worker}_" in url.database
+    assert (
+        url.database is not None
+        and f"_{worker}_" in url.database
+        and len(url.database) <= 63
+    )
+    if raw_prefix := os.environ.get("PYTEST_DB_PREFIX", "").strip():
+        assert url.database.startswith(f"{sanitize_db_prefix(raw_prefix)}_{worker}_")
     assert engine.url == make_url(str(settings.DATABASE_URL)) == url
-    assert migration_template.startswith("migration_template_")
+    shared_mode = os.environ.get("PYTEST_SHARED_TEMPLATE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    assert migration_template.startswith(
+        "orgpace_tpl_" if shared_mode else "migration_template_"
+    )
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT current_database()")) == url.database
 
@@ -30,6 +51,272 @@ def test_database_isolation(migration_template: str) -> None:
             return row["name"]
 
     assert asyncio.run(queue_database()) == url.database
+
+
+@pytest.mark.unit
+def test_migration_fingerprint_and_db_prefix_validation(tmp_path: Path) -> None:
+    from tests.utils.migrations import (
+        compute_migration_fingerprint,
+        sanitize_db_prefix,
+        shared_template_name,
+    )
+
+    repo_tpl = shared_template_name()
+    assert repo_tpl.startswith("orgpace_tpl_") and len(repo_tpl) == 28
+
+    backend_dir = tmp_path / "backend"
+    tracked = {
+        "alembic.ini": "[alembic]\n",
+        "app/alembic/env.py": "target = 1\n",
+        "app/alembic/versions/001.py": "revision = '001'\n",
+        "app/alembic/versions/procrastinate_3_10_0.sql": "CREATE TABLE p();\n",
+        "app/models.py": "class User: pass\n",
+        "app/domains/org/models.py": "class Org: pass\n",
+        "app/domains/org/models_extra.py": "class Extra: pass\n",
+    }
+    for rel, content in tracked.items():
+        path = backend_dir / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    fp_base = compute_migration_fingerprint(backend_dir)
+    assert fp_base == compute_migration_fingerprint(backend_dir)
+    assert shared_template_name(backend_dir) == f"orgpace_tpl_{fp_base}"
+
+    for cache_rel in (
+        "app/alembic/__pycache__/env.pyc",
+        "app/domains/org/__pycache__/models.pyc",
+    ):
+        p = backend_dir / cache_rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"pyc")
+    assert compute_migration_fingerprint(backend_dir) == fp_base
+
+    for rel, old_text in tracked.items():
+        target = backend_dir / rel
+        target.write_text(old_text + "# changed\n", encoding="utf-8")
+        assert compute_migration_fingerprint(backend_dir) != fp_base
+        target.write_text(old_text, encoding="utf-8")
+
+    assert sanitize_db_prefix("r1579_a1b2c3d4") == "r1579_a1b2c3d4"
+    assert sanitize_db_prefix("a" * 30) == "a" * 20
+    assert sanitize_db_prefix(None, fallback="123-my-app") == "_my_app"
+    assert sanitize_db_prefix("", fallback="123") == "app"
+    for bad in ("bad;drop", "bad-dash", "1starts_digit", "has space"):
+        with pytest.raises(ValueError, match="PYTEST_DB_PREFIX"):
+            sanitize_db_prefix(bad)
+
+
+@pytest.mark.unit
+def test_conftest_shared_template_toggle(monkeypatch: pytest.MonkeyPatch) -> None:
+    import tests.conftest as root_conftest
+    import tests.utils.migrations as migrations_mod
+
+    url = make_url("postgresql+psycopg://postgres:pw@127.0.0.1:15432/app")
+    cleaned, isolated_calls = [], []
+
+    class _DummyEngine:
+        def dispose(self) -> None:
+            pass
+
+    @contextmanager
+    def _track_isolated(_url: object, database: str, **_kw: object):
+        isolated_calls.append(database)
+        try:
+            yield _DummyEngine()
+        finally:
+            cleaned.append(database)
+
+    def _fake_ensure(target_url: object) -> str:
+        assert target_url == url
+        return "orgpace_tpl_0123456789abcdef"
+
+    monkeypatch.setattr(migrations_mod, "ensure_shared_template", _fake_ensure)
+    monkeypatch.setattr(migrations_mod, "isolated_database", _track_isolated)
+    monkeypatch.setattr(migrations_mod, "migrate", lambda _eng, _act, _rev: None)
+
+    monkeypatch.setenv("PYTEST_SHARED_TEMPLATE", "1")
+    with ExitStack() as stack:
+        assert (
+            root_conftest._create_template(stack, url) == "orgpace_tpl_0123456789abcdef"
+        )
+    assert not isolated_calls and not cleaned
+
+    monkeypatch.setenv("PYTEST_SHARED_TEMPLATE", "0")
+    with ExitStack() as stack:
+        tpl_legacy = root_conftest._create_template(stack, url)
+        assert tpl_legacy.startswith("migration_template_") and not cleaned
+    assert isolated_calls == [tpl_legacy] and cleaned == [tpl_legacy]
+
+
+def test_shared_template_race_failure_readonly_cloning_and_pruning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tests.utils.migrations as migrations_mod
+    from app.core.db import engine
+
+    admin_dsn = engine.url.set(
+        drivername="postgresql", database="postgres"
+    ).render_as_string(hide_password=False)
+    suffix = uuid4().hex[:8]
+    tpl_main = f"orgpace_tpl_t_{suffix}"
+    prune_prefix = f"orgpace_tpl_gc_{suffix}_"
+    prune_names = [f"{prune_prefix}1", f"{prune_prefix}2", f"{prune_prefix}3"]
+
+    def _drop_dbs(names: list[str]) -> None:
+        with psycopg.connect(admin_dsn, autocommit=True) as admin:
+            for name in names:
+                if admin.execute(
+                    "SELECT 1 FROM pg_database WHERE datname = %s", (name,)
+                ).fetchone():
+                    admin.execute(
+                        sql.SQL("ALTER DATABASE {} WITH IS_TEMPLATE false").format(
+                            sql.Identifier(name)
+                        )
+                    )
+                    admin.execute(
+                        sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(
+                            sql.Identifier(name)
+                        )
+                    )
+
+    try:
+        # 1. Failure mid-build cleans staging DB and never leaves target template.
+        monkeypatch.setattr(
+            migrations_mod,
+            "migrate",
+            lambda *_a: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        with pytest.raises(RuntimeError, match="boom"):
+            migrations_mod.ensure_shared_template(
+                engine.url, template_name=tpl_main, max_templates=0
+            )
+        with psycopg.connect(admin_dsn, autocommit=True) as admin:
+            assert (
+                admin.execute(
+                    "SELECT 1 FROM pg_database WHERE datname = %s", (tpl_main,)
+                ).fetchone()
+                is None
+            )
+            assert not admin.execute(
+                "SELECT datname FROM pg_database WHERE starts_with(datname, %s)",
+                (migrations_mod.SHARED_TEMPLATE_STAGING_PREFIX,),
+            ).fetchall()
+
+        # 2. Concurrent cold build race: only one migrate invocation runs.
+        migrate_calls, lock = 0, threading.Lock()
+
+        def slow_seed(eng: Engine, _act: str, _rev: str) -> None:
+            nonlocal migrate_calls
+            with lock:
+                migrate_calls += 1
+            time.sleep(0.15)
+            with eng.begin() as conn:
+                conn.execute(text("CREATE TABLE tpl_probe (marker TEXT NOT NULL)"))
+                conn.execute(text("INSERT INTO tpl_probe (marker) VALUES ('seed')"))
+
+        monkeypatch.setattr(migrations_mod, "migrate", slow_seed)
+        barrier = threading.Barrier(2)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f1 = pool.submit(
+                lambda: (
+                    barrier.wait(timeout=5),
+                    migrations_mod.ensure_shared_template(
+                        engine.url, template_name=tpl_main, max_templates=0
+                    ),
+                )[1]
+            )
+            f2 = pool.submit(
+                lambda: (
+                    barrier.wait(timeout=5),
+                    migrations_mod.ensure_shared_template(
+                        engine.url, template_name=tpl_main, max_templates=0
+                    ),
+                )[1]
+            )
+            assert (
+                f1.result(timeout=15) == tpl_main and f2.result(timeout=15) == tpl_main
+            )
+        assert migrate_calls == 1
+
+        # 3. Template is IS_TEMPLATE=true, ALLOW_CONNECTIONS=false and rejects direct connect.
+        with psycopg.connect(admin_dsn, autocommit=True) as admin:
+            assert admin.execute(
+                "SELECT datistemplate, datallowconn FROM pg_database WHERE datname = %s",
+                (tpl_main,),
+            ).fetchone() == (True, False)
+        with pytest.raises(psycopg.OperationalError):
+            psycopg.connect(
+                engine.url.set(
+                    drivername="postgresql", database=tpl_main
+                ).render_as_string(hide_password=False)
+            )
+
+        # 4. Concurrent clones stay isolated from each other and from tpl_main.
+        clone_barrier = threading.Barrier(2)
+
+        def clone_run(tag: str) -> list[str]:
+            clone_barrier.wait(timeout=5)
+            with migrations_mod.isolated_database(
+                engine.url, f"r1579_iso_{suffix}_{tag}", template=tpl_main
+            ) as cloned:
+                with cloned.begin() as conn:
+                    conn.execute(
+                        text("INSERT INTO tpl_probe (marker) VALUES (:t)"), {"t": tag}
+                    )
+                    return list(
+                        conn.execute(
+                            text("SELECT marker FROM tpl_probe ORDER BY marker")
+                        ).scalars()
+                    )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            c1, c2 = pool.submit(clone_run, "c1"), pool.submit(clone_run, "c2")
+            assert c1.result(timeout=15) == ["c1", "seed"] and c2.result(
+                timeout=15
+            ) == ["c2", "seed"]
+
+        # 5. Bounded pruning deletes oldest non-current template and skips locked templates.
+        monkeypatch.setattr(migrations_mod, "migrate", lambda *_a: None)
+        for name in prune_names:
+            migrations_mod.ensure_shared_template(
+                engine.url, template_name=name, max_templates=0
+            )
+        with (
+            psycopg.connect(admin_dsn, autocommit=True) as lock_conn,
+            psycopg.connect(admin_dsn, autocommit=True) as admin,
+        ):
+            lock_conn.execute(
+                "SELECT pg_advisory_lock(hashtextextended(%s, 0))", (prune_names[0],)
+            )
+            try:
+                migrations_mod._prune_old_shared_templates(
+                    admin, keep=prune_names[2], max_templates=2, prefix=prune_prefix
+                )
+                assert [
+                    r[0]
+                    for r in admin.execute(
+                        "SELECT datname FROM pg_database WHERE starts_with(datname, %s) ORDER BY oid",
+                        (prune_prefix,),
+                    ).fetchall()
+                ] == prune_names
+            finally:
+                lock_conn.execute(
+                    "SELECT pg_advisory_unlock(hashtextextended(%s, 0))",
+                    (prune_names[0],),
+                )
+            migrations_mod._prune_old_shared_templates(
+                admin, keep=prune_names[2], max_templates=2, prefix=prune_prefix
+            )
+            assert [
+                r[0]
+                for r in admin.execute(
+                    "SELECT datname FROM pg_database WHERE starts_with(datname, %s) ORDER BY oid",
+                    (prune_prefix,),
+                ).fetchall()
+            ] == [prune_names[1], prune_names[2]]
+    finally:
+        _drop_dbs([tpl_main, *prune_names])
 
 
 @pytest.mark.unit

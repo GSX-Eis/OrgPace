@@ -198,15 +198,67 @@ export FIRST_SUPERUSER=admin@example.com SEED_DEMO_DATA=true
 export DATABASE_URL="postgresql://postgres:$POSTGRES_PASSWORD@127.0.0.1:$POSTGRES_PORT/app"
 export FRONTEND_HOST="http://127.0.0.1:$API_PORT"
 unset SENTRY_DSN COMPOSE_PROFILES
+
+EPP_WARM_DB=${EPP_WARM_DB:-1}
+EPP_WARM_DB_PORT=${EPP_WARM_DB_PORT:-14532}
+if [[ $EPP_WARM_DB != 0 && $EPP_WARM_DB != 1 ]]; then
+  echo "Invalid EPP_WARM_DB (expected 0 or 1): $EPP_WARM_DB" >&2
+  exit 2
+fi
+if ! [[ $EPP_WARM_DB_PORT =~ ^[1-9][0-9]*$ ]] || (( EPP_WARM_DB_PORT >= 65536 || EPP_WARM_DB_PORT == 5432 )); then
+  echo "Invalid EPP_WARM_DB_PORT (expected 1-65535 and != 5432): $EPP_WARM_DB_PORT" >&2
+  exit 2
+fi
+
 # The override is kept outside the build context.
 scratch=$(mktemp -d)
 compose=(docker compose --env-file /dev/null -p "$project" -f compose.yml -f compose.dev.yml -f tests/postgres-fast.yml -f "$scratch/ports.yml")
 started=false
+warm_active=false
 artifacts=
+
+run_backend_python() {
+  if [[ -x backend/.venv/bin/python ]]; then
+    backend/.venv/bin/python "$@"
+  else
+    (cd backend && uv run python "$@")
+  fi
+}
+
 cleanup() {
   local code=$?
   trap - EXIT
   trap '' HUP INT TERM
+  if $warm_active && [[ -n ${PYTEST_DB_PREFIX:-} ]]; then
+    if ! run_backend_python - <<'PY'
+import os
+import psycopg
+from psycopg import sql
+from sqlalchemy.engine import make_url
+
+prefix = os.environ["PYTEST_DB_PREFIX"] + "_"
+admin_url = make_url(os.environ["DATABASE_URL"]).set(
+    drivername="postgresql", database="postgres"
+)
+with psycopg.connect(
+    admin_url.render_as_string(hide_password=False), autocommit=True
+) as admin:
+    rows = admin.execute(
+        "SELECT datname FROM pg_database WHERE starts_with(datname, %s) AND NOT datistemplate",
+        (prefix,),
+    ).fetchall()
+    for (datname,) in rows:
+        admin.execute(
+            sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(
+                sql.Identifier(datname)
+            )
+        )
+PY
+    then
+      echo "Warm DB leftover cleanup failed for prefix $PYTEST_DB_PREFIX." >&2
+      if [[ $code == 0 ]]; then code=1; fi
+    fi
+  fi
   if $started; then
     if ! "${compose[@]}" down -v --remove-orphans; then
       echo "Compose cleanup failed for $project." >&2
@@ -239,18 +291,137 @@ check_port() {
   fi
 }
 
-check_port "$POSTGRES_PORT"
-if [[ $mode == playwright ]]; then check_port "$API_PORT"; fi
-cat > "$scratch/ports.yml" <<EOF
+warm_dir=${EPP_WARM_DB_DIR:-$HOME/epp-runs/.warm-db}
+warm_pw_file=$warm_dir/password
+
+setup_warm_db() {
+  local warm_project=epp-warm-db
+  local warm_lock=$warm_dir/lock
+  local warm_fp_file=$warm_dir/fingerprint
+  local warm_override=$warm_dir/warm-override.yml
+  (
+    set -euo pipefail
+    umask 077
+    [[ -d backend ]]
+    mkdir -p "$warm_dir"
+    chmod 700 "$warm_dir"
+    exec 8>"$warm_lock"
+    flock -w "${EPP_WARM_DB_LOCK_TIMEOUT:-120}" 8
+
+    local pw
+    if [[ -s $warm_pw_file ]]; then
+      pw=$(cat "$warm_pw_file")
+    else
+      pw=$(openssl rand -hex 16)
+      printf '%s' "$pw" > "$warm_pw_file.tmp"
+      chmod 600 "$warm_pw_file.tmp"
+      mv -f "$warm_pw_file.tmp" "$warm_pw_file"
+    fi
+    [[ -n $pw ]]
+
+    local override_content
+    override_content=$(cat <<EOF
+services:
+  db:
+    ports: !override
+      - "127.0.0.1:$EPP_WARM_DB_PORT:5432"
+    command: ["postgres", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off", "-c", "max_wal_size=2GB", "-c", "max_connections=300"]
+EOF
+    )
+
+    local fp
+    fp=$(python3 - "$EPP_WARM_DB_PORT" "$override_content" <<'PY'
+import hashlib, sys
+from pathlib import Path
+h = hashlib.sha256(f"port={sys.argv[1]}\n{sys.argv[2]}\n".encode())
+for rel in ("compose.yml", "compose.dev.yml", "tests/postgres-fast.yml"):
+    data = Path(rel).read_bytes() if Path(rel).is_file() else b""
+    h.update(f"{rel}:{len(data)}\n".encode() + data + b"\n")
+print(h.hexdigest()[:16])
+PY
+    )
+
+    local warm_compose=(
+      docker compose --env-file /dev/null -p "$warm_project"
+      -f compose.yml -f compose.dev.yml -f tests/postgres-fast.yml -f "$warm_override"
+    )
+
+    probe_select_1() {
+      local db_url="postgresql://postgres:$pw@127.0.0.1:$EPP_WARM_DB_PORT/app"
+      EPP_PROBE_URL="$db_url" run_backend_python - <<'PY' >/dev/null 2>&1
+import os
+import psycopg
+
+with psycopg.connect(os.environ["EPP_PROBE_URL"], connect_timeout=5) as conn:
+    row = conn.execute("SELECT 1").fetchone()
+    assert row == (1,), row
+PY
+    }
+
+    if [[ -f $warm_fp_file && $(cat "$warm_fp_file") == "$fp" && -f $warm_override ]]; then
+      local cid health mapped_port
+      cid=$(docker ps -q \
+        --filter "label=com.docker.compose.project=$warm_project" \
+        --filter "label=com.docker.compose.service=db" \
+        --filter "status=running" | head -n 1 || true)
+      if [[ -n $cid ]]; then
+        health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid" 2>/dev/null || true)
+        mapped_port=$(docker port "$cid" 5432/tcp 2>/dev/null | head -n 1 || true)
+        if [[ $health == healthy && $mapped_port == "127.0.0.1:$EPP_WARM_DB_PORT" ]] && probe_select_1; then
+          exit 0
+        fi
+      fi
+    fi
+
+    if [[ -f $warm_override ]]; then
+      "${warm_compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+    else
+      docker compose --env-file /dev/null -p "$warm_project" -f compose.yml down -v --remove-orphans >/dev/null 2>&1 || true
+    fi
+    check_port "$EPP_WARM_DB_PORT" || exit 1
+    printf '%s\n' "$override_content" > "$warm_override.tmp"
+    mv -f "$warm_override.tmp" "$warm_override"
+    POSTGRES_PASSWORD="$pw" "${warm_compose[@]}" up -d --wait db || exit 1
+    [[ $("${warm_compose[@]}" port db 5432) == "127.0.0.1:$EPP_WARM_DB_PORT" ]] || exit 1
+    probe_select_1 || exit 1
+    printf '%s\n' "$fp" > "$warm_fp_file.tmp"
+    mv -f "$warm_fp_file.tmp" "$warm_fp_file"
+  )
+}
+
+if [[ $mode != playwright && $EPP_WARM_DB == 1 ]]; then
+  set +e
+  setup_warm_db
+  warm_rc=$?
+  set -e
+  if [[ $warm_rc == 0 ]]; then
+    warm_active=true
+    warm_password=$(cat "$warm_pw_file")
+    run8=$(python3 -c 'import hashlib, sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:8])' "$run_id")
+    export POSTGRES_PASSWORD="$warm_password"
+    export POSTGRES_PORT="$EPP_WARM_DB_PORT"
+    export DATABASE_URL="postgresql://postgres:$POSTGRES_PASSWORD@127.0.0.1:$POSTGRES_PORT/app"
+    export PYTEST_SHARED_TEMPLATE=${PYTEST_SHARED_TEMPLATE:-1}
+    export PYTEST_DB_PREFIX="r${number}_${run8}"
+  else
+    echo "预热 Postgres 启动或探活失败，安全回退到独立 Compose DB ($project)。" >&2
+  fi
+fi
+
+if ! $warm_active; then
+  check_port "$POSTGRES_PORT"
+  if [[ $mode == playwright ]]; then check_port "$API_PORT"; fi
+  cat > "$scratch/ports.yml" <<EOF
 services:
   db:
     ports: !override
       - "127.0.0.1:$POSTGRES_PORT:5432"
 EOF
 
-started=true
-"${compose[@]}" up -d --wait db
-[[ $("${compose[@]}" port db 5432) == "127.0.0.1:$POSTGRES_PORT" ]]
+  started=true
+  "${compose[@]}" up -d --wait db
+  [[ $("${compose[@]}" port db 5432) == "127.0.0.1:$POSTGRES_PORT" ]]
+fi
 if [[ $mode != playwright ]]; then
   pi_lock_hash=$(sha256sum pi/package-lock.json | awk '{print $1}')
   pi_hash_file=pi/node_modules/.package-lock.sha256

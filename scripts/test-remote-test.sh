@@ -23,6 +23,7 @@ expect_failure() {
 export CLOUD_RUNNER_CONFIG=$scratch/missing.env
 export CLOUD_TEST_CACHE_DIR=$scratch/cache
 export CLOUD_TEST_SSH_DIR=$scratch/ssh
+export EPP_WARM_DB_DIR=$scratch/warm-db
 unset GCP_PROJECT GCP_ZONE GCP_INSTANCE
 help=$("$runner" --help)
 grep -q 'Usage:' <<< "$help"
@@ -494,6 +495,94 @@ cp -R "$scratch/real-snap/.remote-test-snapshot" "$scratch/real-worker/"
   done
   expect_failure 'fatal:' env PREFLIGHT_BASE_REF=origin/missing bash "$worker" fixture nere123 preflight 4
 )
+# Verify remote-test-worker.sh warm DB lifecycle: cold start, fast-path reuse,
+# fingerprint rebuild, EPP_WARM_DB=0/probe-failure fallback, playwright isolation, and prefix cleanup.
+mkdir -p "$scratch/warm-repo/backend/.venv/bin" "$scratch/warm-repo/pi/node_modules" \
+  "$scratch/warm-repo/tests" "$scratch/warm-repo/scripts" "$scratch/warm-repo/frontend" "$scratch/warm-bin"
+cp "$scripts_dir/remote-test-worker.sh" "$scratch/warm-repo/scripts/remote-test-worker.sh"
+printf 'services:\n  db:\n    image: postgres:18\n' > "$scratch/warm-repo/compose.yml"
+printf 'services:\n  db:\n    ports:\n      - "127.0.0.1:5432:5432"\n' > "$scratch/warm-repo/compose.dev.yml"
+printf 'services:\n  db:\n    command: ["postgres", "-c", "fsync=off"]\n' > "$scratch/warm-repo/tests/postgres-fast.yml"
+printf 'lock\n' > "$scratch/warm-repo/pi/package-lock.json"
+python3 -c 'import hashlib, pathlib; p = pathlib.Path(r"'"$scratch"'/warm-repo/pi"); (p / "node_modules/.package-lock.sha256").write_text(hashlib.sha256((p / "package-lock.json").read_bytes()).hexdigest() + "\n")'
+
+printf '#!/usr/bin/env bash\nexit 0\n' > "$scratch/warm-bin/flock"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$scratch/warm-bin/lsof"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$scratch/warm-bin/bun"
+# shellcheck disable=SC2016
+{
+  printf '#!/usr/bin/env bash\nprintf "playwright_base=%%s\\n" "${PLAYWRIGHT_BASE_URL:-}" >> "$MOCK_PYTEST_LOG"\n' > "$scratch/warm-bin/bunx"
+  printf '#!/usr/bin/env bash\npython3 -c "import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest(), sys.argv[1])" "$1"\n' > "$scratch/warm-bin/sha256sum"
+  printf '#!/usr/bin/env bash\nprintf "cmd=%%s POSTGRES_PORT=%%s PYTEST_SHARED_TEMPLATE=%%s PYTEST_DB_PREFIX=%%s\\n" "$*" "${POSTGRES_PORT:-}" "${PYTEST_SHARED_TEMPLATE:-}" "${PYTEST_DB_PREFIX:-}" >> "$MOCK_PYTEST_LOG"\n' > "$scratch/warm-bin/uv"
+}
+cat > "$scratch/warm-bin/docker" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$MOCK_DOCKER_LOG"
+case "${1:-}" in
+  ps) [[ $* != *"com.docker.compose.project=epp-warm-db"* || ! -f $MOCK_WARM_RUNNING ]] || echo 'warm-db-cid' ;;
+  inspect) [[ ! -f $MOCK_WARM_RUNNING ]] || echo 'healthy' ;;
+  port) [[ ! -f $MOCK_WARM_RUNNING ]] || echo '127.0.0.1:14532' ;;
+  compose)
+    shift; proj=''; args=("$@")
+    for ((i=0; i<${#args[@]}; i++)); do [[ ${args[i]} == -p && $((i+1)) -lt ${#args[@]} ]] && proj=${args[i+1]}; done
+    if [[ " $* " == *" up -d "* && $proj == epp-warm-db ]]; then touch "$MOCK_WARM_RUNNING"
+    elif [[ " $* " == *" down "* && $proj == epp-warm-db ]]; then rm -f "$MOCK_WARM_RUNNING"
+    elif [[ " $* " == *" port db 5432 "* ]]; then [[ $proj == epp-warm-db ]] && echo '127.0.0.1:14532' || echo "127.0.0.1:${POSTGRES_PORT}"; fi ;;
+esac
+MOCK
+cat > "$scratch/warm-repo/backend/.venv/bin/python" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+script=$(cat)
+if grep -Fq 'SELECT 1' <<< "$script"; then [[ ${MOCK_PROBE_FAIL:-0} == 0 ]]; exit $?; fi
+if grep -Fq 'DROP DATABASE IF EXISTS' <<< "$script"; then printf 'cleanup_prefix=%s\n' "${PYTEST_DB_PREFIX:-}" >> "$MOCK_CLEANUP_LOG"; fi
+MOCK
+chmod +x "$scratch/warm-bin/"* "$scratch/warm-repo/backend/.venv/bin/python"
+
+warm_test_dir=$scratch/warm-state; mkdir -p "$warm_test_dir"
+warm_env=(env PATH="$scratch/warm-bin:$PATH" EPP_WARM_DB_DIR="$warm_test_dir/dot-warm" MOCK_DOCKER_LOG="$warm_test_dir/docker.log" MOCK_WARM_RUNNING="$warm_test_dir/warm.running" MOCK_PYTEST_LOG="$warm_test_dir/pytest.log" MOCK_CLEANUP_LOG="$warm_test_dir/cleanup.log")
+(
+  cd "$scratch/warm-repo"
+  : > "$warm_test_dir/docker.log"; : > "$warm_test_dir/pytest.log"; : > "$warm_test_dir/cleanup.log"
+  "${warm_env[@]}" bash scripts/remote-test-worker.sh run00001 nere123 pytest '' tests/test_a.py -q
+  grep -Fq 'compose --env-file /dev/null -p epp-warm-db' "$warm_test_dir/docker.log"
+  grep -Fq 'up -d --wait db' "$warm_test_dir/docker.log"
+  [[ $(tail -n 1 "$warm_test_dir/docker.log") != *" down "* ]]
+  grep -Fq 'max_connections=300' "$warm_test_dir/dot-warm/warm-override.yml"
+  grep -Fq '127.0.0.1:14532:5432' "$warm_test_dir/dot-warm/warm-override.yml"
+  python3 -c 'import os, stat, sys; assert stat.S_IMODE(os.stat(sys.argv[1]).st_mode) == 0o600' "$warm_test_dir/dot-warm/password"
+  grep -Eq 'POSTGRES_PORT=14532 PYTEST_SHARED_TEMPLATE=1 PYTEST_DB_PREFIX=r123_[0-9a-f]{8}' "$warm_test_dir/pytest.log"
+  prefix1=$(sed -n 's/.*PYTEST_DB_PREFIX=\([^ ]*\).*/\1/p' "$warm_test_dir/pytest.log")
+  grep -Fq "cleanup_prefix=$prefix1" "$warm_test_dir/cleanup.log"
+
+  : > "$warm_test_dir/docker.log"; : > "$warm_test_dir/pytest.log"; : > "$warm_test_dir/cleanup.log"
+  "${warm_env[@]}" bash scripts/remote-test-worker.sh run00002 nere123 pytest '' tests/test_a.py -q
+  if grep -Eq 'up -d|down -v' "$warm_test_dir/docker.log"; then exit 1; fi
+  prefix2=$(sed -n 's/.*PYTEST_DB_PREFIX=\([^ ]*\).*/\1/p' "$warm_test_dir/pytest.log")
+  [[ -n $prefix2 && $prefix1 != "$prefix2" ]]
+
+  printf 'services:\n  db:\n    command: ["postgres", "-c", "fsync=off", "-c", "work_mem=64MB"]\n' > tests/postgres-fast.yml
+  : > "$warm_test_dir/docker.log"
+  "${warm_env[@]}" bash scripts/remote-test-worker.sh run00003 nere123 pytest '' tests/test_a.py -q
+  grep -Fq 'up -d --wait db' "$warm_test_dir/docker.log"
+
+  for fallback_env in "EPP_WARM_DB=0" "MOCK_PROBE_FAIL=1"; do
+    : > "$warm_test_dir/docker.log"; : > "$warm_test_dir/pytest.log"; : > "$warm_test_dir/cleanup.log"
+    "${warm_env[@]}" env "$fallback_env" bash scripts/remote-test-worker.sh run00004 nere123 pytest '' tests/test_a.py -q 2>"$warm_test_dir/fallback.err"
+    grep -Fq -- '-p nere123' "$warm_test_dir/docker.log" && grep -Fq 'up -d --wait db' "$warm_test_dir/docker.log" && grep -Fq 'down -v --remove-orphans' "$warm_test_dir/docker.log"
+    grep -Fq 'POSTGRES_PORT=15123 PYTEST_SHARED_TEMPLATE= PYTEST_DB_PREFIX=' "$warm_test_dir/pytest.log"
+    [[ ! -s $warm_test_dir/cleanup.log ]]
+  done
+  grep -Fq '安全回退到独立 Compose DB' "$warm_test_dir/fallback.err"
+
+  : > "$warm_test_dir/docker.log"; : > "$warm_test_dir/pytest.log"
+  "${warm_env[@]}" env MODEL_TEST_HOST=127.0.0.1 bash scripts/remote-test-worker.sh run00005 nere123 playwright '' tests/smoke.spec.ts
+  grep -Fq -- '-p nere123' "$warm_test_dir/docker.log" && grep -Fq 'build backend pi' "$warm_test_dir/docker.log"
+  grep -Fq 'playwright_base=http://127.0.0.1:18123' "$warm_test_dir/pytest.log"
+  if grep -Fq 'epp-warm-db' "$warm_test_dir/docker.log"; then exit 1; fi
+)
+
 grep -q -- '-oControlMaster=auto' "$runner"
 grep -q -- '-oControlPersist=10m' "$runner"
 grep -q -- '-oControlPath=' "$runner"
