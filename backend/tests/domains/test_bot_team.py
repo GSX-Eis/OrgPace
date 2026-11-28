@@ -499,3 +499,17 @@ def test_admin_manager_scope_rechecked_after_lock(
     )
     db.rollback()
     assert edit_body(db, subject)["base_revision"] == args["base_revision"]
+
+
+def test_people_search_invalid_returns_tool_error(demo: tuple, db: Session) -> None:
+    _, p, session, _, _ = prepared(db, demo, "web")
+    cards = []
+    assert tools.call(
+        db,
+        p,
+        session,
+        cards,
+        "find_people",
+        {"capability_key": "synthetic-missing-capability"},
+    ) == {"error": "能力不在当前启用的词典中"}
+    assert cards == []

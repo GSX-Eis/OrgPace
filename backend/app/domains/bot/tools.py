@@ -2,6 +2,7 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import replace
+from functools import partial
 from typing import Literal, cast
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
@@ -62,7 +63,7 @@ from app.domains.planning.tools import BOT_FEASIBILITY_TOOL, COORDINATION_TOOLS
 from app.domains.planning.tools import Result as CoordinationResult
 from app.domains.profile.service import read_profile
 from app.domains.review import direct
-from app.i18n import tr
+from app.i18n import EN_CATALOG, tr
 
 TOOLS = {t.name: t for t in EMPLOYEE_TOOLS if t.bot_allowed}
 COORDINATION = {t.name: t for t in (*COORDINATION_TOOLS, BOT_FEASIBILITY_TOOL)}
@@ -976,6 +977,78 @@ def call(
     turn_text: str | None = None,
     refreshed_forecast: list[bool] | None = None,
 ) -> JsonValue:
+    invoke = partial(
+        _call,
+        db,
+        p,
+        session,
+        cards,
+        name,
+        arguments,
+        on_read=on_read,
+        drafted_ids=drafted_ids,
+        decided_review_ids=decided_review_ids,
+        turn_text=turn_text,
+        refreshed_forecast=refreshed_forecast,
+    )
+    if name not in TEAM_INPUTS and name not in reviews.INPUTS and name not in TOOLS:
+        return invoke()
+    previous_cards = cards[:]
+    previous_drafts = drafted_ids[:] if drafted_ids is not None else None
+    previous_decisions = (
+        decided_review_ids[:] if decided_review_ids is not None else None
+    )
+    result: JsonValue
+    try:
+        # A failed tool must not commit partially written data or undo earlier tools.
+        with db.begin_nested() as savepoint:
+            result = invoke()
+            if not (isinstance(result, dict) and "error" in result):
+                return result
+            savepoint.rollback()
+    except employee.InvalidItems as error:
+        result = {"error": "；".join(tr(str(e["message"])) for e in error.errors)}
+    except HTTPException as error:
+        detail = error.detail
+        if (
+            400 <= error.status_code < 500
+            and isinstance(detail, str)
+            and (detail in EN_CATALOG or detail in EN_CATALOG.values())
+        ):
+            message = tr(detail)
+        else:
+            message = tr(
+                {
+                    403: "不允许调用此工具",
+                    404: "记录不存在",
+                    409: "内容已更新，请刷新查看",
+                    422: "工具参数不正确",
+                    429: "当前请求较多，请稍后再试",
+                }.get(error.status_code, "操作未完成，请重新查看后再试。")
+            )
+        result = {"error": message}
+    cards[:] = previous_cards
+    if drafted_ids is not None and previous_drafts is not None:
+        drafted_ids[:] = previous_drafts
+    if decided_review_ids is not None and previous_decisions is not None:
+        decided_review_ids[:] = previous_decisions
+    return redact(result)
+
+
+def _call(
+    db: Session,
+    p: Principal,
+    session: BotSession,
+    cards: list[s.Message],
+    name: str,
+    arguments: dict[str, JsonValue],
+    *,
+    on_read: Callable[[set[str]], None] | None = None,
+    drafted_ids: list[UUID] | None = None,
+    decided_review_ids: list[UUID] | None = None,
+    turn_text: str | None = None,
+    refreshed_forecast: list[bool] | None = None,
+) -> JsonValue:
     if name in {"coordination", "prepare_plan_proposal"}:
         if session.channel not in ("web", "feishu"):
             return {"error": "不允许调用此工具"}
@@ -1248,10 +1321,7 @@ def call(
         except HTTPException:
             return {"error": "附件不存在"}
     if name in TEAM_INPUTS:
-        try:
-            return redact(team_call(db, p, cards, name, arguments, on_read=on_read))
-        except employee.InvalidItems as exc:
-            return {"error": "；".join(str(e["message"]) for e in exc.errors)}
+        return redact(team_call(db, p, cards, name, arguments, on_read=on_read))
     if name in reviews.INPUTS:
         return redact(
             reviews.call(
@@ -1315,10 +1385,7 @@ def call(
                 kwargs["request_id"] = current_draft_id
         kwargs["items"] = remaining
         kwargs.update(via="bot", client_name="内置助手")
-    try:
-        result = PROJECTIONS[name].model_validate(tool.handler(p, db, **kwargs))
-    except employee.InvalidItems as exc:
-        return {"error": "；".join(str(e["message"]) for e in exc.errors)}
+    result = PROJECTIONS[name].model_validate(tool.handler(p, db, **kwargs))
     result = name_levels(db, p, result)
     if isinstance(result, s.Profile):
         auto = read_auto_draft(db, p)

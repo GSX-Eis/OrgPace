@@ -994,8 +994,7 @@ def test_delivery_failure_keeps_polling(
                 [task, waiter], timeout=1, return_when=asyncio.FIRST_COMPLETED
             )
             assert waiter in done and not task.done()
-            assert sent[-1] == "next response"
-            assert "synthetic private detail" not in sent and "unsent" not in sent
+            assert sent == ["操作未完成，请重新查看后再试。", "next response"]
         finally:
             task.cancel()
             waiter.cancel()

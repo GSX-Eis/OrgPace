@@ -6,6 +6,7 @@ from typing import Literal
 from uuid import UUID, uuid4
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
@@ -613,3 +614,26 @@ def test_missing_employee_request_returns_tool_error(demo: tuple, db: Session) -
         db, p, session, cards, "preview_request", {"request_id": str(uuid4())}
     ) == {"error": "记录不存在"}
     assert not cards
+
+
+def test_tool_error_rolls_back_only_failed_tool(
+    demo: tuple, db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = principal_for(db, demo[1]["E02"].org_id)
+    session = store.create_session(db, p)
+    session.turn_count = 4
+    db.add(session)
+
+    def fail(*_args: object, **_kwargs: object) -> None:
+        session.turn_count = 5
+        db.flush()
+        raise HTTPException(500, "synthetic private detail")
+
+    name = "get_my_profile"
+    monkeypatch.setitem(tools.TOOLS, name, replace(tools.TOOLS[name], handler=fail))
+    assert tools.call(db, p, session, [], name, {}) == {
+        "error": "操作未完成，请重新查看后再试。"
+    }
+    assert session.turn_count == 4
+    db.commit()
+    assert db.get(type(session), session.id).turn_count == 4

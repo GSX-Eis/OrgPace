@@ -44,6 +44,7 @@ class Gateway:
     def __init__(self, engine: Engine) -> None:
         self.engine = engine
         self.tasks: dict[tuple[UUID, Platform], tuple[str, asyncio.Task[None]]] = {}
+        self.restart_delays: dict[tuple[UUID, Platform], int] = {}
         self.identities: dict[tuple[Platform, str], UUID] = {}
         self.adapters: dict[tuple[UUID, Platform], tuple[str, Adapter]] = {}
 
@@ -151,11 +152,9 @@ class Gateway:
                     error.status_code,
                 )
                 with use_locale(locale):
-                    return (
-                        tr("操作未完成，请重新查看后再试。")
-                        if event.callback_id
-                        else binding.GUIDE
-                    )
+                    if error.status_code == 429:
+                        return tr("当前请求较多，请稍后再试")
+                    return tr("操作未完成，请重新查看后再试。")
             except ValidationError:
                 db.rollback()
                 with use_locale(locale):
@@ -306,6 +305,7 @@ class Gateway:
                 acknowledge(current_locale.get()), loop
             ).result()
 
+        reply: str | actions.Reply | None = None
         try:
             # Model turns are synchronous; keep polling tasks and setting refresh responsive.
             work = asyncio.create_task(
@@ -323,7 +323,10 @@ class Gateway:
                         await asyncio.shield(work)
                     except asyncio.CancelledError:
                         continue
-                work.result()
+                    except HTTPException:
+                        break
+                with suppress(HTTPException):
+                    work.result()
                 raise
             if not reply or not await delivery._run(
                 partial(self.enabled, event.org_id, event.platform, credentials)
@@ -348,6 +351,21 @@ class Gateway:
                             if error.code != "recipient_unavailable":
                                 raise
                     await actions.deliver(db, p, event, identity, reply, adapter)
+        except HTTPException as error:
+            # The failed delivery's Session has already exited and rolled back.
+            logger.warning(
+                "IM message failed: org=%s platform=%s status=%s",
+                event.org_id,
+                event.platform,
+                error.status_code,
+            )
+            if isinstance(reply, actions.Reply) and await delivery._run(
+                partial(self.enabled, event.org_id, event.platform, credentials)
+            ):
+                with use_locale(reply.locale):
+                    await adapter.send_text(
+                        event.external_chat_id, tr("操作未完成，请重新查看后再试。")
+                    )
         finally:
             finished = True
             if reminder:
@@ -369,6 +387,13 @@ class Gateway:
                 except ImError as error:
                     if error.code != "recipient_unavailable":
                         raise
+                except HTTPException as error:
+                    logger.warning(
+                        "IM message failed: org=%s platform=%s status=%s",
+                        event.org_id,
+                        event.platform,
+                        error.status_code,
+                    )
 
         def finished(user: str, task: asyncio.Task[None]) -> None:
             if pending.get(user) is task:
@@ -482,6 +507,12 @@ class Gateway:
             if identity and self.identities.get((platform, identity)) == org_id:
                 del self.identities[platform, identity]
 
+    async def _restart(
+        self, org_id: UUID, platform: Platform, credentials: str, delay: int
+    ) -> None:
+        await asyncio.sleep(delay)
+        await self.connect(org_id, platform, credentials)
+
     async def refresh(self) -> None:
         wanted = await delivery._run(self.wanted)
         for key, (credentials, task) in list(self.tasks.items()):
@@ -489,6 +520,24 @@ class Gateway:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
                 del self.tasks[key]
+                self.restart_delays.pop(key, None)
+            elif task.done() and (task.cancelled() or task.exception() is not None):
+                # A normal return means the configuration is no longer usable.
+                delay = self.restart_delays.get(key, 1)
+                self.restart_delays[key] = min(delay * 2, 60)
+                org_id, platform = key
+                logger.warning(
+                    "IM connection crashed: org=%s platform=%s retry_in=%s",
+                    org_id,
+                    platform,
+                    delay,
+                )
+                self.tasks[key] = (
+                    credentials,
+                    asyncio.create_task(
+                        self._restart(org_id, platform, credentials, delay)
+                    ),
+                )
         for (org_id, platform), credentials in wanted.items():
             # Failed credentials stay stopped until settings actually change.
             if (org_id, platform) not in self.tasks:
