@@ -160,6 +160,7 @@ def test_conftest_shared_template_toggle(monkeypatch: pytest.MonkeyPatch) -> Non
 
 def test_shared_template_race_failure_readonly_cloning_and_pruning(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     import tests.utils.migrations as migrations_mod
     from app.core.db import engine
