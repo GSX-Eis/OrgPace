@@ -758,10 +758,6 @@ def require_requesting_department(
     return principal.user_id
 
 
-def demand_notice_context(demand: CapacityDemand) -> str:
-    return f"（{demand.capability_name}，{demand.window_start} 至 {demand.window_end}）"
-
-
 def create_demand(
     principal: Principal,
     session: Session,

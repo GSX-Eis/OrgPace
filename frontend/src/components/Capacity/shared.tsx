@@ -27,7 +27,7 @@ export function useCapacitySettings(orgId?: string) {
   })
 }
 
-export function isCapacityDisabled(error: unknown, orgId: string) {
+function isCapacityDisabled(error: unknown, orgId: string) {
   const detail =
     error instanceof AxiosError ? error.response?.data?.detail : undefined
   return (

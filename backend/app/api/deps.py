@@ -70,12 +70,6 @@ def get_current_user(current_user: AuthenticatedUser) -> User:
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
-def get_current_active_superuser(current_user: CurrentUser) -> User:
-    if not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="权限不足，请联系企业管理员")
-    return current_user
-
-
 def require_external_mcp() -> None:
     if not settings.EXTERNAL_MCP_ENABLED:
         raise HTTPException(status_code=404, detail="Not Found")

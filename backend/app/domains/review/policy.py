@@ -155,7 +155,6 @@ def save_policy(
         org_id=principal.org_id,
         version=old.current.version + 1,
         created_by_user_id=principal.user_id,
-        no_approval=False,
         **body.model_dump(),
     )
     session.add(row)

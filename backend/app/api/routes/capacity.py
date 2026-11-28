@@ -12,6 +12,7 @@ from app.domains.capacity import (
     extension,
     forecast,
     forecast_policy,
+    inbox_detail,  # noqa: F401  # Registers CapacityInboxProvider on router import.
     project,
     proposal,
     settings,
@@ -52,7 +53,6 @@ from app.domains.capacity.extension_schemas import (
     ExtensionList,
     ExtensionPublic,
 )
-from app.domains.capacity.inbox_detail import CapacityInboxProvider
 from app.domains.capacity.models import (
     CapacityDemandEvent,
     DemandEventKind,
@@ -91,7 +91,6 @@ from app.domains.capacity.schemas import (
     WorkloadRequestPublic,
     WorkloadWeeksInput,
 )
-from app.domains.inbox.service import register_capacity_provider
 from app.domains.org.schemas import DepartmentsPublic
 from app.domains.planning import service as planning
 from app.domains.planning.models import (
@@ -108,7 +107,6 @@ router = APIRouter(prefix="/orgs/{org_id}", tags=["capacity"])
 playwright_router = APIRouter(
     prefix="/private", tags=["private"], include_in_schema=False
 )
-register_capacity_provider(CapacityInboxProvider())
 
 
 @router.get("/capacity/unavailability")

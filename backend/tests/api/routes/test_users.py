@@ -31,7 +31,7 @@ def test_get_users_normal_user_me(
     assert current_user
     assert current_user["is_active"] is True
     assert current_user["is_superuser"] is False
-    assert current_user["email"] == settings.EMAIL_TEST_USER
+    assert current_user["email"] == "test@example.com"
 
 
 def test_update_password_me(

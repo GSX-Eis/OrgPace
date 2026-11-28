@@ -52,6 +52,7 @@ class User(UserBase, table=True):
             name="ck_user_preferred_locale",
         ),
     )
+    # deprecated: retained until drop migration
     legacy_username: str | None = Field(default=None, max_length=255)
     preferred_locale: Locale | None = Field(default=None, sa_type=String(8))
     must_change_password: bool = False
