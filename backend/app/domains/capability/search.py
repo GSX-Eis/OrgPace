@@ -385,7 +385,8 @@ def _published_claim_details(
             )
             .where(
                 ReviewAppeal.org_id == principal.org_id,
-                col(ReviewAppeal.employee_id).in_(employee_ids),
+                col(ReviewAppeal.employee_id)
+                == any_(literal(list(employee_ids), ARRAY(Uuid))),
                 ReviewAppeal.status == AppealStatus.OPEN,
             )
         ).all()
@@ -409,6 +410,15 @@ def _published_claim_details(
             )
         ).all()
     }
+    pairs = list({(employee.id, claim.id) for employee, claim, _ in candidates})
+    targets = (
+        func.unnest(
+            literal([employee_id for employee_id, _ in pairs], ARRAY(Uuid)),
+            literal([id_ for _, id_ in pairs], ARRAY(Uuid)),
+        )
+        .table_valued(column("employee_id", Uuid), column("claim_id", Uuid))
+        .render_derived()
+    )
     raw_claims = col(ProfileVersion.snapshot)["claims"]
     claims = func.jsonb_array_elements(
         case(
@@ -425,9 +435,10 @@ def _published_claim_details(
             .join(claims, true())
             .where(
                 ProfileVersion.org_id == principal.org_id,
-                col(ProfileVersion.subject_employee_id).in_(employee_ids),
+                col(ProfileVersion.subject_employee_id)
+                == any_(literal(list(employee_ids), ARRAY(Uuid))),
                 tuple_(col(ProfileVersion.subject_employee_id), claim_id).in_(
-                    {(employee.id, claim.id) for employee, claim, _ in candidates}
+                    select(targets.c.employee_id, targets.c.claim_id)
                 ),
             )
             .distinct(col(ProfileVersion.subject_employee_id), claim_id)
@@ -443,7 +454,8 @@ def _published_claim_details(
             select(ProfileVersion)
             .where(
                 ProfileVersion.org_id == principal.org_id,
-                col(ProfileVersion.id).in_(set(first.values())),
+                col(ProfileVersion.id)
+                == any_(literal(list(set(first.values())), ARRAY(Uuid))),
             )
             .options(
                 load_only(

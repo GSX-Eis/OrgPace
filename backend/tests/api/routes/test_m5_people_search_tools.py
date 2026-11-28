@@ -2,7 +2,8 @@ import asyncio
 import json
 from copy import deepcopy
 from datetime import timedelta
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import jwt
@@ -10,6 +11,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import event
+from sqlalchemy.dialects import postgresql
 from sqlmodel import Session, col, select
 
 from app.authz.principal import Principal
@@ -17,8 +19,10 @@ from app.core.db import engine
 from app.core.secrets import encrypt_secret
 from app.domains.base import utc_now
 from app.domains.bot import core, store, tools
+from app.domains.capability.models import CapabilitySchemaVersion
 from app.domains.capability.search import (
     PeopleSearchInput,
+    _published_claim_details,
     find_people,
     snapshot_claims,
 )
@@ -29,8 +33,9 @@ from app.domains.im.models import ImSetting
 from app.domains.manager_tools import MANAGER_TOOLS
 from app.domains.model.models import ModelSetting
 from app.domains.model.pi_client import TurnResult
-from app.domains.org.models import Department, OrgMembership, Role, RoleGrant
-from app.domains.profile.models import ProfileVersion
+from app.domains.org.models import Department, Employee, OrgMembership, Role, RoleGrant
+from app.domains.profile.models import AssessmentStatus, ProfileVersion
+from app.domains.profile.schemas import SnapshotClaim
 from app.domains.profile.service import version_summaries
 from tests.api.routes.test_mcp import call, initialize, token_for
 from tests.domains.test_bot_core import enable
@@ -728,3 +733,97 @@ def test_search_uses_first_publication_without_historical_snapshots(
     print(  # noqa: T201
         f"publisher history: {len(old_versions)} full snapshots -> 0; {sum(version_rows)} metadata rows; latest snapshot rows {snapshot_rows[0]}"
     )
+
+
+def test_published_claim_details_bounds_sql_parameters() -> None:
+    org_id = uuid4()
+    schema_id = uuid4()
+    now = utc_now()
+    p = Principal.system_worker(org_id)
+    employees = [cast(Employee, SimpleNamespace(id=uuid4())) for _ in range(3300)]
+    candidates: list[tuple[Employee, SnapshotClaim, str]] = []
+    first_rows: list[tuple[UUID, UUID, UUID]] = []
+    version_rows: list[ProfileVersion] = []
+    for emp in employees:
+        for i in range(20):
+            cid = uuid4()
+            vid = uuid4()
+            claim = SnapshotClaim.model_construct(
+                id=cid,
+                assessment_status=AssessmentStatus.CONFIRMED,
+                evidence=[],
+            )
+            candidates.append((emp, claim, f"cap_{i}"))
+            first_rows.append((emp.id, cid, vid))
+            version_rows.append(
+                cast(
+                    ProfileVersion,
+                    SimpleNamespace(
+                        id=vid,
+                        org_id=org_id,
+                        subject_employee_id=emp.id,
+                        revision=i + 1,
+                        schema_version_id=schema_id,
+                        published_at=now,
+                        published_by={"actor_type": "system_worker"},
+                    ),
+                )
+            )
+
+    class _Result:
+        def __init__(self, rows: list[Any]) -> None:
+            self._rows = rows
+
+        def all(self) -> list[Any]:
+            return self._rows
+
+    class _SpySession:
+        def __init__(self) -> None:
+            self.queries: list[tuple[int, str]] = []
+
+        def exec(self, stmt: Any) -> _Result:
+            compiled = stmt.compile(
+                dialect=postgresql.dialect(),
+                compile_kwargs={"render_postcompile": True},
+            )
+            sql = str(compiled)
+            self.queries.append((len(compiled.params), sql))
+            if (
+                "FROM review_appeal" in sql
+                or "FROM evidence" in sql
+                or 'FROM "user"' in sql
+            ):
+                return _Result([])
+            if "DISTINCT ON" in sql:
+                return _Result(first_rows)
+            if "FROM profile_version" in sql:
+                return _Result(version_rows)
+            if "FROM capability_schema_version" in sql:
+                return _Result(
+                    [
+                        CapabilitySchemaVersion.model_construct(
+                            id=schema_id,
+                            org_id=org_id,
+                            version=1,
+                            name="v1",
+                            is_active=True,
+                            created_at=now,
+                        )
+                    ]
+                )
+            return _Result([])
+
+    spy = _SpySession()
+    details = list(_published_claim_details(cast(Session, spy), p, candidates))
+    assert len(details) == 66000
+    assert spy.queries
+    # Previously 135,305 and 66,001 bind params (> PostgreSQL's 65,535 limit).
+    assert max(count for count, _ in spy.queries) <= 20
+    first_sql = next(sql for _, sql in spy.queries if "DISTINCT ON" in sql)
+    version_sql = next(
+        sql
+        for _, sql in spy.queries
+        if "FROM profile_version" in sql and "DISTINCT ON" not in sql
+    )
+    assert "unnest(" in first_sql
+    assert "= ANY (" in version_sql
