@@ -48,16 +48,26 @@ def run_scoped_db_name(role: str, *, fallback_prefix: str = "app") -> str:
 
 
 def cleanup_run_databases(dsn: str, prefix: str) -> list[str]:
-    """Drop all non-template databases belonging to a run prefix (`<prefix>_*`)."""
-    safe_prefix = sanitize_db_prefix(prefix) + "_"
-    admin_url = dsn
+    """Drop all non-shared-template databases belonging to a run prefix (`<prefix>_*`)."""
+    candidate = prefix.strip()
+    if not _SAFE_DB_PREFIX_RE.fullmatch(candidate) or len(candidate) > 40:
+        raise ValueError(
+            f"Run cleanup prefix must match ^[A-Za-z_][A-Za-z0-9_]*$ and len <= 40, got: {prefix!r}"
+        )
     dropped: list[str] = []
-    with psycopg.connect(admin_url, autocommit=True) as admin:
+    with psycopg.connect(dsn, autocommit=True) as admin:
         rows = admin.execute(
-            "SELECT datname FROM pg_database WHERE starts_with(datname, %s) AND NOT datistemplate",
-            (safe_prefix,),
+            "SELECT datname, datistemplate FROM pg_database "
+            "WHERE starts_with(datname, %s) AND NOT (datname ~ %s)",
+            (f"{candidate}_", SHARED_TEMPLATE_REGEX),
         ).fetchall()
-        for (datname,) in rows:
+        for datname, is_template in rows:
+            if is_template:
+                admin.execute(
+                    sql.SQL("ALTER DATABASE {} WITH IS_TEMPLATE false").format(
+                        sql.Identifier(datname)
+                    )
+                )
             admin.execute(
                 sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(
                     sql.Identifier(datname)

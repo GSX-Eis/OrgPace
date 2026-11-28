@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -167,11 +168,15 @@ def test_shared_template_race_failure_readonly_cloning_and_pruning(
         drivername="postgresql", database="postgres"
     ).render_as_string(hide_password=False)
     suffix = uuid4().hex[:8]
-    tpl_main = f"orgpace_tpl_t_{suffix}"
-    other_staging = f"{migrations_mod.SHARED_TEMPLATE_STAGING_PREFIX}other_{suffix}"
-    prune_prefix = f"orgpace_tpl_gc_{suffix}_"
+    run_prefix = migrations_mod.sanitize_db_prefix(
+        os.environ.get("PYTEST_DB_PREFIX"), fallback="r1579"
+    )
+    tpl_main = f"{run_prefix}_tpl_{suffix}"
+    other_staging = f"{run_prefix}_stg_{suffix}"
+    prune_prefix = f"{run_prefix}_gc_{suffix}_"
     prune_regex = rf"^{prune_prefix}[0-9]+$"
     prune_names = [f"{prune_prefix}1", f"{prune_prefix}2", f"{prune_prefix}3"]
+    prod_tpl = f"orgpace_tpl_{uuid4().hex[:16]}"
 
     def _drop_dbs(names: list[str]) -> None:
         with psycopg.connect(admin_dsn, autocommit=True) as admin:
@@ -196,43 +201,64 @@ def test_shared_template_race_failure_readonly_cloning_and_pruning(
                 sql.SQL("CREATE DATABASE {}").format(sql.Identifier(other_staging))
             )
 
-        # 1. Failure after IS_TEMPLATE=true (at atomic RENAME) cleans ONLY that staging DB,
-        # never masks the original error, and preserves unrelated concurrent staging DBs.
-        staging_seen: list[str] = []
+        # 1. Failures during migrate AND after IS_TEMPLATE=true (at atomic RENAME) clean ONLY
+        # that staging DB, preserve concurrent other_staging, and never mask the original error.
+        for stage, err_msg in (("migrate", "migrate_boom"), ("rename", "rename_boom")):
+            staging_seen: list[str] = []
 
-        def failing_rename(
-            admin: psycopg.Connection[object], source: str, _target: str
-        ) -> None:
-            staging_seen.append(source)
-            assert admin.execute(
-                "SELECT datistemplate, datallowconn FROM pg_database WHERE datname = %s",
-                (source,),
-            ).fetchone() == (True, False)
-            raise RuntimeError("rename_boom")
+            def failing_migrate(
+                eng: Engine,
+                _act: str,
+                _rev: str,
+                *,
+                _msg: str = err_msg,
+                _seen: list[str] = staging_seen,
+            ) -> None:
+                assert eng.url.database is not None
+                _seen.append(eng.url.database)
+                raise RuntimeError(_msg)
 
-        monkeypatch.setattr(migrations_mod, "migrate", lambda *_a: None)
-        monkeypatch.setattr(migrations_mod, "_rename_database", failing_rename)
-        with pytest.raises(RuntimeError, match="rename_boom"):
-            migrations_mod.ensure_shared_template(
-                engine.url, template_name=tpl_main, max_templates=0
-            )
-        assert len(staging_seen) == 1
-        with psycopg.connect(admin_dsn, autocommit=True) as admin:
-            assert (
-                admin.execute(
-                    "SELECT 1 FROM pg_database WHERE datname IN (%s, %s)",
-                    (tpl_main, staging_seen[0]),
-                ).fetchone()
-                is None
-            )
-            assert (
-                admin.execute(
-                    "SELECT 1 FROM pg_database WHERE datname = %s", (other_staging,)
-                ).fetchone()
-                is not None
-            )
+            def failing_rename(
+                admin: psycopg.Connection[object],
+                source: str,
+                _target: str,
+                *,
+                _msg: str = err_msg,
+                _seen: list[str] = staging_seen,
+            ) -> None:
+                _seen.append(source)
+                assert admin.execute(
+                    "SELECT datistemplate, datallowconn FROM pg_database WHERE datname = %s",
+                    (source,),
+                ).fetchone() == (True, False)
+                raise RuntimeError(_msg)
 
-        monkeypatch.undo()
+            with monkeypatch.context() as mp:
+                if stage == "migrate":
+                    mp.setattr(migrations_mod, "migrate", failing_migrate)
+                else:
+                    mp.setattr(migrations_mod, "migrate", lambda *_a: None)
+                    mp.setattr(migrations_mod, "_rename_database", failing_rename)
+                with pytest.raises(RuntimeError, match=err_msg):
+                    migrations_mod.ensure_shared_template(
+                        engine.url, template_name=tpl_main, max_templates=0
+                    )
+            assert len(staging_seen) == 1
+            with psycopg.connect(admin_dsn, autocommit=True) as admin:
+                assert (
+                    admin.execute(
+                        "SELECT 1 FROM pg_database WHERE datname IN (%s, %s)",
+                        (tpl_main, staging_seen[0]),
+                    ).fetchone()
+                    is None
+                )
+                assert (
+                    admin.execute(
+                        "SELECT 1 FROM pg_database WHERE datname = %s",
+                        (other_staging,),
+                    ).fetchone()
+                    is not None
+                )
 
         # 2. Concurrent cold build race: only one migrate invocation runs.
         migrate_calls, lock = 0, threading.Lock()
@@ -288,7 +314,11 @@ def test_shared_template_race_failure_readonly_cloning_and_pruning(
         def clone_run(tag: str) -> list[str]:
             clone_barrier.wait(timeout=5)
             with migrations_mod.isolated_database(
-                engine.url, f"r1579_iso_{suffix}_{tag}", template=tpl_main
+                engine.url,
+                migrations_mod.run_scoped_db_name(
+                    f"iso_{tag}", fallback_prefix="r1579"
+                ),
+                template=tpl_main,
             ) as cloned:
                 with cloned.begin() as conn:
                     conn.execute(
@@ -316,7 +346,9 @@ def test_shared_template_race_failure_readonly_cloning_and_pruning(
             )
             # First clone completes and releases CREATE lock, while session A stays alive.
             with migrations_mod.isolated_database(
-                engine.url, f"r1579_p1_{suffix}", template=prune_names[0]
+                engine.url,
+                migrations_mod.run_scoped_db_name("p1", fallback_prefix="r1579"),
+                template=prune_names[0],
             ):
                 pass
             for name in prune_names[1:]:
@@ -348,7 +380,9 @@ def test_shared_template_race_failure_readonly_cloning_and_pruning(
                 ]
             # Session A can still clone again after B's GC ran.
             with migrations_mod.isolated_database(
-                engine.url, f"r1579_p2_{suffix}", template=prune_names[0]
+                engine.url,
+                migrations_mod.run_scoped_db_name("p2", fallback_prefix="r1579"),
+                template=prune_names[0],
             ):
                 pass
         # After session A releases its lease, GC evicts prune_names[0].
@@ -364,32 +398,49 @@ def test_shared_template_race_failure_readonly_cloning_and_pruning(
                 ).fetchall()
             ] == [prune_names[1], prune_names[2]]
 
-        # 6. Run-prefix cleanup drops crashed run's worker/heartbeat/fresh DBs, preserves peer & template.
-        prefix_a, prefix_b = f"ra_{suffix}", f"rb_{suffix}"
+        # 6. B4: Run-prefix cleanup reclaims crashed run's normal/template/staging DBs,
+        # preserves peer run DBs and real SHARED_TEMPLATE_REGEX templates.
+        for owned in (tpl_main, other_staging, *prune_names):
+            assert owned.startswith(f"{run_prefix}_")
+            assert not re.fullmatch(migrations_mod.SHARED_TEMPLATE_REGEX, owned)
+        with pytest.raises(ValueError, match="len <= 40"):
+            migrations_mod.cleanup_run_databases(admin_dsn, "a" * 41)
+
+        sim_a = f"{run_prefix}_sa_{suffix[:4]}"
+        sim_b = f"{run_prefix}_sb_{suffix[:4]}"
         a_dbs = [
-            f"{prefix_a}_gw0_{suffix}",
-            f"{prefix_a}_hb_{suffix}",
-            f"{prefix_a}_fresh_{suffix}",
+            f"{sim_a}_gw0_{suffix}",
+            f"{sim_a}_hb_{suffix}",
+            f"{sim_a}_fresh_{suffix}",
+            f"{sim_a}_iso_{suffix}",
+            f"{sim_a}_tpl_{suffix}",
+            f"{sim_a}_stg_{suffix}",
         ]
-        b_dbs = [f"{prefix_b}_gw0_{suffix}", f"{prefix_b}_hb_{suffix}"]
+        b_dbs = [f"{sim_b}_gw0_{suffix}", f"{sim_b}_hb_{suffix}"]
         with psycopg.connect(admin_dsn, autocommit=True) as admin:
-            for d in [*a_dbs, *b_dbs]:
+            for d in [*a_dbs, *b_dbs, prod_tpl]:
                 admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(d)))
+            for tpl_db in (f"{sim_a}_tpl_{suffix}", prod_tpl):
+                admin.execute(
+                    sql.SQL(
+                        "ALTER DATABASE {} WITH IS_TEMPLATE true ALLOW_CONNECTIONS false"
+                    ).format(sql.Identifier(tpl_db))
+                )
             try:
-                dropped = set(migrations_mod.cleanup_run_databases(admin_dsn, prefix_a))
+                dropped = set(migrations_mod.cleanup_run_databases(admin_dsn, sim_a))
                 assert dropped == set(a_dbs)
                 remaining = {
                     r[0]
                     for r in admin.execute(
                         "SELECT datname FROM pg_database WHERE datname = ANY(%s)",
-                        ([*a_dbs, *b_dbs, tpl_main],),
+                        ([*a_dbs, *b_dbs, prod_tpl],),
                     ).fetchall()
                 }
-                assert remaining == {*b_dbs, tpl_main}
+                assert remaining == {*b_dbs, prod_tpl}
             finally:
-                _drop_dbs([*a_dbs, *b_dbs])
+                _drop_dbs([*a_dbs, *b_dbs, prod_tpl])
     finally:
-        _drop_dbs([tpl_main, other_staging, *prune_names])
+        _drop_dbs([tpl_main, other_staging, *prune_names, prod_tpl])
 
 
 @pytest.mark.unit

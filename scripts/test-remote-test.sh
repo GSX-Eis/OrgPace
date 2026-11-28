@@ -593,7 +593,9 @@ case "${1:-}" in
     if [[ " $* " == *" config --format json "* ]]; then
       python3 -c 'import json, pathlib, re; t = pathlib.Path("tests/postgres-fast.yml").read_text(); m = re.search(r"command:\s*(\[.*\])", t); print(json.dumps({"services": {"db": {"command": json.loads(m.group(1))}}}))'
     elif [[ " $* " == *" up -d "* && $proj == epp-warm-db ]]; then touch "$MOCK_WARM_RUNNING"
-    elif [[ " $* " == *" down "* && $proj == epp-warm-db ]]; then rm -f "$MOCK_WARM_RUNNING"
+    elif [[ " $* " == *" down "* ]]; then
+      if [[ ${MOCK_DOWN_FAIL:-0} == 1 ]]; then echo 'FIXTURE_CLEANUP_FAILURE' >&2; exit 33; fi
+      if [[ $proj == epp-warm-db ]]; then rm -f "$MOCK_WARM_RUNNING"; fi
     elif [[ " $* " == *" port db 5432 "* ]]; then [[ $proj == epp-warm-db ]] && echo '127.0.0.1:14532' || echo "127.0.0.1:${POSTGRES_PORT}"; fi ;;
 esac
 MOCK
@@ -669,6 +671,23 @@ warm_env=(env PATH="$scratch/warm-bin:$PATH" EPP_WARM_DB_DIR="$warm_test_dir/dot
     [[ ! -s $warm_test_dir/cleanup.log ]]
   done
   grep -Fq '安全回退到独立 Compose DB' "$warm_test_dir/fallback.err"
+
+  # R2-B1a: EPP_WARM_DB_DIR pointing to a regular file falls back cleanly to per-project Compose.
+  : > "$warm_test_dir/docker.log"; : > "$warm_test_dir/pytest.log"
+  : > "$warm_test_dir/not-a-dir"
+  "${warm_env[@]}" env EPP_WARM_DB_DIR="$warm_test_dir/not-a-dir" bash scripts/remote-test-worker.sh run_bad_dir nere124 pytest '' tests/test_a.py -q 2>"$warm_test_dir/bad_dir.err"
+  if grep -Fq 'epp-warm-db' "$warm_test_dir/docker.log"; then exit 1; fi
+  grep -Fq -- '-p nere124' "$warm_test_dir/docker.log" && grep -Fq 'POSTGRES_PORT=15124' "$warm_test_dir/pytest.log"
+  grep -Fq '安全回退到独立 Compose DB' "$warm_test_dir/bad_dir.err"
+
+  # R2-B1b: cleanup() closing FD 9 never suppresses subsequent Compose down stderr.
+  : > "$warm_test_dir/docker.log"
+  set +e
+  "${warm_env[@]}" env EPP_WARM_DB=0 MOCK_DOWN_FAIL=1 bash scripts/remote-test-worker.sh run_down_fail nere124 pytest '' tests/test_a.py -q 2>"$warm_test_dir/down_fail.err"
+  down_rc=$?
+  set -e
+  [[ $down_rc != 0 ]]
+  grep -Fq 'FIXTURE_CLEANUP_FAILURE' "$warm_test_dir/down_fail.err" && grep -Fq 'Compose cleanup failed' "$warm_test_dir/down_fail.err"
 
   : > "$warm_test_dir/docker.log"; : > "$warm_test_dir/pytest.log"
   "${warm_env[@]}" env MODEL_TEST_HOST=127.0.0.1 bash scripts/remote-test-worker.sh run00005 nere123 playwright '' tests/smoke.spec.ts

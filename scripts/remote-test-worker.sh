@@ -215,6 +215,7 @@ scratch=$(mktemp -d)
 compose=(docker compose --env-file /dev/null -p "$project" -f compose.yml -f compose.dev.yml -f tests/postgres-fast.yml -f "$scratch/ports.yml")
 started=false
 warm_active=false
+warm_fd_open=false
 artifacts=
 
 run_backend_python() {
@@ -235,7 +236,10 @@ cleanup() {
       if [[ $code == 0 ]]; then code=1; fi
     fi
   fi
-  exec 9>&- 2>/dev/null || true
+  if $warm_fd_open; then
+    exec 9>&-
+    warm_fd_open=false
+  fi
   if $started; then
     if ! "${compose[@]}" down -v --remove-orphans; then
       echo "Compose cleanup failed for $project." >&2
@@ -382,12 +386,16 @@ PY
 }
 
 if [[ $mode != playwright && $EPP_WARM_DB == 1 ]]; then
-  mkdir -p "$warm_dir"
-  chmod 700 "$warm_dir"
-  exec 9>"$warm_use_lock"
   set +e
-  setup_warm_db
-  warm_rc=$?
+  mkdir -p "$warm_dir" && chmod 700 "$warm_dir" && command exec 9>"$warm_use_lock"
+  warm_prep_rc=$?
+  if [[ $warm_prep_rc == 0 ]]; then
+    warm_fd_open=true
+    setup_warm_db
+    warm_rc=$?
+  else
+    warm_rc=$warm_prep_rc
+  fi
   set -e
   if [[ $warm_rc == 0 ]]; then
     warm_active=true
@@ -399,7 +407,10 @@ if [[ $mode != playwright && $EPP_WARM_DB == 1 ]]; then
     export PYTEST_SHARED_TEMPLATE=1
     export PYTEST_DB_PREFIX="r${number}_${run8}"
   else
-    exec 9>&-
+    if $warm_fd_open; then
+      exec 9>&-
+      warm_fd_open=false
+    fi
     echo "预热 Postgres 启动或探活失败，安全回退到独立 Compose DB ($project)。" >&2
   fi
 fi
