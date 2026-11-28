@@ -72,6 +72,10 @@ else
     die 'Set COMPOSE_PROJECT_NAME=nere<issue-number 1–2999> (optional -review suffix)'
   fi
   [[ -z $workers || ( $workers =~ ^[1-9][0-9]*$ && $workers -le 16 ) ]] || die 'Set PREFLIGHT_PYTEST_WORKERS to 1–16'
+  [[ -z ${EPP_WARM_DB:-} || ${EPP_WARM_DB} == 0 || ${EPP_WARM_DB} == 1 ]] || die 'Set EPP_WARM_DB to 0 or 1'
+  if [[ -n ${EPP_WARM_DB_PORT:-} ]] && { ! [[ $EPP_WARM_DB_PORT =~ ^[1-9][0-9]*$ ]] || (( EPP_WARM_DB_PORT >= 65536 || EPP_WARM_DB_PORT == 5432 )); }; then
+    die 'Set EPP_WARM_DB_PORT to 1–65535 (and != 5432)'
+  fi
 fi
 
 config_dir=$HOME/.config/employee-profile-platform
@@ -286,12 +290,15 @@ if [[ -n $slot_cap ]]; then
   remote_env="env CLOUD_TEST_QUEUE_SLOTS=$(printf '%q' "$slot_cap") "
 fi
 if [[ -n ${PREFLIGHT_BASE_REF:-} ]]; then
-  if [[ -n $remote_env ]]; then
-    remote_env+="PREFLIGHT_BASE_REF=$(printf '%q' "$PREFLIGHT_BASE_REF") "
-  else
-    remote_env="env PREFLIGHT_BASE_REF=$(printf '%q' "$PREFLIGHT_BASE_REF") "
-  fi
+  remote_env=${remote_env:-env }
+  remote_env+="PREFLIGHT_BASE_REF=$(printf '%q' "$PREFLIGHT_BASE_REF") "
 fi
+for env_name in EPP_WARM_DB EPP_WARM_DB_PORT; do
+  if [[ -n ${!env_name:-} ]]; then
+    remote_env=${remote_env:-env }
+    remote_env+="${env_name}=$(printf '%q' "${!env_name}") "
+  fi
+done
 args=$(printf ' %q' "$run_id" "$project" "$mode" "$workers" "$@")
 execute="cd $remote_dir && test \"\$(cat .remote-test-snapshot/id)\" = $run_id || { echo 'Snapshot changed; retry the run.' >&2; exit 75; }; exec ${remote_env}bash scripts/remote-test-worker.sh$args"
 set +e

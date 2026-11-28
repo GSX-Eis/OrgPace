@@ -47,14 +47,16 @@ from app.worker import health, monitor, tasks
 from app.worker.app import app
 from app.worker.models import WorkerHeartbeat
 from app.worker.monitor import dispatch_worker_alerts
-from tests.utils.migrations import isolated_database, migrate
+from tests.utils.migrations import isolated_database, migrate, run_scoped_db_name
 from tests.utils.org import delete_test_organization
 
 
 @pytest.fixture(scope="module")
 def isolated_engine(migration_template: str) -> Generator[Engine]:
     with isolated_database(
-        engine.url, f"heartbeat_test_{uuid4().hex}", template=migration_template
+        engine.url,
+        run_scoped_db_name("hb", fallback_prefix="heartbeat"),
+        template=migration_template,
     ) as isolated:
         yield isolated
 

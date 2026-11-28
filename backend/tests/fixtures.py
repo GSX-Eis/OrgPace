@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import shutil
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -28,7 +29,11 @@ from app.seed.loader import load_demo
 from tests.utils.demo import DemoSeed
 from tests.utils.drafting import mock_drafting  # noqa: F401
 from tests.utils.im import telegram_server  # noqa: F401
-from tests.utils.migrations import MIGRATION_TEMPLATE, isolated_database
+from tests.utils.migrations import (
+    MIGRATION_TEMPLATE,
+    isolated_database,
+    run_scoped_db_name,
+)
 from tests.utils.org import ORG_MODELS, cleanup_new_users, delete_test_organization
 from tests.utils.pi import _pi_process, pi_service  # noqa: F401
 from tests.utils.user import authentication_token_from_email
@@ -91,8 +96,13 @@ def migration_template(pytestconfig: pytest.Config) -> str:
 
 @pytest.fixture
 def migration_engine(migration_template: str) -> Generator[Engine]:
+    db_name = (
+        run_scoped_db_name("mig")
+        if os.environ.get("PYTEST_DB_PREFIX", "").strip()
+        else f"migration_test_{uuid4().hex}"
+    )
     with isolated_database(
-        engine.url, f"migration_test_{uuid4().hex}", template=migration_template
+        engine.url, db_name, template=migration_template
     ) as isolated:
         yield isolated
 

@@ -1,4 +1,5 @@
 import os
+import re
 from contextlib import ExitStack
 from pathlib import Path
 from uuid import uuid4
@@ -65,10 +66,30 @@ def _database_url() -> URL:
     )
 
 
-def _create_template(stack: ExitStack, url: URL) -> str:
-    from tests.utils.migrations import isolated_database, migrate
+def _shared_template_mode() -> bool:
+    return os.environ.get("PYTEST_SHARED_TEMPLATE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
 
-    template = f"migration_template_{uuid4().hex}"
+
+def _create_template(stack: ExitStack, url: URL) -> str:
+    from tests.utils.migrations import (
+        ensure_shared_template,
+        isolated_database,
+        migrate,
+        run_scoped_db_name,
+    )
+
+    if _shared_template_mode():
+        return ensure_shared_template(url, lease_stack=stack)
+
+    template = (
+        run_scoped_db_name("tpl")
+        if os.environ.get("PYTEST_DB_PREFIX", "").strip()
+        else f"migration_template_{uuid4().hex}"
+    )
     engine = stack.enter_context(isolated_database(url, template))
     migrate(engine, "upgrade", "head")
     engine.dispose()
@@ -101,12 +122,17 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     ):
         return
 
-    from tests.utils.migrations import MIGRATION_TEMPLATE, isolated_database
+    from tests.utils.migrations import (
+        MIGRATION_TEMPLATE,
+        isolated_database,
+        run_scoped_db_name,
+    )
 
     with ExitStack() as stack:
         url = _database_url()
-        worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
-        database = f"{(url.database or 'app')[:20]}_{worker}_{uuid4().hex}"
+        raw_worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
+        worker = re.sub(r"[^A-Za-z0-9_]", "_", raw_worker)[:9] or "main"
+        database = run_scoped_db_name(worker, fallback_prefix=url.database or "app")
         patch = stack.enter_context(pytest.MonkeyPatch.context())
         # Configure before importing any app module, including Alembic's model imports.
         patch.setenv(
