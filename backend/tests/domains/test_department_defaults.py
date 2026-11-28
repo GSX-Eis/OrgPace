@@ -2,10 +2,11 @@ import json
 from collections.abc import Generator
 from datetime import timedelta
 from typing import Any
+from uuid import UUID
 
 import pytest
 from sqlalchemy import Engine, inspect
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from app.api.deps import get_authenticated_user
 from app.authz.principal import Principal
@@ -17,7 +18,7 @@ from app.domains.capability.department import (
     department_keys,
     set_department_capabilities,
 )
-from app.domains.capability.models import DepartmentCapability
+from app.domains.capability.models import CapabilityDefinition, DepartmentCapability
 from app.domains.capability.service import (
     activate_template,
     get_schema,
@@ -241,15 +242,22 @@ def test_counts_and_private_content(defaults: tuple, db: Session, demo: tuple) -
     assert expected
     employee = demo[1]["E02"]
     claims = db.exec(
-        select(ProfileClaim).where(
+        select(ProfileClaim)
+        .where(
             ProfileClaim.org_id == p.org_id,
             ProfileClaim.subject_employee_id == employee.id,
         )
+        .order_by(col(ProfileClaim.created_at), col(ProfileClaim.id))
     ).all()
+    superseded = {
+        c.supersedes_claim_id for c in claims if c.supersedes_claim_id is not None
+    }
+    current = [c for c in claims if c.id not in superseded]
+    assert superseded and len(current) == 1
     employee.display_name = "PRIVATE_EMPLOYEE_NAME"
     employee.work_email = "private-employee@example.com"
     db.add(employee)
-    latest = claims[-1]
+    latest = current[0]
     db.add(
         ProfileClaim(
             org_id=p.org_id,
@@ -283,6 +291,93 @@ def test_counts_and_private_content(defaults: tuple, db: Session, demo: tuple) -
     db.commit()
     reduced = d.claim_counts(db, p.org_id, department.id)
     assert sum(reduced.values()) < sum(expected.values())
+
+
+def test_claim_counts_ignores_superseded_chains_regardless_of_row_order(
+    defaults: tuple, db: Session, demo: tuple
+) -> None:
+    p, department, keys, _, _ = defaults
+    expected = d.claim_counts(db, p.org_id, department.id)
+    employee = demo[1]["E02"]
+    claims = db.exec(
+        select(ProfileClaim).where(
+            ProfileClaim.org_id == p.org_id,
+            ProfileClaim.subject_employee_id == employee.id,
+        )
+    ).all()
+    superseded = {
+        c.supersedes_claim_id for c in claims if c.supersedes_claim_id is not None
+    }
+    tip = next(c for c in claims if c.id not in superseded)
+    # Invert UUID and timestamp ordering relative to the supersede chain so physical/sort order cannot mask bugs.
+    min_id_int = min(c.id.int for c in claims)
+    older_sorted = ProfileClaim(
+        id=UUID(int=min_id_int - 1),
+        created_at=tip.created_at - timedelta(days=1),
+        org_id=p.org_id,
+        subject_employee_id=employee.id,
+        capability_definition_id=tip.capability_definition_id,
+        statement="SUPERSEDED_CHAIN_STEP",
+        explanation="SUPERSEDED_CHAIN_STEP",
+        level=tip.level,
+        assessment_status=tip.assessment_status,
+        generated_by={},
+        supersedes_claim_id=tip.id,
+    )
+    db.add(older_sorted)
+    db.flush()
+    db.add(
+        ProfileClaim(
+            id=UUID(int=min_id_int - 2),
+            created_at=tip.created_at - timedelta(days=2),
+            org_id=p.org_id,
+            subject_employee_id=employee.id,
+            capability_definition_id=tip.capability_definition_id,
+            statement="FINAL_CHAIN_TIP",
+            explanation="FINAL_CHAIN_TIP",
+            level=tip.level,
+            assessment_status=tip.assessment_status,
+            generated_by={},
+            supersedes_claim_id=older_sorted.id,
+        )
+    )
+    extra_key = next(k for k in keys if k not in expected)
+    extra_def = db.exec(
+        select(CapabilityDefinition).where(
+            CapabilityDefinition.org_id == p.org_id,
+            CapabilityDefinition.schema_version_id == get_schema(db, p.org_id).id,
+            CapabilityDefinition.key == extra_key,
+        )
+    ).one()
+    extra_first = ProfileClaim(
+        org_id=p.org_id,
+        subject_employee_id=employee.id,
+        capability_definition_id=extra_def.id,
+        statement="EXTRA_FIRST",
+        explanation="EXTRA_FIRST",
+        level=tip.level,
+        assessment_status=tip.assessment_status,
+        generated_by={},
+    )
+    db.add(extra_first)
+    db.flush()
+    db.add(
+        ProfileClaim(
+            id=UUID(int=min_id_int - 3),
+            created_at=extra_first.created_at - timedelta(days=1),
+            org_id=p.org_id,
+            subject_employee_id=employee.id,
+            capability_definition_id=extra_def.id,
+            statement="EXTRA_SECOND",
+            explanation="EXTRA_SECOND",
+            level=tip.level,
+            assessment_status=tip.assessment_status,
+            generated_by={},
+            supersedes_claim_id=extra_first.id,
+        )
+    )
+    db.commit()
+    assert d.claim_counts(db, p.org_id, department.id) == {**expected, extra_key: 1}
 
 
 @pytest.mark.parametrize("change", ["admin", "dictionary"])
