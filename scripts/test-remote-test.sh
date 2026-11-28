@@ -896,9 +896,18 @@ MOCK
 
   mv "$scratch/warm-bin/docker.orig" "$scratch/warm-bin/docker"
   : > "$warm_test_dir/cleanup.log"
-  printf '#!/usr/bin/env bash\nprintf hit > "$EPP_TEMPLATE_STATUS_FILE"\necho assertion_failed\nexit 42\n' > "$scratch/warm-bin/uv"
+  cat > "$scratch/warm-bin/uv" <<'MOCK'
+#!/usr/bin/env bash
+printf hit > "$EPP_TEMPLATE_STATUS_FILE"
+echo assertion_failed
+exit 42
+MOCK
   real_cat=$(command -v cat)
-  printf '#!/usr/bin/env bash\ncase "${1:-}" in */template-status) exit 17 ;; esac\nexec "%s" "$@"\n' "$real_cat" > "$scratch/warm-bin/cat"
+  cat > "$scratch/warm-bin/cat" <<MOCK
+#!/usr/bin/env bash
+case "\${1:-}" in */template-status) exit 17 ;; esac
+exec "$real_cat" "\$@"
+MOCK
   chmod +x "$scratch/warm-bin/uv" "$scratch/warm-bin/cat"
   set +e
   bad_st=$("${warm_env[@]}" env EPP_WARM_DB=1 bash scripts/remote-test-worker.sh run_bad_status nere123 pytest '' tests/test_a.py -q 2>&1)
