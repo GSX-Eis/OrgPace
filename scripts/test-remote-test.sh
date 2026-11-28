@@ -24,7 +24,7 @@ export CLOUD_RUNNER_CONFIG=$scratch/missing.env
 export CLOUD_TEST_CACHE_DIR=$scratch/cache
 export CLOUD_TEST_SSH_DIR=$scratch/ssh
 export EPP_WARM_DB_DIR=$scratch/warm-db
-unset GCP_PROJECT GCP_ZONE GCP_INSTANCE
+unset GCP_PROJECT GCP_ZONE GCP_INSTANCE SPOT_HOURLY_RATE_USD
 help=$("$runner" --help)
 grep -q 'Usage:' <<< "$help"
 expect_failure 'Usage:' "$runner" unknown
@@ -36,7 +36,7 @@ expect_failure '1–16' env COMPOSE_PROJECT_NAME=nere123 PREFLIGHT_PYTEST_WORKER
 expect_failure 'Set GCP_PROJECT, GCP_ZONE and GCP_INSTANCE' "$runner" status
 grep -Fq 'SPOT_HOURLY_RATE_USD' "$scratch/output"
 if grep -Fq 'docs/cloud-testing.md' "$scratch/output"; then exit 1; fi
-expect_failure 'Set SPOT_HOURLY_RATE_USD' env GCP_PROJECT=sample-project GCP_ZONE=example-zone GCP_INSTANCE=example-instance "$runner" status
+expect_failure 'Set SPOT_HOURLY_RATE_USD' env -u SPOT_HOURLY_RATE_USD GCP_PROJECT=sample-project GCP_ZONE=example-zone GCP_INSTANCE=example-instance "$runner" status
 
 export CLOUD_RUNNER_CONFIG=$scratch/runner.env
 export CLOUD_TEST_QUEUE_DIR=$scratch/queue
