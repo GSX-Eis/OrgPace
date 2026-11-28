@@ -5,7 +5,6 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import pytest
-from fastapi import HTTPException
 from sqlmodel import Session
 
 from app.domains.bot import core, store, tools
@@ -177,16 +176,14 @@ def test_overlap_cannot_read_employee_in_another_tenant(
     db.commit()
     session = store.create_session(db, p)
     cards: list[s.Message] = []
-    with pytest.raises(HTTPException) as error:
-        tools.call(
-            db,
-            replace(p, org_id=uuid4()),
-            session,
-            cards,
-            "draft_update_request",
-            {"items": [payload()]},
-        )
-    assert error.value.status_code == 404
+    assert tools.call(
+        db,
+        replace(p, org_id=uuid4()),
+        session,
+        cards,
+        "draft_update_request",
+        {"items": [payload()]},
+    ) == {"error": "未找到该员工或你没有权限查看"}
     assert cards == [] and session.request_ids == []
 
 

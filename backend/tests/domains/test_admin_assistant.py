@@ -3,6 +3,7 @@ from datetime import timedelta
 from uuid import UUID, uuid4
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine, inspect, text
 from sqlalchemy.exc import IntegrityError
@@ -11,7 +12,7 @@ from sqlmodel import Session, select
 from app.authz.deps import get_org_principal
 from app.authz.principal import Principal
 from app.domains.admin import overview
-from app.domains.admin_assistant import core, store
+from app.domains.admin_assistant import core, store, tools
 from app.domains.admin_assistant.models import (
     AdminAssistantMessage,
 )
@@ -514,3 +515,51 @@ def test_historical_page_links_redirect_without_rewriting_messages() -> None:
         assert link.type == "link"
         assert link.page == targets.get(page.partition("?tab=")[2], "/employees")
         assert body.page == page
+
+
+@pytest.mark.parametrize(
+    "name,args,status,expected",
+    [
+        ("request_file", {"kind": "roster"}, 404, "会话不存在"),
+        (
+            "request_secret_input",
+            {"function": "missing", "field": "missing"},
+            404,
+            "请先起草改动，并选择允许安全输入的字段",
+        ),
+        (
+            "admin_read",
+            {"function": "get_progress", "args": {}},
+            403,
+            "需要企业管理员权限",
+        ),
+        ("admin_read", {"function": "get_progress", "args": {}}, 404, "找不到该记录"),
+        (
+            "admin_read",
+            {"function": "get_progress", "args": {}},
+            500,
+            "查询失败，请在对应页面检查设置",
+        ),
+    ],
+)
+def test_tool_http_errors_are_action_specific(
+    demo: tuple,
+    db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    args: dict,
+    status: int,
+    expected: str,
+) -> None:
+    p = admin(db, demo[1]["E02"].org_id)
+    session_id = uuid4()
+
+    async def fail(*_args: object) -> None:
+        raise HTTPException(status, "synthetic private detail")
+
+    monkeypatch.setattr(tools.registry, "admin_read", fail)
+    cards = []
+    assert tools.call(db, p, cards, name, args, session_id=session_id) == {
+        "data": {"error": expected}
+    }
+    assert not cards

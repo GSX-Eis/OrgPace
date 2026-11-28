@@ -6,7 +6,6 @@ from uuid import UUID, uuid4
 
 import jwt
 import pytest
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
 
@@ -322,19 +321,17 @@ def test_web_manager_scope_and_privacy(
         assert {r["employee_code"] for r in results[0]["data"]} == codes
     p = principal(db, p.org_id, p.employee_id)
     for department_id in (employees["E04"].department_id, foreign_department.id):
-        with pytest.raises(HTTPException) as error:
-            tools.call(
-                db,
-                p,
-                store.get_session(db, p, UUID(session_id)),
-                [],
-                "find_people",
-                {
-                    "capability_key": capability["key"],
-                    "department_id": str(department_id),
-                },
-            )
-        assert error.value.status_code == 403
+        assert tools.call(
+            db,
+            p,
+            store.get_session(db, p, UUID(session_id)),
+            [],
+            "find_people",
+            {
+                "capability_key": capability["key"],
+                "department_id": str(department_id),
+            },
+        ) == {"error": "需要企业管理员或部门经理权限"}
 
 
 def test_web_employee_and_admin_without_departments_denied(

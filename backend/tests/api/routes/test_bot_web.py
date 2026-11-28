@@ -122,8 +122,6 @@ def test_assistant_identity_and_tool_boundaries(
     import asyncio
     from uuid import uuid4
 
-    from fastapi import HTTPException
-
     from app.core.db import engine
     from app.domains.bot import schemas as s
     from app.domains.bot import store, tools
@@ -179,9 +177,9 @@ def test_assistant_identity_and_tool_boundaries(
         requests = call("get_my_requests", {"status": "all"})
         assert str(own.id) in [r["id"] for r in requests["data"]]
         assert str(foreign_request.id) not in [r["id"] for r in requests["data"]]
-        with pytest.raises(HTTPException) as error:
-            call("preview_request", {"request_id": str(foreign_request.id)})
-        assert error.value.status_code == 404
+        assert call("preview_request", {"request_id": str(foreign_request.id)}) == {
+            "error": "记录不存在"
+        }
         assert call("list_pending_reviews", {}) == {"data": [], "count": 0}
         assert (
             call(

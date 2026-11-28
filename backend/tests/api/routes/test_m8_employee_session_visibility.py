@@ -201,10 +201,9 @@ def test_employee_visibility_loss_clears_history_and_model_context(
         client.get(f"{base}/employees/{target.id}", headers=headers).status_code == 404
     )
     assert store.get_session(db, current, row.id).id == row.id
-    with pytest.raises(core.tools.TeamMemberNotFound):
-        core.tools.call(
-            db, current, row, [], "get_member_profile", {"employee_id": str(target.id)}
-        )
+    assert core.tools.call(
+        db, current, row, [], "get_member_profile", {"employee_id": str(target.id)}
+    ) == {"error": "找不到该员工"}
     if entrypoint == "turn":
         core.turn(db, current, row.id, "继续")
     history = client.get(

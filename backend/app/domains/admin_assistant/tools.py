@@ -123,14 +123,8 @@ def call(
             return {"error": "工具参数不正确"}
         except HTTPException:
             return {"error": "附件不存在"}
-    try:
-        if name == "request_file" and session_id:
-            store.get_session(db, principal, session_id)
-            cards.append(
-                FileUploadCard(**RequestFile.model_validate(args).model_dump())
-            )
-            return {"data": {"message": "请在上传框选择文件，预览后点击确认才会导入"}}
-        if name == "request_secret_input" and session_id:
+    if name == "request_secret_input" and session_id:
+        try:
             body_secret = RequestSecretInput.model_validate(args)
             cards.append(
                 change_set.request_secret_input(
@@ -138,6 +132,17 @@ def call(
                 )
             )
             return {"data": {"message": "请在安全输入框填写"}}
+        except ValidationError:
+            return {"data": {"error": tr("参数不正确，请按功能说明填写")}}
+        except HTTPException:
+            return {"data": {"error": tr("请先起草改动，并选择允许安全输入的字段")}}
+    try:
+        if name == "request_file" and session_id:
+            store.get_session(db, principal, session_id)
+            cards.append(
+                FileUploadCard(**RequestFile.model_validate(args).model_dump())
+            )
+            return {"data": {"message": "请在上传框选择文件，预览后点击确认才会导入"}}
         if name == "list_admin_functions":
             return registry.list_admin_functions(
                 ListFunctionsInput.model_validate(args).area
@@ -163,8 +168,20 @@ def call(
             return {"data": data}
     except ValidationError:
         return {"data": {"error": "参数不正确，请按功能说明填写"}}
-    except HTTPException:
-        return {"data": {"error": "请先起草改动，并选择允许安全输入的字段"}}
+    except HTTPException as error:
+        if error.status_code == 404:
+            message = "会话不存在" if name == "request_file" else "找不到该记录"
+        elif error.status_code == 403:
+            message = "需要企业管理员权限"
+        elif error.status_code == 429:
+            message = "当前请求较多，请稍后再试"
+        else:
+            message = (
+                "操作未完成，请重新查看后再试。"
+                if name == "request_file"
+                else "查询失败，请在对应页面检查设置"
+            )
+        return {"data": {"error": tr(message)}}
     if name == "propose_changes" and session_id:
         try:
             row = change_set.propose(
