@@ -613,3 +613,157 @@ def test_proposal_split_has_no_delayed_cycle_imports_and_keeps_facade() -> None:
     ):
         assert name in facade_dict and callable(facade_dict[name])
     assert demand.respond_demand is not None
+
+
+def test_demand_split_has_no_delayed_cycle_imports_and_keeps_facade() -> None:
+    from app.domains.capacity import (
+        common,
+        demand,
+        demand_actions,
+        demand_views,
+    )
+
+    capacity_dir = APP / "domains" / "capacity"
+    demand_tree = ast.parse((capacity_dir / "demand.py").read_text())
+    demand_funcs = {n.name for n in demand_tree.body if isinstance(n, ast.FunctionDef)}
+    assert "__getattr__" not in demand_funcs
+    assert "import_module" not in {
+        alias.name
+        for n in ast.walk(demand_tree)
+        if isinstance(n, ast.ImportFrom) and n.module == "importlib"
+        for alias in n.names
+    }
+
+    expected_reexports = {
+        "DEMAND_NOT_FOUND": common,
+        "LOAD_WORDS": common,
+        "DemandReplyInvalid": common,
+        "DemandReplyLoadInvalid": common,
+        "RejectionReasonInvalid": common,
+        "can_view_demand_internals": common,
+        "demand_row": common,
+        "department": common,
+        "qualified_people": common,
+        "represents_department": common,
+        "require_rejection_reason": common,
+        "responder_user_ids": common,
+        "responders_by_department": common,
+        "validate_department_text": common,
+        "validate_load_words": common,
+        "require_requester": demand_views,
+        "list_capacity_departments": demand_views,
+        "department_reference": demand_views,
+        "capacity_reference": demand_views,
+        "reference_for_viewer": demand_views,
+        "demand_public": demand_views,
+        "demands_public": demand_views,
+        "project_role_summary": demand_views,
+        "get_demand": demand_views,
+        "decision_history": demand_views,
+        "list_demands": demand_views,
+        "verified_skill_shortage": demand_views,
+        "get_demand_basis": demand_views,
+        "is_legacy_verbal_reply": demand_views,
+        "DemandAwaitingSchedule": demand_actions,
+        "require_requesting_department": demand_actions,
+        "submit_demand": demand_actions,
+        "create_demand": demand_actions,
+        "validate_reply_text": demand_actions,
+        "reply_demand": demand_actions,
+        "respond_demand": demand_actions,
+    }
+    facade_dict = vars(demand)
+    assert set(demand.__all__) == set(expected_reexports)
+    for name, source_mod in expected_reexports.items():
+        assert name in facade_dict
+        assert facade_dict[name] is getattr(source_mod, name)
+
+
+def test_assistant_split_has_no_delayed_cycle_imports_and_keeps_facade() -> None:
+    from app.domains.capacity import (
+        assistant,
+        assistant_demands,
+        assistant_forecast,
+        assistant_workload,
+    )
+
+    facade_dict = vars(assistant)
+    expected_reexports = {
+        "ChangeOnWeb": assistant_demands,
+        "RESPONSES": assistant_demands,
+        "DEMAND_REPLY_REASON_GUIDANCE": assistant_demands,
+        "DEMAND_REPLY_PLAN_GUIDANCE": assistant_demands,
+        "SKILL_REPLY_TEXT": assistant_demands,
+        "SKILL_REPLY_UNVERIFIED": assistant_demands,
+        "STAFFING_FIELDS": assistant_demands,
+        "STAFFING_TEXT": assistant_demands,
+        "PRIVATE_TEXT": assistant_demands,
+        "DraftTextInvalid": assistant_demands,
+        "validate_draft_text": assistant_demands,
+        "PrepareDemandInput": assistant_demands,
+        "requester_departments": assistant_demands,
+        "DemandDepartmentForbidden": assistant_demands,
+        "check_demand": assistant_demands,
+        "check_demand_response": assistant_demands,
+        "check_demand_reply": assistant_demands,
+        "PrepareForecastPolicyInput": assistant_forecast,
+        "PrepareForecastEventInput": assistant_forecast,
+        "_scope_label": assistant_forecast,
+        "get_forecast_config_for_bot": assistant_forecast,
+        "check_forecast_policy": assistant_forecast,
+        "check_forecast_event": assistant_forecast,
+        "check_workload_request": assistant_workload,
+        "check_leave": assistant_workload,
+        "check_team_workload": assistant_workload,
+        "check_extension_request": assistant_workload,
+    }
+    for name, source_mod in expected_reexports.items():
+        assert name in facade_dict
+        assert facade_dict[name] is getattr(source_mod, name)
+    for name in ("READS", "WRITES", "PREPARES", "TITLES", "CHECKS", "RESULTS"):
+        assert isinstance(facade_dict[name], dict)
+    for name in ("definitions", "read_progress", "call", "act"):
+        assert callable(facade_dict[name])
+
+
+def test_capacity_has_zero_internal_delayed_imports_and_strict_dag() -> None:
+    capacity_dir = APP / "domains" / "capacity"
+    prefix = "app.domains.capacity."
+    mod_paths = [p for p in sorted(capacity_dir.glob("*.py")) if p.stem != "__init__"]
+    mod_names = {p.stem for p in mod_paths}
+    delayed: list[str] = []
+    dag: dict[str, set[str]] = {}
+    for path in mod_paths:
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for inner in ast.walk(node):
+                    if isinstance(inner, ast.Import):
+                        for alias in inner.names:
+                            if alias.name.startswith(prefix):
+                                delayed.append(f"{path.name}: {alias.name}")
+                    elif isinstance(inner, ast.ImportFrom) and inner.module:
+                        if inner.module.startswith(prefix) or (
+                            inner.module == "app.domains.capacity"
+                        ):
+                            delayed.append(f"{path.name}: {inner.module}")
+        deps: set[str] = set()
+        for stmt in tree.body:
+            if isinstance(stmt, ast.ImportFrom) and stmt.module:
+                if stmt.module == "app.domains.capacity":
+                    deps.update(
+                        alias.name for alias in stmt.names if alias.name in mod_names
+                    )
+                elif stmt.module.startswith(prefix):
+                    target = stmt.module.removeprefix(prefix).split(".", 1)[0]
+                    if target in mod_names:
+                        deps.add(target)
+            elif isinstance(stmt, ast.Import):
+                for alias in stmt.names:
+                    if alias.name.startswith(prefix):
+                        target = alias.name.removeprefix(prefix).split(".", 1)[0]
+                        if target in mod_names:
+                            deps.add(target)
+        dag[path.stem] = deps
+    assert delayed == []
+    assert len(list(TopologicalSorter(dag).static_order())) == len(mod_names)

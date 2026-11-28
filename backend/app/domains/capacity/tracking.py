@@ -12,14 +12,13 @@ from app.authz.policies import employee_scope_clause
 from app.authz.principal import Principal
 from app.domains.audit.models import ActorKind
 from app.domains.base import utc_now
-from app.domains.capacity.assignment import assignment_lender
 from app.domains.capacity.common import (
     CapacityConflict,
     CapacityForbidden,
     CapacityNotFound,
-)
-from app.domains.capacity.demand import (
+    assignment_lender,
     demand_row,
+    require_enabled,
     responder_user_ids,
     responders_by_department,
 )
@@ -33,8 +32,8 @@ from app.domains.capacity.models import (
     CapacityUnavailability,
     TrackingState,
 )
+from app.domains.capacity.project import unavailability_impact
 from app.domains.capacity.schemas import CapacityInput
-from app.domains.capacity.settings import require_enabled
 from app.domains.inbox.models import InboxItem, InboxKind
 from app.domains.inbox.service import add_item
 from app.domains.org.models import (
@@ -671,8 +670,6 @@ def notify_managers(
 def notify_unavailability(
     session: Session, absence: CapacityUnavailability
 ) -> set[UUID]:
-    from app.domains.capacity.project import unavailability_impact
-
     notified: set[UUID] = set()
     for row, demand in session.exec(
         select(CapacityAssignment, CapacityDemand)

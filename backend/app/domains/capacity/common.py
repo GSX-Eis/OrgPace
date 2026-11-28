@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from pydantic import JsonValue
 from sqlmodel import Session, col, func, or_, select
 
+from app.authz.deps import get_org_principal
 from app.authz.policies import (
     can_manage_department,
     employee_scope_clause,
@@ -25,8 +26,10 @@ from app.domains.capability.search import (
 )
 from app.domains.capacity.demand_schemas import DetailedCapacityReference
 from app.domains.capacity.models import (
+    CapacityAssignment,
     CapacityDemand,
     CapacityInboxLink,
+    CapacityProposalLine,
     CapacitySetting,
     CapacityWeek,
 )
@@ -43,10 +46,13 @@ from app.domains.org.models import (
     RoleGrant,
 )
 from app.domains.org.service import department_ancestry, managed_scope
+from app.domains.review.routing import can_review, review_participants
 from app.domains.source.models import SourceConnection
 from app.domains.work.models import Task
 from app.i18n import tr
 from app.models import User
+
+DEFAULT_RETENTION_RATE = 0.65
 
 WORKLOAD_REVIEW_NOTICE = "有负荷调整申请等你审批"
 EXTENSION_REVIEW_NOTICE = "有延期申请等你审批"
@@ -491,3 +497,131 @@ def open_jira_task_counts(
         .group_by(col(ExternalIdentity.employee_id))
     ).all()
     return {eid: count for eid, count in rows if eid is not None}
+
+
+def retention_from_decay(decay_rate: float) -> float:
+    """Convert stored decay_rate column to retention_rate in [0.0, 1.0]."""
+    return round(min(1.0, max(0.0, 1.0 - decay_rate)), 2)
+
+
+def retention_mode_label(retention_rate: float) -> str:
+    if retention_rate == 0.0:
+        return tr("脉冲波次型")
+    if retention_rate == 0.5:
+        return tr("常规均衡型")
+    if retention_rate == 0.8:
+        return tr("项目延续型")
+    return tr("自定义延续")
+
+
+def build_scope_label(department_name: str | None, job_family: str | None) -> str:
+    if department_name and job_family:
+        return f"{department_name} / {job_family}"
+    if department_name:
+        return department_name
+    if job_family:
+        return tr("全企业 / {job_family}", job_family=job_family)
+    return tr("企业默认")
+
+
+def build_policy_label(
+    retention_rate: float,
+    department_name: str | None,
+    job_family: str | None,
+) -> str:
+    return tr(
+        "周延续系数 {rate}（{scope}）",
+        rate=f"{retention_rate:g}",
+        scope=build_scope_label(department_name, job_family),
+    )
+
+
+def assignment_lender(session: Session, row: CapacityAssignment) -> UUID | None:
+    return (
+        session.exec(
+            select(CapacityProposalLine.lender_department_id).where(
+                CapacityProposalLine.org_id == row.org_id,
+                CapacityProposalLine.id == row.proposal_line_id,
+            )
+        ).first()
+        if row.proposal_line_id
+        else None
+    )
+
+
+def extension_department_allowed(
+    principal: Principal, session: Session, target_department_id: UUID
+) -> bool:
+    if represents_department(principal, target_department_id):
+        return True
+    target_ids = managed_scope(
+        session, principal.org_id, frozenset({target_department_id})
+    )
+    member = session.exec(
+        select(Employee.id).where(
+            employee_scope_clause(principal),
+            Employee.id == principal.employee_id,
+            Employee.employment_status == EmploymentStatus.ACTIVE,
+            col(Employee.department_id).in_(target_ids),
+        )
+    ).first()
+    return member is not None
+
+
+def extension_reviewer(
+    principal: Principal,
+    session: Session,
+    employee_id: UUID,
+    target_department_id: UUID,
+) -> UUID | None:
+    reviewer = can_review(session, principal, employee_id)
+    if reviewer is None or extension_department_allowed(
+        principal, session, target_department_id
+    ):
+        return reviewer
+    return None
+
+
+def extension_reviewers(
+    principal: Principal,
+    session: Session,
+    row: CapacityAssignment,
+    demand: CapacityDemand,
+) -> list[User]:
+    borrowed = assignment_lender(session, row) is not None
+    if borrowed:
+        recipients = responder_user_ids(
+            session, row.org_id, demand.target_department_id
+        )
+    else:
+        managers, delegates = review_participants(
+            session, principal.org_id, row.employee_id
+        )
+        recipients = set(managers) | delegates
+    if not recipients:
+        return []
+    users = session.exec(
+        select(User)
+        .join(OrgMembership, col(OrgMembership.user_id) == User.id)
+        .where(
+            OrgMembership.org_id == principal.org_id,
+            col(User.id).in_(recipients),
+            User.is_active,
+        )
+        .order_by(col(User.id))
+    ).all()
+    if borrowed:
+        return list(users)
+    return [
+        user
+        for user in users
+        if (
+            extension_reviewer(
+                get_org_principal(principal.org_id, user, session),
+                session,
+                row.employee_id,
+                demand.target_department_id,
+            )
+            is not None
+        )
+    ]

@@ -26,8 +26,13 @@ from app.domains.capacity.common import (
     CapacityNotFound,
     audit,
     employee,
+    extension_reviewers,
     notify_employee,
+    require_enabled,
     user_names,
+)
+from app.domains.capacity.common import (
+    assignment_lender as assignment_lender,
 )
 from app.domains.capacity.demand import (
     demand_row,
@@ -47,7 +52,6 @@ from app.domains.capacity.models import (
     DemandStatus,
 )
 from app.domains.capacity.schemas import Via
-from app.domains.capacity.settings import require_enabled
 from app.domains.inbox.models import InboxItem, InboxKind
 from app.domains.inbox.service import add_item
 from app.domains.org.models import Department, Employee, EmploymentStatus
@@ -131,19 +135,6 @@ def check_capacity(
     unconfirmed, over = calendar.shortfalls(weeks, allocation_percent)
     if unconfirmed or over:
         raise AssignmentCapacityConflict(weeks, allocation_percent)
-
-
-def assignment_lender(session: Session, row: CapacityAssignment) -> UUID | None:
-    return (
-        session.exec(
-            select(CapacityProposalLine.lender_department_id).where(
-                CapacityProposalLine.org_id == row.org_id,
-                CapacityProposalLine.id == row.proposal_line_id,
-            )
-        ).first()
-        if row.proposal_line_id
-        else None
-    )
 
 
 def assignment_rows(
@@ -588,8 +579,6 @@ def update_assignment(
 
 
 def list_my_assignments(principal: Principal, session: Session) -> MyAssignmentList:
-    from app.domains.capacity.extension import extension_reviewers
-
     require_enabled(principal, session)
     subject = employee(principal, session, principal.employee_id)
     rows = session.exec(

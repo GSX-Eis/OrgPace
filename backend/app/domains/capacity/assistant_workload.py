@@ -34,6 +34,7 @@ from app.domains.capacity.workload import (
     get_my_workload,
     register_unavailability,
     set_weeks,
+    validate_request_week,
     workload_reviewer_names,
     workload_reviewers,
 )
@@ -41,8 +42,6 @@ from app.i18n import tr
 
 
 def check_workload_request(db: Session, p: Principal, value: BaseModel) -> str:
-    from app.domains.capacity.workload import validate_request_week
-
     body = WorkloadRequestInput.model_validate(value)
     if p.user_id is None:
         raise CapacityForbidden()
