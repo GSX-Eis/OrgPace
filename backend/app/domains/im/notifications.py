@@ -11,6 +11,7 @@ from sqlmodel import Session, col, select, update
 
 from app.authz.principal import Principal
 from app.core.config import settings
+from app.core.secrets import secret_fingerprint
 from app.domains.base import utc_now
 from app.domains.im.adapters.base import Adapter, ImError
 from app.domains.im.models import ImBinding, ImNotification, ImSetting
@@ -328,7 +329,12 @@ async def send_pending(
                 if notice is None:
                     continue
                 connection = adapters.get((org_id, notice.platform))
-                if not connection or connection[0] != notice.credentials:
+                fp = secret_fingerprint(notice.credentials)
+                if (
+                    not connection
+                    or fp is None
+                    or secret_fingerprint(connection[0]) != fp
+                ):
                     continue
                 notice.attempted = True
                 try:

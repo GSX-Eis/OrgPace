@@ -14,10 +14,10 @@ from pydantic import ValidationError
 from sqlalchemy import Engine
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
-from sqlmodel import Session, col, select, update
+from sqlmodel import Session, col, select
 
 from app.authz.principal import Principal
-from app.core.secrets import SecretUnavailable, decrypt_secret
+from app.core.secrets import SecretUnavailable, decrypt_secret, secret_fingerprint
 from app.domains.base import utc_now
 from app.domains.bot import delivery
 from app.domains.bot.attachments import AttachmentError
@@ -49,9 +49,14 @@ class Gateway:
         self.adapters: dict[tuple[UUID, Platform], tuple[str, Adapter]] = {}
 
     def enabled(self, org_id: UUID, platform: Platform, credentials: str) -> bool:
+        expected = secret_fingerprint(credentials)
+        if expected is None:
+            return False
         with Session(self.engine) as db:
             row = db.get(ImSetting, (org_id, platform))
-            return bool(row and row.enabled and row.credentials == credentials)
+            return bool(
+                row and row.enabled and secret_fingerprint(row.credentials) == expected
+            )
 
     def dispatch(
         self,
@@ -211,21 +216,30 @@ class Gateway:
         checked_at: datetime | None,
         identity: str | None = None,
     ) -> bool:
+        expected = secret_fingerprint(credentials)
+        if expected is None:
+            return False
         with Session(self.engine) as db:
-            statement = update(ImSetting).where(
-                col(ImSetting.org_id) == org_id,
-                col(ImSetting.platform) == platform,
-                col(ImSetting.credentials) == credentials,
-            )
-            if identity is not None:
-                statement = statement.where(col(ImSetting.enabled).is_(True)).values(
-                    bot_identity=identity
+            row = db.exec(
+                select(ImSetting)
+                .where(
+                    col(ImSetting.org_id) == org_id,
+                    col(ImSetting.platform) == platform,
                 )
+                .with_for_update()
+            ).one_or_none()
+            if row is None or secret_fingerprint(row.credentials) != expected:
+                db.rollback()
+                return False
+            if identity is not None:
+                if not row.enabled:
+                    db.rollback()
+                    return False
+                row.bot_identity = identity
             if platform == "wecom":
-                statement = statement.values(connection_checked_at=checked_at)
-            changed = db.exec(statement.returning(col(ImSetting.org_id))).first()
+                row.connection_checked_at = checked_at
             db.commit()
-            return changed is not None
+            return True
 
     def wanted(self) -> dict[tuple[UUID, Platform], str]:
         with Session(self.engine) as db:
@@ -523,7 +537,10 @@ class Gateway:
     async def refresh(self) -> None:
         wanted = await delivery._run(self.wanted)
         for key, (credentials, task) in list(self.tasks.items()):
-            if wanted.get(key) != credentials:
+            wanted_cred = wanted.get(key)
+            if wanted_cred is None or secret_fingerprint(
+                wanted_cred
+            ) != secret_fingerprint(credentials):
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
                 del self.tasks[key]
@@ -540,9 +557,9 @@ class Gateway:
                     delay,
                 )
                 self.tasks[key] = (
-                    credentials,
+                    wanted_cred,
                     asyncio.create_task(
-                        self._restart(org_id, platform, credentials, delay)
+                        self._restart(org_id, platform, wanted_cred, delay)
                     ),
                 )
         for (org_id, platform), credentials in wanted.items():

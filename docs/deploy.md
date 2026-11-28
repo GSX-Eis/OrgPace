@@ -318,7 +318,12 @@ docker compose up -d --wait # 用原目录、.env 和项目名重新启动
 
 模型调用已迁移为精确锁定的 Pi，升级需单独审查工具边界、认证、网络出口和额度映射，见 [ADR-0014](adr/0014-pi-agent.md)。旧订阅令牌格式不迁移，升级后请在模型页重新连接 ChatGPT。
 
-Jira、API key 和订阅凭据均由 `SECRET_KEY` 派生密钥加密。更换它后，需要在网页重新填写 Jira/模型密钥并重新连接 ChatGPT；不要通过复制明文数据库字段恢复。开发演示包含模拟 Jira，正式部署不需要它；离线镜像准备和生产配置仍遵循上文部署流程。
+Jira、API key、IM 凭据与会话密文在未设置 `ENCRYPTION_KEYS` 时默认由 `SECRET_KEY` 派生密钥加密；推荐配置独立的逗号分隔 Fernet 密钥列表 `ENCRYPTION_KEYS` 实现零停机轮换（首位主密钥用于加密，其余密钥与历史 `SECRET_KEY` 依次回退解密）。轮换必须严格按以下顺序执行，**确认完成前严禁退役旧密钥或更换 `SECRET_KEY`**：
+
+1. **全量切换写入方配置**：将所有写入进程（`backend`、`worker`、`im`）更新为 `ENCRYPTION_KEYS="<新密钥>,<旧密钥>"` 并重启确认无旧配置写入进程。
+2. **只读预检**：在 `backend` 容器执行 `python -m app.core.reencrypt_secrets --dry-run`，校验历史密文可解密并核对 `pending_values`。
+3. **分批重加密与复核**：执行 `python -m app.core.reencrypt_secrets`（每批独立提交），确认退出码为 `0` 且 `failed=0`、`unresolved=0`，再复跑一次 `--dry-run` 确认 `pending_values=0`。
+4. **退役旧密钥**：仅在第 3 步确认零未完成、零失败后，再从 `ENCRYPTION_KEYS` 移除旧密钥或更换 `SECRET_KEY`（注意：已外发的 Bot 项目草稿链接若在旧密钥退役后点击将失效）。开发演示包含模拟 Jira，正式部署不需要它；离线镜像准备和生产配置仍遵循上文部署流程。
 
 开发模式可叠加 `compose.chatgpt-local.yml`，只读挂载单个授权文件到 Pi，绝不刷新或写回本机令牌；命令见[开发文档](development.md#本机-chatgpt-订阅测试)。生产订阅从网页连接，按企业加锁刷新；刷新失败提示重新连接。
 
