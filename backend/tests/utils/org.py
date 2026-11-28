@@ -1,123 +1,38 @@
+from typing import Any
 from uuid import UUID
 
 from psycopg import ClientCursor, Connection, Error, sql
-from sqlmodel import Session, col, delete, select
+from sqlmodel import Session, SQLModel, col, delete, select
 
-from app.domains.access_token.models import (
-    McpSetting,
-    OAuthGrant,
-    OAuthRefreshToken,
-    PersonalAccessToken,
-)
-from app.domains.admin_assistant.models import (
-    AdminAssistantMessage,
-    AdminAssistantSession,
-    AdminChangeSet,
-)
-from app.domains.audit.models import AuditEvent
-from app.domains.bot.models import BotMessage, BotSession, BotSetting
-from app.domains.capability.models import (
-    CapabilityDefinition,
-    CapabilityProposal,
-    CapabilityProposalEvidence,
-    CapabilitySchemaVersion,
-    DepartmentCapability,
-)
-from app.domains.change_request.models import (
-    ChangeItem,
-    ChangeItemEvidence,
-    ProfileChangeRequest,
-    ReviewDecision,
-)
-from app.domains.drafting.models import DraftingNote, DraftingSetting, UpdateSetting
-from app.domains.evidence.models import Evidence
-from app.domains.im.models import (
-    ImAction,
-    ImBindCode,
-    ImBinding,
-    ImEvent,
-    ImNotification,
-    ImSetting,
-)
-from app.domains.inbox.models import InboxItem, PendingQuestion
-from app.domains.model.models import ModelSetting
-from app.domains.org.models import (
-    Department,
-    Employee,
-    ExternalIdentity,
-    Organization,
-    OrgMembership,
-    ReportingLine,
-    RoleGrant,
-    RosterImport,
-)
-from app.domains.profile.models import (
-    ClaimEvidence,
-    ProfileClaim,
-    ProfileProgress,
-    ProfileVersion,
-)
-from app.domains.review.models import ApprovalPolicy, ReviewAppeal, ReviewDelegation
-from app.domains.setup.models import SetupStepState
-from app.domains.source.models import SourceConnection, SyncRun
-from app.domains.work.models import SyncRunTask, Task, WorkEvent
+import app.models  # noqa: F401
+from app.domains.org.models import Organization, OrgMembership, RoleGrant
 from app.models import User
 
-ORG_MODELS = (
-    ImNotification,
-    ReviewDelegation,
-    ReviewAppeal,
-    ApprovalPolicy,
-    ImAction,
-    ImEvent,
-    ImBindCode,
-    ImBinding,
-    ImSetting,
-    PersonalAccessToken,
-    OAuthRefreshToken,
-    OAuthGrant,
-    McpSetting,
-    AdminChangeSet,
-    AdminAssistantMessage,
-    AdminAssistantSession,
-    BotMessage,
-    BotSession,
-    BotSetting,
-    SetupStepState,
-    ModelSetting,
-    SyncRunTask,
-    SyncRun,
-    DraftingSetting,
-    DraftingNote,
-    UpdateSetting,
-    SourceConnection,
-    AuditEvent,
-    InboxItem,
-    PendingQuestion,
-    ChangeItemEvidence,
-    ChangeItem,
-    ReviewDecision,
-    ProfileChangeRequest,
-    ClaimEvidence,
-    ProfileVersion,
-    ProfileClaim,
-    ProfileProgress,
-    DepartmentCapability,
-    CapabilityProposalEvidence,
-    CapabilityProposal,
-    Evidence,
-    WorkEvent,
-    Task,
-    CapabilityDefinition,
-    CapabilitySchemaVersion,
-    RoleGrant,
-    ReportingLine,
-    RosterImport,
-    OrgMembership,
-    ExternalIdentity,
-    Employee,
-    Department,
-)
+
+def derive_org_models() -> tuple[Any, ...]:
+    """Derive tenant-scoped SQLModel tables in FK-safe deletion order (children first)."""
+    table_to_model = {
+        mapper.local_table.name: mapper.class_
+        for mapper in SQLModel._sa_registry.mappers
+        if issubclass(mapper.class_, SQLModel)
+    }
+    models = []
+    for table in reversed(SQLModel.metadata.sorted_tables):
+        if (
+            table.name == "organization"
+            or table.name.startswith("procrastinate_")
+            or table.name == "alembic_version"
+        ):
+            continue
+        if "org_id" not in table.c:
+            continue
+        model = table_to_model.get(table.name)
+        if model is not None:
+            models.append(model)
+    return tuple(models)
+
+
+ORG_MODELS = derive_org_models()
 
 
 def cleanup_new_users(session: Session, existing_user_ids: set[UUID]) -> None:
@@ -156,9 +71,6 @@ def delete_test_organization(session: Session, org_id: UUID, *other_ids: UUID) -
                     MESSAGE = 'Only a test-owned organization may be deleted';
             END IF;
             PERFORM set_config('app.allow_evidence_delete', 'on', true);
-            IF to_regclass('public.capacity_week_forecast') IS NOT NULL THEN
-                DELETE FROM capacity_week_forecast WHERE org_id = ANY(target_ids);
-            END IF;
             {}
         END
         $cleanup$

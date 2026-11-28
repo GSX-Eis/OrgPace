@@ -16,7 +16,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
-from app.domains.base import TenantRecord, tenant_fk, utc_now
+from app.domains.base import TenantRecord, utc_now
 from app.domains.bot.models import ChatAttachment, ConversationMessage
 
 
@@ -78,11 +78,33 @@ class AdminChangeSet(TenantRecord, table=True):
     __tablename__ = "admin_change_set"
     __table_args__ = (
         UniqueConstraint("org_id", "id"),
-        tenant_fk("session_id", "admin_assistant_session"),
-        tenant_fk("undo_of_id", "admin_change_set"),
+        ForeignKeyConstraint(
+            ["org_id"],
+            ["organization.id"],
+            name="admin_change_set_org_id_fkey",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        ForeignKeyConstraint(
+            ["org_id", "session_id"],
+            ["admin_assistant_session.org_id", "admin_assistant_session.id"],
+            name="admin_change_set_org_id_session_id_fkey",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        ForeignKeyConstraint(
+            ["org_id", "undo_of_id"],
+            ["admin_change_set.org_id", "admin_change_set.id"],
+            name="admin_change_set_org_id_undo_of_id_fkey",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
         ForeignKeyConstraint(
             ["org_id", "created_by_user_id"],
             ["org_membership.org_id", "org_membership.user_id"],
+            name="admin_change_set_org_id_created_by_user_id_fkey",
+            deferrable=True,
+            initially="DEFERRED",
         ),
         CheckConstraint("status IN ('draft','applied','discarded','stale','undone')"),
         CheckConstraint("revision >= 1"),
@@ -90,6 +112,7 @@ class AdminChangeSet(TenantRecord, table=True):
             "jsonb_typeof(items) = 'array' AND jsonb_array_length(items) BETWEEN 1 AND 50"
         ),
     )
+    org_id: UUID = Field(index=True)
     session_id: UUID
     created_by_user_id: UUID
     status: str = Field(default="draft", sa_type=String)

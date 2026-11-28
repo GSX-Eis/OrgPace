@@ -46,6 +46,10 @@ jobs:
       - name: Migrate DB
         run: uv run bash scripts/prestart.sh
         working-directory: backend
+      - name: Verify Alembic migrations match models
+        if: matrix.shard == 1
+        run: uv run alembic check
+        working-directory: backend
       - name: Collect expected pytest node IDs for baseline gate
         env:
           FASTAPI_ENV: development

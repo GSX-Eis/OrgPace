@@ -447,7 +447,7 @@ test("NERE-1344：差异化预测策略、双向回归、助手业务波动事�
     for await (const chunk of req) raw += chunk
     const body = JSON.parse(raw)
     const messages = body.messages as Array<{ role: string; content?: unknown }>
-    const lastMessage = messages.at(-1)
+    const lastMessage = messages[messages.length - 1]
     const lastUser = [...messages]
       .reverse()
       .find((item) => item.role === "user")
@@ -801,9 +801,13 @@ test("NERE-1344：差异化预测策略、双向回归、助手业务波动事�
     )
 
     for (const code of ["WM", "W1", "W2", "DM", "D1", "D2"]) {
-      await expect(reqLog).not.toContainText(person(code).display_name)
-      await expect(reqLog).not.toContainText(person(code).id)
-      await expect(reqLog).not.toContainText(person(code).employee_code)
+      const member = person(code)
+      if (!member.employee_code) {
+        throw new Error(`Expected employee_code for ${code}`)
+      }
+      await expect(reqLog).not.toContainText(member.display_name)
+      await expect(reqLog).not.toContainText(member.id)
+      await expect(reqLog).not.toContainText(member.employee_code)
     }
     for (const forbidden of [
       "个人负荷",

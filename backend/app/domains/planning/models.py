@@ -2,7 +2,7 @@ from enum import StrEnum
 from uuid import UUID
 
 from pydantic import JsonValue
-from sqlalchemy import Column, UniqueConstraint
+from sqlalchemy import Column, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field
 
@@ -49,7 +49,7 @@ class PlanningSnapshot(TenantRecord, table=True):
     )
     case_id: UUID
     data: dict[str, JsonValue] = Field(sa_column=Column(JSONB, nullable=False))
-    fingerprint: str
+    fingerprint: str = Field(sa_type=Text)
     created_by_user_id: UUID
 
 

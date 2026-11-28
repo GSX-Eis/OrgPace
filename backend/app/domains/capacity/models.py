@@ -522,9 +522,21 @@ class CapacityInboxLink(TenantRecord, table=True):
             ["inbox_item.org_id", "inbox_item.id"],
             ondelete="CASCADE",
         ),
-        tenant_fk("workload_request_id", "capacity_workload_request"),
-        tenant_fk("extension_request_id", "capacity_extension_request"),
+        ForeignKeyConstraint(
+            ["org_id", "workload_request_id"],
+            ["capacity_workload_request.org_id", "capacity_workload_request.id"],
+            name="fk_capacity_inbox_link_workload_request",
+            ondelete="SET NULL (workload_request_id)",
+        ),
+        ForeignKeyConstraint(
+            ["org_id", "extension_request_id"],
+            ["capacity_extension_request.org_id", "capacity_extension_request.id"],
+            name="fk_capacity_inbox_link_extension_request",
+            ondelete="SET NULL (extension_request_id)",
+        ),
     )
+    # Covered by the (org_id, id) and (org_id, inbox_item_id) leading unique indexes.
+    org_id: UUID = Field(foreign_key="organization.id", index=False)
     inbox_item_id: UUID
     workload_request_id: UUID | None = None
     extension_request_id: UUID | None = None

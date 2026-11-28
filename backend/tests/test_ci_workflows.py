@@ -198,6 +198,23 @@ def test_backend_ci_enforces_baseline_gate() -> None:
     )
 
 
+def test_backend_ci_runs_alembic_check() -> None:
+    workflow = yaml.safe_load((WORKFLOWS / "test-backend.yml").read_text())
+    shard_steps = workflow["jobs"]["backend-shard"]["steps"]
+    migrate_idx = next(
+        i for i, step in enumerate(shard_steps) if step.get("name") == "Migrate DB"
+    )
+    check_idx, check_step = next(
+        (i, step)
+        for i, step in enumerate(shard_steps)
+        if "alembic check" in step.get("run", "")
+    )
+    assert check_idx > migrate_idx
+    assert check_step.get("if") == "matrix.shard == 1"
+    assert check_step.get("working-directory") == "backend"
+    assert check_step.get("run") == "uv run alembic check"
+
+
 def test_playwright_ci_uses_balanced_shard_selector_and_excludes_real_jira() -> None:
     workflow = yaml.safe_load((WORKFLOWS / "playwright.yml").read_text())
     shard_steps = workflow["jobs"]["playwright-shard"]["steps"]

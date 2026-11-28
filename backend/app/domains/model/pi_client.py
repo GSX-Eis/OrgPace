@@ -143,8 +143,10 @@ def _error(event: dict[str, JsonValue]) -> None:
         retry_at = datetime.fromisoformat(str(event["retry_at"]))
         if retry_at.tzinfo is None:
             raise ValueError("Invalid retry time")
-        reason = "模型用量到上限" + (
-            "；恢复时间为估计" if event.get("estimated") else ""
+        reason = (
+            "模型用量到上限；恢复时间为估计"
+            if event.get("estimated")
+            else "模型用量到上限"
         )
         raise ModelRateLimited(retry_at, reason)
     if code in ("unauthorized", "bad_request"):

@@ -2,6 +2,7 @@ from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import Connection, engine_from_config, pool
+from sqlalchemy.sql.schema import SchemaItem
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -20,7 +21,7 @@ if config.attributes.get("configure_logger", True):
 # target_metadata = None
 
 from app.models import SQLModel  # noqa
-from app.core.config import settings # noqa
+from app.core.config import settings  # noqa
 
 target_metadata = SQLModel.metadata
 
@@ -32,6 +33,19 @@ target_metadata = SQLModel.metadata
 
 def get_url():
     return str(settings.DATABASE_URL)
+
+
+def include_object(
+    obj: SchemaItem,
+    name: str | None,
+    type_: str,
+    reflected: bool,  # noqa: ARG001
+    compare_to: SchemaItem | None,  # noqa: ARG001
+) -> bool:
+    table_name = (
+        name if type_ == "table" else getattr(getattr(obj, "table", None), "name", None)
+    )
+    return not (isinstance(table_name, str) and table_name.startswith("procrastinate_"))
 
 
 def run_migrations_offline():
@@ -48,7 +62,11 @@ def run_migrations_offline():
     """
     url = get_url()
     context.configure(
-        url=url, target_metadata=target_metadata, literal_binds=True, compare_type=True
+        url=url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        compare_type=True,
+        include_object=include_object,
     )
 
     with context.begin_transaction():
@@ -57,7 +75,10 @@ def run_migrations_offline():
 
 def do_run_migrations(connection: Connection) -> None:
     context.configure(
-        connection=connection, target_metadata=target_metadata, compare_type=True
+        connection=connection,
+        target_metadata=target_metadata,
+        compare_type=True,
+        include_object=include_object,
     )
     with context.begin_transaction():
         context.run_migrations()
