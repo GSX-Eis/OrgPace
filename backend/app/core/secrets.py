@@ -70,8 +70,8 @@ def decrypt_secret(token: str) -> str:
 
 def rotate_secret(token: str) -> str:
     _, cipher = _cipher_pair()
-    token_bytes = token.encode()
     try:
+        token_bytes = token.encode()
         cipher.decrypt(token_bytes).decode()
         return cipher.rotate(token_bytes).decode()
     except InvalidToken, UnicodeError:
@@ -81,8 +81,8 @@ def rotate_secret(token: str) -> str:
 def rotate_if_needed(token: str) -> str | None:
     """Return a rotated ciphertext if ``token`` is not encrypted with the primary key."""
     primary, _ = _cipher_pair()
-    token_bytes = token.encode()
     try:
+        token_bytes = token.encode()
         primary.decrypt(token_bytes).decode()
         return None
     except InvalidToken:

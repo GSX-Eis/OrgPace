@@ -24,6 +24,7 @@ class Settings(BaseSettings):
         env_file="../.env",
         env_ignore_empty=True,
         extra="ignore",
+        hide_input_in_errors=True,
     )
     API_V1_STR: str = "/api/v1"
     SECRET_KEY: str

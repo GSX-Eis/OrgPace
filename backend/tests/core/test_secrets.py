@@ -1,7 +1,7 @@
 import base64
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from typing import cast
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import pytest
@@ -10,12 +10,20 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from pydantic import SecretStr, ValidationError
 from sqlalchemy import Table, delete, select
+from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, SQLModel
 from sqlmodel import select as sm_select
 
 import app.models  # noqa: F401
+from app.core import reencrypt_secrets as reencrypt_mod
 from app.core.config import Settings, settings
-from app.core.reencrypt_secrets import ENCRYPTED_TARGETS, main, reencrypt_secrets
+from app.core.db import engine
+from app.core.reencrypt_secrets import (
+    ENCRYPTED_TARGETS,
+    ReencryptDatabaseError,
+    main,
+    reencrypt_secrets,
+)
 from app.core.secrets import (
     LEGACY_HKDF_INFO,
     SecretUnavailable,
@@ -464,3 +472,222 @@ def test_reencrypt_cli_reports_corrupted_rows_without_secret_leak(
         assert o_row and o_row.client_secret_encrypted
         assert decrypt_secret(m_row.api_key_ciphertext) == canary
         assert decrypt_secret(o_row.client_secret_encrypted) == canary
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("fn", [rotate_secret, rotate_if_needed])
+def test_rotate_normalizes_unicode_error(fn: Callable[[str], str | None]) -> None:
+    with pytest.raises(SecretUnavailable):
+        fn(chr(0xD800))
+
+
+@pytest.mark.unit
+def test_settings_validation_and_db_errors_redact_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.delenv("FASTAPI_ENV", raising=False)
+    jwt_canary, db_canary, key_canary = (
+        "jwt-canary-secret",
+        "db-canary-pass",
+        "bad-canary-key",
+    )
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(
+            _env_file=None,  # type: ignore[call-arg]
+            PROJECT_NAME="test",
+            SECRET_KEY=jwt_canary,
+            PI_SERVICE_TOKEN="synthetic-valid-token",
+            DATABASE_URL=f"postgresql://postgres:{db_canary}@localhost/app",  # type: ignore[arg-type]
+            ENCRYPTION_KEYS=key_canary,  # type: ignore[arg-type]
+        )
+    err_text = str(exc_info.value)
+    assert "input_value=" not in err_text
+    for canary in (jwt_canary, db_canary, key_canary):
+        assert canary not in err_text
+
+    class _FailingSession:
+        def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise OperationalError(
+                "SELECT secret",
+                {"secret": "CIPHER-CANARY", "plain": "PLAINTEXT-CANARY"},
+                RuntimeError("KEY-CANARY"),
+            )
+
+        def rollback(self) -> None:
+            return None
+
+    with pytest.raises(ReencryptDatabaseError) as db_exc:
+        reencrypt_secrets(cast(Session, _FailingSession()))
+    assert "table=model_setting" in str(db_exc.value)
+    for canary in ("CIPHER-CANARY", "PLAINTEXT-CANARY", "KEY-CANARY"):
+        assert canary not in str(db_exc.value)
+
+    class _Ctx:
+        def __init__(self, *_args: object) -> None:
+            pass
+
+        def __enter__(self) -> object:
+            return _FailingSession()
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    monkeypatch.setattr(reencrypt_mod, "Session", _Ctx)
+    assert main([]) == 1
+    cap = capsys.readouterr()
+    combined = cap.out + cap.err + caplog.text
+    assert "table=model_setting error=OperationalError" in cap.err
+    for canary in ("CIPHER-CANARY", "PLAINTEXT-CANARY", "KEY-CANARY"):
+        assert canary not in combined
+
+
+@pytest.mark.unit
+def test_attachment_tables_cap_batch_size() -> None:
+    limits: dict[str, int] = {}
+
+    class _EmptyResult:
+        def all(self) -> list[object]:
+            return []
+
+    class _RecordingSession:
+        def execute(self, stmt: Any) -> _EmptyResult:
+            table_name = stmt.get_final_froms()[0].name
+            if stmt._limit_clause is not None:
+                limits[table_name] = int(stmt._limit_clause.value)
+            return _EmptyResult()
+
+        def commit(self) -> None:
+            return None
+
+    reencrypt_secrets(cast(Session, _RecordingSession()), batch_size=500)
+    assert limits["bot_attachment"] <= 10
+    assert limits["admin_assistant_attachment"] <= 10
+    assert limits["oauth_client"] == 500
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("reread_mode", ["unresolved", "already_current", "deleted"])
+def test_reencrypt_cas_rowcount_zero_reread_and_exit_code(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    reread_mode: str,
+) -> None:
+    target = next(t for t in ENCRYPTED_TARGETS if t.model is OAuthClient)
+    monkeypatch.setattr(reencrypt_mod, "ENCRYPTED_TARGETS", (target,))
+    monkeypatch.setattr(
+        reencrypt_mod,
+        "rotate_if_needed",
+        lambda tok: "new-synthetic-value" if tok == "old-synthetic-value" else None,
+    )
+
+    class _Result:
+        def __init__(self, rows: list[tuple[Any, ...]] = (), rowcount: int = 0) -> None:  # type: ignore[assignment]
+            self._rows = rows
+            self.rowcount = rowcount
+
+        def all(self) -> list[tuple[Any, ...]]:
+            return self._rows
+
+        def one_or_none(self) -> tuple[Any, ...] | None:
+            return self._rows[0] if self._rows else None
+
+    class _StubSession:
+        def __init__(self) -> None:
+            self.batches = 0
+
+        def execute(self, stmt: Any) -> _Result:
+            if stmt.is_update:
+                return _Result(rowcount=0)
+            if len(stmt.selected_columns) == 2:
+                self.batches += 1
+                return _Result(
+                    rows=[(1, "old-synthetic-value")] if self.batches == 1 else []
+                )
+            if reread_mode == "unresolved":
+                return _Result(rows=[("old-synthetic-value",)])
+            if reread_mode == "already_current":
+                return _Result(rows=[("new-synthetic-value",)])
+            return _Result(rows=[])
+
+        def commit(self) -> None:
+            return None
+
+        def rollback(self) -> None:
+            return None
+
+    class _Ctx:
+        def __init__(self, *_args: object) -> None:
+            pass
+
+        def __enter__(self) -> _StubSession:
+            return _StubSession()
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    monkeypatch.setattr(reencrypt_mod, "Session", _Ctx)
+    code = main(["--batch-size", "1"])
+    cap = capsys.readouterr()
+    assert "rotated_values=0" in cap.out
+    if reread_mode == "unresolved":
+        assert code == 1 and "unresolved=1" in cap.out and "oauth_client" in cap.err
+    elif reread_mode == "already_current":
+        assert (
+            code == 0 and "already_current=1" in cap.out and "unresolved=0" in cap.out
+        )
+    else:
+        assert code == 0 and "skipped_concurrent=1" in cap.out
+
+
+def test_reencrypt_cas_does_not_overwrite_concurrent_db_write(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    oauth_id = f"cas-oauth-{uuid4().hex}"
+    monkeypatch.setattr(settings, "SECRET_KEY", "old-cas-secret")
+    monkeypatch.setattr(settings, "ENCRYPTION_KEYS", None)
+    db.add(
+        OAuthClient(
+            client_id=oauth_id,
+            client_metadata={"n": "cas"},
+            client_secret_encrypted=encrypt_secret("old-value"),
+            registered_ip="127.0.0.1",
+        )
+    )
+    db.commit()
+
+    with _oauth_cleanup(db, [oauth_id]):
+        k1 = _fernet_key()
+        monkeypatch.setattr(settings, "ENCRYPTION_KEYS", SecretStr(k1))
+        target = next(t for t in ENCRYPTED_TARGETS if t.model is OAuthClient)
+        monkeypatch.setattr(reencrypt_mod, "ENCRYPTED_TARGETS", (target,))
+
+        orig_execute = db.execute
+        raced = False
+
+        def racing_execute(stmt: Any, *args: Any, **kwargs: Any) -> Any:
+            nonlocal raced
+            if not raced and getattr(stmt, "is_update", False):
+                raced = True
+                with Session(engine) as concurrent_db:
+                    row = concurrent_db.get(OAuthClient, oauth_id)
+                    assert row is not None
+                    row.client_secret_encrypted = encrypt_secret("fresh-concurrent-val")
+                    concurrent_db.commit()
+            return orig_execute(stmt, *args, **kwargs)
+
+        monkeypatch.setattr(db, "execute", racing_execute)
+        summary = reencrypt_secrets(db, batch_size=1)
+        assert raced
+        assert summary.rotated_values == 0
+        assert summary.already_current_values == 1
+        assert summary.unresolved_values == 0
+        assert summary.failed_values == 0
+
+        db.expire_all()
+        final_row = db.get(OAuthClient, oauth_id)
+        assert final_row and final_row.client_secret_encrypted
+        assert (
+            decrypt_secret(final_row.client_secret_encrypted) == "fresh-concurrent-val"
+        )
