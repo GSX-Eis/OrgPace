@@ -8,13 +8,21 @@ from sqlmodel import Session, select
 
 from app.authz.deps import get_org_principal
 from app.domains.admin_assistant.models import (
+    AdminAssistantAttachment,
     AdminAssistantMessage,
     AdminAssistantSession,
+    AdminChangeSet,
 )
 from app.domains.admin_assistant.store import ensure_setup_session
 from app.domains.base import utc_now
 from app.domains.bot.models import BotSetting
-from app.domains.bot.store import append_message, cleanup_messages, messages_for
+from app.domains.bot.store import (
+    append_message,
+    cleanup_messages,
+    load_state,
+    messages_for,
+    save_state,
+)
 from app.domains.setup import wizard
 from app.domains.setup.models import SetupStatus, SetupStepState
 from app.models import User
@@ -154,8 +162,41 @@ def test_setup_retention(
     ).one()
     message.created_at = old
     db.add(message)
+    state = {"version": 1, "messages": ["synthetic context"]}
+    save_state(db, row, state)
+    attachment = AdminAssistantAttachment(
+        org_id=row.org_id,
+        session_id=row.id,
+        kind="file",
+        filename="sample.txt",
+        mime_type="text/plain",
+        size=1,
+        ciphertext="synthetic",
+        created_at=old,
+    )
+    draft = AdminChangeSet(
+        org_id=row.org_id,
+        session_id=row.id,
+        created_by_user_id=row.user_id,
+        items=[{"synthetic": True}],
+        secrets="synthetic",
+        confirmed_once_at=old,
+    )
+    db.add_all([attachment, draft])
     db.commit()
+    attachment_id, draft_id = attachment.id, draft.id
+    assert not wizard.read_setup(db, tenant.org_id).completed
+    assert load_state(db, row) == state
     cleanup_messages(db, utc_now())
+    db.refresh(row)
+    db.refresh(draft)
+    assert load_state(db, row) == state
+    assert db.get(AdminAssistantAttachment, attachment_id) is not None
+    assert (draft.status, draft.secrets, draft.confirmed_once_at) == (
+        "draft",
+        "synthetic",
+        old,
+    )
     assert sessions(client, tenant)["data"][0]["id"] == str(row.id)
     assert len(messages_for(db, row)) == 1
     append_message(db, row, "user", {"text": "回来继续"})
@@ -179,7 +220,19 @@ def test_setup_retention(
         )
     )
     db.commit()
+    assert wizard.read_setup(db, tenant.org_id).completed
+    assert load_state(db, row) is None
     cleanup_messages(db, utc_now())
+    db.expire_all()
+    assert row.state_ciphertext is None
+    assert db.get(AdminAssistantAttachment, attachment_id) is None
+    stale = db.get(AdminChangeSet, draft_id)
+    assert stale is not None
+    assert (stale.status, stale.secrets, stale.confirmed_once_at) == (
+        "stale",
+        None,
+        None,
+    )
     assert messages_for(db, row) == []
     assert sessions(client, tenant)["data"] == []
 

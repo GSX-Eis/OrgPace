@@ -2,13 +2,14 @@
 
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from procrastinate import periodic
 from sqlalchemy import Engine, text
 from sqlmodel import Session, select
 
+from app.authz.principal import Principal
 from app.domains.inbox.models import InboxItem
 from app.domains.org.models import (
     Department,
@@ -18,10 +19,12 @@ from app.domains.org.models import (
     RoleGrant,
 )
 from app.models import User
+from app.worker import tasks
 from app.worker.app import app
 from app.worker.models import WorkerHeartbeat
 from app.worker.monitor import dispatch_worker_alerts
 from tests import test_worker
+from tests.authz.test_tenant_access import tenant_data  # noqa: F401
 
 
 # Merged from test_m5_worker_alert_time.py (NERE-631).
@@ -116,3 +119,70 @@ def test_workers_do_not_run_periodic_tasks_after_the_hour(
         db.execute(text("SELECT id FROM procrastinate_periodic_defers")).all()
         == defers_before
     )
+
+
+@pytest.mark.parametrize(
+    "task_name,service_name",
+    [
+        ("fill_defaults", "fill_department_defaults"),
+        ("refresh_tracking", "recompute"),
+        ("refresh_forecasts", "refresh_org_forecasts"),
+    ],
+)
+def test_periodic_tenant_failure_isolated(
+    request: pytest.FixtureRequest,
+    db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    task_name: str,
+    service_name: str,
+) -> None:
+    orgs, *_ = request.getfixturevalue("tenant_data")
+    first, second = sorted(org.id for org in orgs)
+    attempted: list[UUID] = []
+    principals: list[Principal] = []
+    original = tasks.tenant_task
+    marker = "synthetic periodic refresh"
+
+    def checked_tenant(org_id, service):
+        if org_id not in {first, second}:
+            return None
+
+        def checked(principal):
+            principals.append(principal)
+            return service(principal)
+
+        return original(org_id, checked)
+
+    def refresh(session: Session, org_id: UUID) -> None:
+        if org_id not in {first, second}:
+            return
+        attempted.append(org_id)
+        org = session.get(Organization, org_id)
+        assert org is not None
+        org.name = marker
+        session.flush()
+        if org_id == first:
+            raise RuntimeError(marker)
+
+    def fill(principal: Principal) -> None:
+        with Session(db.get_bind()) as session:
+            refresh(session, principal.org_id)
+            session.commit()
+
+    monkeypatch.setattr(tasks, "tenant_task", checked_tenant)
+    monkeypatch.setattr(
+        tasks, service_name, fill if task_name == "fill_defaults" else refresh
+    )
+    getattr(tasks, task_name)(0)
+    assert attempted == [first, second]
+    assert principals == [
+        Principal.system_worker(first),
+        Principal.system_worker(second),
+    ]
+    db.expire_all()
+    failed, succeeded = db.get(Organization, first), db.get(Organization, second)
+    assert failed is not None and failed.name != marker
+    assert succeeded is not None and succeeded.name == marker
+    assert str(first) in caplog.text and "RuntimeError" in caplog.text
+    assert marker not in caplog.text
