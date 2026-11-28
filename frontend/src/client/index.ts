@@ -1089,6 +1089,7 @@ export type {
   InboxPublic,
   InboxReadAllInput,
   InboxReadAllResult,
+  InboxTargetType,
   InboxWorkloadRequestDetail,
   InferenceStatus,
   IngestCounts,

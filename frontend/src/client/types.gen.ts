@@ -5126,6 +5126,11 @@ export type InboxPublic = {
    * Extension Request Id
    */
   extension_request_id?: string | null
+  target_type?: InboxTargetType | null
+  /**
+   * Target Id
+   */
+  target_id?: string | null
   /**
    * Message
    */
@@ -5168,6 +5173,21 @@ export type InboxReadAllResult = {
    */
   updated_count: number
 }
+
+/**
+ * InboxTargetType
+ */
+export type InboxTargetType =
+  | "capacity"
+  | "capacity_team"
+  | "capacity_borrows"
+  | "capacity_outgoing"
+  | "capacity_incoming"
+  | "capacity_plans"
+  | "reviews_borrow"
+  | "reviews_workload"
+  | "reviews_demand"
+  | "assistant_admin"
 
 /**
  * InboxWorkloadRequestDetail
@@ -5650,6 +5670,10 @@ export type MembershipPublic = {
    * Managed Department Ids
    */
   managed_department_ids: Array<string>
+  /**
+   * Can Review
+   */
+  can_review?: boolean
 }
 
 /**
@@ -12060,7 +12084,12 @@ export type capacityListExtensionRequestsData = {
      */
     org_id: string
   }
-  query?: never
+  query?: {
+    /**
+     * Exclude Own
+     */
+    exclude_own?: boolean
+  }
   url: "/api/v1/orgs/{org_id}/capacity/extension-requests"
 }
 
