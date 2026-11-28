@@ -15,6 +15,12 @@ from app.authz.policies import can_view_employee, employee_scope_clause
 from app.authz.principal import Principal
 from app.domains.base import utc_now
 from app.domains.capacity import calendar
+from app.domains.capacity.common import (
+    CapacityForbidden,
+    CapacityNotFound,
+    audit,
+    notify_employee,
+)
 from app.domains.capacity.demand import (
     can_view_demand_internals,
     demand_row,
@@ -64,13 +70,8 @@ from app.domains.capacity.models import (
     ProposalStatus,
 )
 from app.domains.capacity.schemas import ReasonCode, Via
-from app.domains.capacity.settings import (
-    CapacityForbidden,
-    CapacityNotFound,
-    audit,
-    require_enabled,
-)
-from app.domains.capacity.workload import notify_employee, set_week
+from app.domains.capacity.settings import require_enabled
+from app.domains.capacity.workload import set_week
 from app.domains.inbox.models import InboxItem, InboxKind
 from app.domains.inbox.service import add_item
 from app.domains.org.models import Employee, EmploymentStatus, OrgMembership

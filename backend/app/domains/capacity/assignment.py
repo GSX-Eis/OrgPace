@@ -21,6 +21,14 @@ from app.domains.capacity.assignment_schemas import (
     MyAssignment,
     MyAssignmentList,
 )
+from app.domains.capacity.common import (
+    CapacityConflict,
+    CapacityNotFound,
+    audit,
+    employee,
+    notify_employee,
+    user_names,
+)
 from app.domains.capacity.demand import (
     demand_row,
     get_demand_basis,
@@ -39,13 +47,7 @@ from app.domains.capacity.models import (
     DemandStatus,
 )
 from app.domains.capacity.schemas import Via
-from app.domains.capacity.settings import (
-    CapacityConflict,
-    CapacityNotFound,
-    audit,
-    require_enabled,
-)
-from app.domains.capacity.workload import employee, notify_employee
+from app.domains.capacity.settings import require_enabled
 from app.domains.inbox.models import InboxItem, InboxKind
 from app.domains.inbox.service import add_item
 from app.domains.org.models import Department, Employee, EmploymentStatus
@@ -586,7 +588,7 @@ def update_assignment(
 
 
 def list_my_assignments(principal: Principal, session: Session) -> MyAssignmentList:
-    from app.domains.capacity.extension import extension_reviewers, user_names
+    from app.domains.capacity.extension import extension_reviewers
 
     require_enabled(principal, session)
     subject = employee(principal, session, principal.employee_id)

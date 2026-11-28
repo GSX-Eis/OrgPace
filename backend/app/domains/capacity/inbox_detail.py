@@ -10,11 +10,11 @@ from app.authz.policies import can_view_employee
 from app.authz.principal import Principal
 from app.domains.audit.models import AuditEvent
 from app.domains.capacity.assignment import assignment_lender
-from app.domains.capacity.demand import represents_department
-from app.domains.capacity.extension import (
-    extension_department_allowed,
-    user_names,
+from app.domains.capacity.common import (
+    record_capacity_inbox_link as record_capacity_inbox_link,
 )
+from app.domains.capacity.demand import represents_department
+from app.domains.capacity.extension import extension_department_allowed, user_names
 from app.domains.capacity.models import (
     CapacityAssignment,
     CapacityDemand,
@@ -34,26 +34,6 @@ from app.domains.inbox.service import register_capacity_provider
 from app.domains.org.models import Employee
 from app.domains.review.routing import can_review, reviewable_employees
 from app.i18n import tr
-
-
-def record_capacity_inbox_link(
-    session: Session,
-    item: InboxItem,
-    *,
-    workload_request_id: UUID | None = None,
-    extension_request_id: UUID | None = None,
-) -> None:
-    if workload_request_id is None and extension_request_id is None:
-        return
-    session.add(
-        CapacityInboxLink(
-            org_id=item.org_id,
-            inbox_item_id=item.id,
-            workload_request_id=workload_request_id,
-            extension_request_id=extension_request_id,
-        )
-    )
-    session.flush()
 
 
 class CapacityInboxProvider:

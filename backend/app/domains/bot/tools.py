@@ -51,13 +51,9 @@ from app.domains.evidence.models import Evidence
 from app.domains.model.client import ModelUnavailable
 from app.domains.model.pi_client import ToolDefinition
 from app.domains.org.models import Department, Employee, EmploymentStatus
+from app.domains.planning import compose as planning_compose
 from app.domains.planning import service as planning_service
-from app.domains.planning.models import (
-    OptionKind,
-    PlanningOption,
-    PlanningSnapshot,
-    PlanVerdict,
-)
+from app.domains.planning.models import OptionKind
 from app.domains.planning.schemas import VERDICT_LABELS, CasePublic, OptionPublic
 from app.domains.planning.tools import BOT_FEASIBILITY_TOOL, COORDINATION_TOOLS
 from app.domains.planning.tools import Result as CoordinationResult
@@ -195,62 +191,9 @@ def confirm_plan_reply(
     p: Principal, db: Session, body: PlanReplyDemandInput, *, via: Via, client_name: str
 ) -> DemandPublic:
     """Compose Planning reads and Capacity writes only after a human clicks."""
-    row = capacity_demand.demand_row(p, db, body.demand_id, lock=True)
-    if not capacity_demand.represents_department(p, row.target_department_id):
-        raise planning_service.PlanningStale()
-    if body.outcome == "not_now":
-        raise capacity_proposal.ProposalConflict("暂不能承接的答复不能带方案")
-    found = db.exec(
-        select(PlanningOption, PlanningSnapshot.case_id)
-        .join(
-            PlanningSnapshot,
-            (col(PlanningSnapshot.org_id) == PlanningOption.org_id)
-            & (col(PlanningSnapshot.id) == PlanningOption.snapshot_id),
-        )
-        .where(PlanningOption.org_id == p.org_id, PlanningOption.id == body.option_id)
-    ).one_or_none()
-    if found is None:
-        raise planning_service.PlanningStale()
-    saved, case_id = found
-    _, snapshot, case_demand = planning_service.authorized_case(p, db, case_id)
-    if case_demand.id != row.id or saved.snapshot_id != snapshot.id:
-        raise planning_service.PlanningStale()
-    if saved.verdict not in (PlanVerdict.FEASIBLE, PlanVerdict.CONDITIONAL):
-        raise capacity_proposal.ProposalConflict("只有可行或有条件可行的方案可以提议")
-    lines = capacity_proposal.plan_lines(
-        p, db, row, body, saved.params, borrow=saved.kind == OptionKind.BORROW
+    return planning_compose.propose_plan(
+        p, db, body.demand_id, body, via=via, client_name=client_name
     )
-    current = planning_service.get_case(p, db, case_id)
-    if current.stale or current.snapshot_id != saved.snapshot_id:
-        raise planning_service.PlanningStale()
-    direct = capacity_proposal.is_direct_commit(
-        row, lines, is_borrow=saved.kind == OptionKind.BORROW
-    )
-    capacity_demand.reply_demand(
-        p,
-        db,
-        **body.model_dump(
-            exclude={
-                "option_id",
-                "outside_basis",
-                "start_date",
-                "end_date",
-                "lender_department_id",
-                "borrow_headcount",
-            }
-        ),
-        start_date=min(line.start_date for line in lines),
-        end_date=max(line.end_date for line in lines),
-        via=via,
-        client_name=client_name,
-        allow_legacy_reply=True,
-        notify_requester=not direct,
-    )
-    assert body.option_id is not None
-    capacity_proposal.create(
-        p, db, row, body.option_id, lines, direct_commit=direct, via=via
-    )
-    return capacity_demand.get_demand(p, db, row.id)
 
 
 TEAM_INPUTS: dict[str, type[BaseModel]] = {

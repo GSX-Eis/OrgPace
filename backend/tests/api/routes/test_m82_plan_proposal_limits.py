@@ -126,7 +126,14 @@ def test_plan_proposal_length_budget(
             CapacityDemandEvent.kind == DemandEventKind.REPLIED,
         )
     ).all()
-    confirmed = assistant.act(db, b, session, cards, card.actions[0])
+    confirmed = assistant.act(
+        db,
+        b,
+        session,
+        cards,
+        card.actions[0],
+        on_plan_reply=tools.confirm_plan_reply,
+    )
     assert confirmed.status == "confirmed", confirmed.result
     reply = db.exec(
         select(CapacityDemandEvent).where(

@@ -7,10 +7,24 @@ from pydantic import JsonValue
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import Session, col, delete, func, or_, select
 
-from app.authz.policies import can_view_employee, employee_scope_clause
+from app.authz.policies import (
+    can_manage_department,
+    can_view_employee,
+    can_view_org_aggregates,
+    employee_scope_clause,
+    manages_department,
+)
 from app.authz.principal import Principal
 from app.domains.base import utc_now
 from app.domains.capacity import calendar
+from app.domains.capacity.common import (
+    CapacityForbidden,
+    CapacityNotFound,
+    audit,
+)
+from app.domains.capacity.common import (
+    employee as load_employee,
+)
 from app.domains.capacity.forecast_policy import (
     DEFAULT_RETENTION_RATE,
     build_policy_label,
@@ -33,12 +47,7 @@ from app.domains.capacity.schemas import (
     Via,
     WorkloadList,
 )
-from app.domains.capacity.settings import (
-    CapacityForbidden,
-    CapacityNotFound,
-    audit,
-    require_enabled,
-)
+from app.domains.capacity.settings import require_enabled
 from app.domains.org.models import (
     Department,
     Employee,
@@ -491,14 +500,6 @@ def refresh_org_forecasts(
 def _managed_subject(
     principal: Principal, session: Session, employee_id: UUID
 ) -> Employee:
-    from app.domains.capacity.workload import employee as load_employee
-
-    if principal.is_org_admin and not principal.managed_department_ids:
-        # Check cross-tenant visibility first so foreign tenants still get 404.
-        subject = load_employee(principal, session, employee_id, lock=True)
-        if not can_view_employee(principal, subject):
-            raise CapacityNotFound()
-        raise CapacityForbidden()
     subject = load_employee(principal, session, employee_id, lock=True)
     if not can_view_employee(principal, subject):
         raise CapacityNotFound()
@@ -506,7 +507,7 @@ def _managed_subject(
         principal.user_id is None
         or principal.is_org_admin
         or subject.id == principal.employee_id
-        or subject.department_id not in principal.managed_department_ids
+        or not manages_department(principal, subject.department_id)
     ):
         raise CapacityForbidden()
     return subject
@@ -645,7 +646,7 @@ def refresh_forecasts_for_actor(
     department_id: UUID | None = None,
 ) -> ForecastRefreshResult:
     require_enabled(principal, session)
-    if not principal.is_org_admin and not principal.managed_department_ids:
+    if not can_view_org_aggregates(principal):
         raise CapacityForbidden()
     if department_id is not None:
         dept = session.exec(
@@ -654,10 +655,7 @@ def refresh_forecasts_for_actor(
                 Department.id == department_id,
             )
         ).one_or_none()
-        if dept is None or (
-            not principal.is_org_admin
-            and department_id not in principal.managed_department_ids
-        ):
+        if dept is None or not can_manage_department(principal, department_id):
             raise CapacityNotFound("未找到该部门")
     emp_query = select(Employee.id).where(
         employee_scope_clause(principal),

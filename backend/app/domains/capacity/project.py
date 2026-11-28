@@ -11,6 +11,7 @@ from sqlmodel import Session, col, or_, select
 from app.authz.principal import Principal
 from app.domains.capability.service import get_schema, level_exists, list_capabilities
 from app.domains.capacity import demand, proposal
+from app.domains.capacity.common import CapacityNotFound
 from app.domains.capacity.demand_schemas import (
     ProjectDetail,
     ProjectImpact,
@@ -32,7 +33,7 @@ from app.domains.capacity.models import (
     DemandStatus,
 )
 from app.domains.capacity.schemas import Via
-from app.domains.capacity.settings import CapacityNotFound, require_enabled
+from app.domains.capacity.settings import require_enabled
 from app.domains.org.models import Department
 from app.i18n import tr
 
