@@ -1,11 +1,8 @@
-import re
 from collections import defaultdict
-from collections.abc import Iterator
 from datetime import date
 from typing import Literal
 from uuid import UUID
 
-from fastapi import HTTPException
 from pydantic import JsonValue
 from sqlalchemy import ColumnElement
 from sqlmodel import Session, and_, col, func, or_, select
@@ -20,16 +17,61 @@ from app.authz.principal import Principal
 from app.domains.capability.models import CapabilityDefinition
 from app.domains.capability.search import (
     PeopleSearchInput,
-    PeopleSearchRow,
     find_people,
 )
 from app.domains.capability.service import get_schema, list_capabilities
 from app.domains.capacity.common import (
+    DEMAND_NOT_FOUND as DEMAND_NOT_FOUND,
+)
+from app.domains.capacity.common import (
+    LOAD_WORDS as LOAD_WORDS,
+)
+from app.domains.capacity.common import (
     CapacityConflict,
     CapacityForbidden,
     CapacityNotFound,
+    _search_people,
     audit,
     employee,
+)
+from app.domains.capacity.common import (
+    DemandReplyInvalid as DemandReplyInvalid,
+)
+from app.domains.capacity.common import (
+    DemandReplyLoadInvalid as DemandReplyLoadInvalid,
+)
+from app.domains.capacity.common import (
+    RejectionReasonInvalid as RejectionReasonInvalid,
+)
+from app.domains.capacity.common import (
+    can_view_demand_internals as can_view_demand_internals,
+)
+from app.domains.capacity.common import (
+    demand_row as demand_row,
+)
+from app.domains.capacity.common import (
+    department as department,
+)
+from app.domains.capacity.common import (
+    qualified_people as qualified_people,
+)
+from app.domains.capacity.common import (
+    represents_department as represents_department,
+)
+from app.domains.capacity.common import (
+    require_rejection_reason as require_rejection_reason,
+)
+from app.domains.capacity.common import (
+    responder_user_ids as responder_user_ids,
+)
+from app.domains.capacity.common import (
+    responders_by_department as responders_by_department,
+)
+from app.domains.capacity.common import (
+    validate_department_text as validate_department_text,
+)
+from app.domains.capacity.common import (
+    validate_load_words as validate_load_words,
 )
 from app.domains.capacity.demand_schemas import (
     CapacityReference,
@@ -67,7 +109,18 @@ from app.domains.capacity.models import (
     ProposalStatus,
     RequesterPolicy,
 )
-from app.domains.capacity.schemas import REASON_LABELS, ReasonCode, Via
+from app.domains.capacity.proposal_state import respond_proposal
+from app.domains.capacity.proposal_views import (
+    decision_history as proposal_decision_history,
+)
+from app.domains.capacity.proposal_views import (
+    latest,
+    public,
+    reply_superseded,
+    schedule_summary,
+    schedules_for_demands,
+)
+from app.domains.capacity.schemas import ReasonCode, Via
 from app.domains.capacity.settings import read_settings, require_enabled
 from app.domains.capacity.workload_views import views
 from app.domains.inbox.models import InboxItem, InboxKind
@@ -77,63 +130,17 @@ from app.domains.org.models import (
     Employee,
     EmploymentStatus,
     OrgMembership,
-    Role,
-    RoleGrant,
 )
 from app.domains.org.schemas import DepartmentPublic, DepartmentsPublic
-from app.domains.org.service import department_ancestry, managed_scope
+from app.domains.org.service import managed_scope
 from app.i18n import bilingual, tr
 from app.models import User
-
-LOAD_WORDS = (
-    "超负荷",
-    "基本满",
-    "有余量",
-    "饱和",
-    "已满",
-    "满负荷",
-    "满员",
-    "排满",
-    "人手紧",
-    "人手不足",
-    "忙不过来",
-    "空闲",
-    "有空",
-    "闲置",
-    "余量",
-)
-DEMAND_NOT_FOUND = "未找到该需求，或你无权查看（仅发起人及双方部门经理可见）。"
 
 
 class DemandAwaitingSchedule(CapacityConflict):
     def __init__(self) -> None:
         super().__init__()
         self.detail = "请等待目标部门经理排期。"
-
-
-class DemandReplyInvalid(HTTPException):
-    def __init__(self) -> None:
-        super().__init__(422, "回复将发送给对方部门，请勿填写本部门员工姓名")
-
-
-class DemandReplyLoadInvalid(HTTPException):
-    def __init__(self) -> None:
-        super().__init__(
-            422, "回复将发送给对方部门，请勿填写负荷描述，仅说明能否承接、时间及条件"
-        )
-
-
-class RejectionReasonInvalid(HTTPException):
-    def __init__(self, message: str) -> None:
-        super().__init__(422, message)
-
-
-def require_rejection_reason(reason_code: ReasonCode | None, text: str | None) -> None:
-    if reason_code is None:
-        reasons = " / ".join(tr(label) for label in REASON_LABELS.values())
-        raise RejectionReasonInvalid(tr("请选择原因类型（{reasons}）", reasons=reasons))
-    if reason_code == "other" and not (text and text.strip()):
-        raise RejectionReasonInvalid("选择「其他」时必须填写说明")
 
 
 def require_requester(principal: Principal, session: Session) -> None:
@@ -145,17 +152,6 @@ def require_requester(principal: Principal, session: Session) -> None:
     if read_settings(principal, session).requester_policy != RequesterPolicy.EVERYONE:
         raise CapacityForbidden()
     employee(principal, session, principal.employee_id)
-
-
-def department(session: Session, org_id: UUID, department_id: UUID) -> Department:
-    row = session.exec(
-        select(Department).where(
-            Department.org_id == org_id, Department.id == department_id
-        )
-    ).one_or_none()
-    if row is None:
-        raise CapacityNotFound("未找到该部门")
-    return row
 
 
 def list_capacity_departments(
@@ -262,87 +258,6 @@ def reference_for_viewer(
         capability_name=reference.capability_name,
         conclusion=conclusion,
     )
-
-
-def represents_department(principal: Principal, target_department_id: UUID) -> bool:
-    return can_manage_department(principal, target_department_id)
-
-
-def can_view_demand_internals(principal: Principal, row: CapacityDemand) -> bool:
-    return principal.user_id != row.requester_user_id and represents_department(
-        principal, row.target_department_id
-    )
-
-
-def responder_user_ids(
-    session: Session,
-    org_id: UUID,
-    target_department_id: UUID,
-    *,
-    fallback_to_admin: bool = True,
-) -> set[UUID]:
-    return responders_by_department(
-        session, org_id, {target_department_id}, fallback_to_admin=fallback_to_admin
-    )[target_department_id]
-
-
-def responders_by_department(
-    session: Session,
-    org_id: UUID,
-    target_department_ids: set[UUID],
-    *,
-    fallback_to_admin: bool = True,
-) -> dict[UUID, set[UUID]]:
-    if not target_department_ids:
-        return {}
-    rows = session.exec(
-        select(OrgMembership.user_id, RoleGrant.role, RoleGrant.department_id)
-        .join(
-            RoleGrant,
-            (col(RoleGrant.org_id) == OrgMembership.org_id)
-            & (col(RoleGrant.membership_id) == OrgMembership.id),
-        )
-        .join(User, col(User.id) == OrgMembership.user_id)
-        .outerjoin(
-            Employee,
-            (col(Employee.org_id) == OrgMembership.org_id)
-            & (col(Employee.id) == OrgMembership.employee_id),
-        )
-        .where(
-            OrgMembership.org_id == org_id,
-            User.is_active,
-            or_(
-                col(OrgMembership.employee_id).is_(None),
-                Employee.employment_status == EmploymentStatus.ACTIVE,
-            ),
-        )
-    ).all()
-    admins: set[UUID] = set()
-    managers: dict[UUID, set[UUID]] = defaultdict(set)
-    for user_id, role, department_id in rows:
-        if role == Role.DEPT_MANAGER and department_id is not None:
-            managers[department_id].add(user_id)
-        elif role == Role.ORG_ADMIN and fallback_to_admin:
-            admins.add(user_id)
-    departments = {
-        row.id: row
-        for row in session.exec(
-            select(Department).where(Department.org_id == org_id)
-        ).all()
-    }
-    if target_department_ids - departments.keys():
-        raise CapacityNotFound("未找到该部门")
-    return {
-        target: next(
-            (
-                managers[ancestor]
-                for ancestor in department_ancestry(departments, target)
-                if ancestor in managers
-            ),
-            admins,
-        ).copy()
-        for target in target_department_ids
-    }
 
 
 def _public_extra_capability(
@@ -545,26 +460,6 @@ def project_role_summary(
     )
 
 
-def demand_row(
-    principal: Principal, session: Session, demand_id: UUID, *, lock: bool = False
-) -> CapacityDemand:
-    require_enabled(principal, session)
-    query = select(CapacityDemand).where(
-        CapacityDemand.org_id == principal.org_id,
-        CapacityDemand.id == demand_id,
-    )
-    if lock:
-        query = query.with_for_update().execution_options(populate_existing=True)
-    row = session.exec(query).one_or_none()
-    if row is None or not (
-        row.requester_user_id == principal.user_id
-        or manages_department(principal, row.requesting_department_id)
-        or represents_department(principal, row.target_department_id)
-    ):
-        raise CapacityNotFound(DEMAND_NOT_FOUND)
-    return row
-
-
 def get_demand(
     principal: Principal,
     session: Session,
@@ -572,8 +467,6 @@ def get_demand(
     *,
     include_previous: bool = False,
 ) -> DemandPublic:
-    from app.domains.capacity.proposal import public, schedule_summary
-
     row = demand_row(principal, session, demand_id)
     result = demand_public(principal, session, row)
     if result.project is not None:
@@ -618,8 +511,6 @@ def get_demand(
 def decision_history(
     principal: Principal, session: Session, row: CapacityDemand
 ) -> DemandHistory:
-    from app.domains.capacity import proposal
-
     detailed = can_view_demand_internals(principal, row)
     events = session.exec(
         select(CapacityDemandEvent)
@@ -630,7 +521,7 @@ def decision_history(
         .order_by(col(CapacityDemandEvent.created_at), col(CapacityDemandEvent.id))
     ).all()
     return DemandHistory(
-        proposals=proposal.decision_history(principal, session, row),
+        proposals=proposal_decision_history(principal, session, row),
         events=[
             DemandHistoryEvent(
                 kind=event.kind,
@@ -655,8 +546,6 @@ def list_demands(
     status: DemandStatus | None = None,
     actionable_only: bool = False,
 ) -> DemandList:
-    from app.domains.capacity.proposal import schedules_for_demands
-
     require_enabled(principal, session)
     query = select(CapacityDemand).where(CapacityDemand.org_id == principal.org_id)
     if not principal.is_org_admin:
@@ -837,34 +726,6 @@ def create_demand(
     return row
 
 
-def _search_people(
-    principal: Principal, session: Session, search: PeopleSearchInput
-) -> Iterator[PeopleSearchRow]:
-    while True:
-        page = find_people(session, principal, search)
-        yield from page.data
-        skip = search.skip + len(page.data)
-        if skip >= page.count or not page.data:
-            return
-        search = search.model_copy(update={"skip": skip})
-
-
-def qualified_people(
-    principal: Principal, session: Session, row: CapacityDemand, department_id: UUID
-) -> dict[UUID, PeopleSearchRow]:
-    search = PeopleSearchInput(
-        department_id=department_id,
-        capability_key=row.capability_key,
-        minimum_level=row.minimum_level,
-        limit=100,
-    )
-    people: dict[UUID, PeopleSearchRow] = {}
-    for person in _search_people(principal, session, search):
-        if person.level is not None:
-            people.setdefault(person.employee_id, person)
-    return people
-
-
 def _active_target_people(
     principal: Principal, session: Session, target_department_id: UUID
 ) -> list[Employee]:
@@ -978,52 +839,6 @@ def get_demand_basis(
             row.minimum_level,
         ),
     )
-
-
-def validate_department_text(
-    principal: Principal, session: Session, target_department_id: UUID, text: str
-) -> None:
-    target_ids = managed_scope(
-        session, principal.org_id, frozenset({target_department_id})
-    )
-    people = session.exec(
-        select(Employee).where(
-            employee_scope_clause(principal),
-            col(Employee.department_id).in_(target_ids),
-            Employee.employment_status == EmploymentStatus.ACTIVE,
-        )
-    ).all()
-    if any(
-        private and private in text
-        for person in people
-        for private in (person.display_name, person.employee_code, str(person.id))
-    ):
-        raise DemandReplyInvalid()
-
-
-def validate_load_words(
-    principal: Principal,
-    session: Session,
-    demand_row: CapacityDemand,
-    text: str,
-    reference: DetailedCapacityReference | None = None,
-) -> None:
-    checked_text = text.replace("已满足", "").replace("空调", "")
-    if not (
-        any(word in checked_text for word in LOAD_WORDS)
-        or re.search(r"负荷[^。；，,;\n]{0,4}(尚未|未)确认", checked_text)
-    ):
-        return
-    if reference is None:
-        reference = department_reference(
-            session,
-            principal.org_id,
-            demand_row.target_department_id,
-            demand_row.capability_key,
-            demand_row.minimum_level,
-        )
-    if reference.count < 3:
-        raise DemandReplyLoadInvalid()
 
 
 def validate_reply_text(
@@ -1210,34 +1025,33 @@ def respond_demand(
         or manages_department(principal, row.requesting_department_id)
     ):
         raise CapacityNotFound(DEMAND_NOT_FOUND)
-    from app.domains.capacity import proposal
-
-    latest = proposal.latest(session, principal.org_id, demand_id, lock=True)
+    latest_proposal = latest(session, principal.org_id, demand_id, lock=True)
     if (
-        latest is not None
+        latest_proposal is not None
         and not (
             action == "withdraw"
             and row.status == DemandStatus.SUBMITTED
             and revision == row.revision
-            and latest.kind == "initial"
-            and latest.status == ProposalStatus.WITHDRAWN
+            and latest_proposal.kind == "initial"
+            and latest_proposal.status == ProposalStatus.WITHDRAWN
         )
         and (
-            revision <= latest.demand_revision
-            or not proposal.reply_superseded(row, latest)
+            revision <= latest_proposal.demand_revision
+            or not reply_superseded(row, latest_proposal)
         )
     ):
-        return proposal.respond(
+        respond_proposal(
             principal,
             session,
             row,
-            latest,
+            latest_proposal,
             action,
             revision,
             text,
             reason_code=body.reason_code,
             via=via,
         )
+        return get_demand(principal, session, demand_id)
     if row.revision != revision or row.status in (
         DemandStatus.ACCEPTED,
         DemandStatus.WITHDRAWN,
