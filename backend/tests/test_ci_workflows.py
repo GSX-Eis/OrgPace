@@ -8,6 +8,51 @@ import yaml
 pytestmark = pytest.mark.unit
 
 WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
+EXPECTED_WORKFLOWS = {
+    "playwright.yml",
+    "pre-commit.yml",
+    "test-backend.yml",
+    "test-docker-compose.yml",
+    "test-pi.yml",
+    "zizmor.yml",
+}
+EXPECTED_PR_TYPES = ["opened", "synchronize", "reopened", "ready_for_review"]
+DRAFT_GUARD = (
+    "github.event_name != 'pull_request' || github.event.pull_request.draft == false"
+)
+ENTRY_DRAFT_GUARD = f"${{{{ {DRAFT_GUARD} }}}}"
+PLAYWRIGHT_SHARD_GUARD = (
+    f"${{{{ ({DRAFT_GUARD}) && needs.changes.outputs.changed == 'true' }}}}"
+)
+GATE_DRAFT_GUARD = f"${{{{ always() && ({DRAFT_GUARD}) }}}}"
+EXPECTED_JOB_GUARDS: dict[str, dict[str, str]] = {
+    "playwright.yml": {
+        "changes": ENTRY_DRAFT_GUARD,
+        "playwright-shard": PLAYWRIGHT_SHARD_GUARD,
+        "test-playwright": GATE_DRAFT_GUARD,
+    },
+    "pre-commit.yml": {"pre-commit": ENTRY_DRAFT_GUARD},
+    "test-backend.yml": {
+        "backend-shard": ENTRY_DRAFT_GUARD,
+        "test-backend": GATE_DRAFT_GUARD,
+    },
+    "test-docker-compose.yml": {
+        "test-docker-compose": ENTRY_DRAFT_GUARD,
+        "test-production-install": ENTRY_DRAFT_GUARD,
+    },
+    "test-pi.yml": {"test-pi": ENTRY_DRAFT_GUARD},
+    "zizmor.yml": {"zizmor": ENTRY_DRAFT_GUARD},
+}
+EXPECTED_REQUIRED_CHECKS = {
+    "changes",
+    "test-backend",
+    "test-playwright",
+    "test-docker-compose",
+    "test-production-install",
+    "test-pi",
+    "pre-commit",
+    "Run zizmor",
+}
 
 
 @pytest.mark.parametrize("result", ["success", "failure", "cancelled", "skipped", ""])
@@ -19,7 +64,7 @@ def test_backend_gate_requires_all_shards(result: str) -> None:
         "matrix": {"shard": [1, 2, 3]},
     }
     gate = workflow["jobs"]["test-backend"]
-    assert gate["if"] == "${{ always() }}"
+    assert gate["if"] == GATE_DRAFT_GUARD
     assert gate["needs"] == ["backend-shard"]
     require = gate["steps"][0]
     assert require["env"]["TEST_RESULT"] == "${{ needs.backend-shard.result }}"
@@ -50,7 +95,7 @@ def test_playwright_gate(
 ) -> None:
     workflow = yaml.safe_load((WORKFLOWS / "playwright.yml").read_text())
     gate = workflow["jobs"]["test-playwright"]
-    assert gate["if"] == "${{ always() }}"
+    assert gate["if"] == GATE_DRAFT_GUARD
     assert set(gate["needs"]) == {"changes", "playwright-shard"}
     result = subprocess.run(
         ["bash", "-e", "-c", gate["steps"][0]["run"]],
@@ -224,3 +269,32 @@ def test_playwright_ci_uses_balanced_shard_selector_and_excludes_real_jira() -> 
         and "--grep @external-mcp" in step.get("run", "")
         for step in shard_steps
     )
+
+
+def test_workflow_inventory_triggers_and_required_checks() -> None:
+    paths = list(WORKFLOWS.glob("*.yml"))
+    assert {path.name for path in paths} == EXPECTED_WORKFLOWS
+
+    check_names: set[str] = set()
+    for path in paths:
+        workflow = yaml.load(path.read_text(), Loader=yaml.BaseLoader)
+        on = workflow["on"]
+        assert on["pull_request"]["types"] == EXPECTED_PR_TYPES, path.name
+        assert set(on["push"]["branches"]) == {"master", "dev"}, path.name
+        if path.name in {"playwright.yml", "zizmor.yml"}:
+            assert "workflow_dispatch" in on, path.name
+        for job_id, job in workflow["jobs"].items():
+            if job_id not in {"backend-shard", "playwright-shard"}:
+                check_names.add(job.get("name", job_id))
+
+    assert check_names == EXPECTED_REQUIRED_CHECKS
+
+
+@pytest.mark.parametrize("workflow_name", sorted(EXPECTED_WORKFLOWS))
+def test_all_jobs_have_draft_guard(workflow_name: str) -> None:
+    workflow = yaml.safe_load((WORKFLOWS / workflow_name).read_text())
+    jobs = workflow["jobs"]
+    expected = EXPECTED_JOB_GUARDS[workflow_name]
+    assert set(jobs) == set(expected)
+    for job_id, expected_if in expected.items():
+        assert jobs[job_id].get("if") == expected_if, f"{workflow_name}:{job_id}"

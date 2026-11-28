@@ -6,6 +6,7 @@ on:
       - master
       - dev
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 permissions: {}
@@ -16,6 +17,7 @@ concurrency:
 
 jobs:
   zizmor:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: Run zizmor
     runs-on: ubuntu-latest
     timeout-minutes: 5

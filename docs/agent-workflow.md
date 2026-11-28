@@ -33,18 +33,21 @@ scripts/remote-test.sh preflight
 
 ## Push、自审与自动合并
 
-1. 检查通过后 push，创建以子 issue 编号开头的 PR。PR 描述列出验证、假设、依赖及许可证；CI 改动单独列出。
-2. 立即用 `ponytail-review` 审查 `gh pr diff <PR>` 的完整改动和关联代码，不等 CI。Must fix 全部修好、验证并 push 后才继续。高风险改动仍逐项检查迁移、证据只追加、跨租户/越权测试、凭据保密和已有检查完整性。Should fix / Nice to have 记入结果评论。
-3. 用 `"$MULTICA_CLI_PATH" issue pull-requests <子issue> --output json` 确认 PR 已关联。记录当前 head SHA，并在子 issue 发结果评论：实现、PR 链接、本地验证、自审 Verdict、修复轮数、假设和遗留事项，明确写「已开启自动合并，CI 通过后由 GitHub 合并」。这条评论先发布，再执行开启命令；若命令失败，立即补充纠正。
-4. 只对当前子 issue 自己创建的 PR 执行：
+1. 检查通过后 push，创建指向 `dev` 的 **Draft PR**（`gh pr create --base dev --draft ...`，标题以子单编号开头）。PR 描述列出验证、假设、依赖及许可证；CI 改动单独列出。**`OP·Dev` 在开发及门禁 1 阶段严禁提前开启 `--auto` 或执行 `gh pr ready`**，以便 Draft PR 期间跳过全套 CI、避免无效并发。
+2. 立即用 `ponytail-review` 审查完整改动和关联代码，不等 CI。Must fix 全部修好、验证并 push 后才继续。高风险改动仍逐项检查迁移、证据只追加、跨租户/越权测试、凭据保密和已有检查完整性。Should fix / Nice to have 记入结果评论。
+3. 用 `"$MULTICA_CLI_PATH" issue pull-requests <子issue> --output json` 确认 PR 已关联。记录当前 head SHA，并在子单发交付评论后移入「门禁1审查」，由 `OP·Reviewer` 执行纯只读审查。
+4. 门禁 1 批准并移入「待合入dev」列后，由 `OP·Leader` 严格按以下**防 `skipped` 假绿误秒合竞态规程**放行自动合并（只对当前子单创建的 PR 执行，不用 `--admin`，不直接 push `dev`/`master`，不 force push）：
+   1. 核对当前 `headRefOid` 与 `OP·Reviewer` 批准的 40 位 SHA 一致（`gh pr view <PR> --json headRefOid,mergeable,mergeStateStatus`）；
+   2. 记录当前 UTC 时间戳（或既有 check-runs 状态）后执行 `gh pr ready <PR>`；
+   3. 执行**有界短时核验**（最多 30 秒、每 3 秒检查一次 `GH_TOKEN="$(gh auth token --user GSX-Eis)" gh api repos/GSX-Eis/OrgPace/commits/<SHA>/check-runs`，严禁同步等 CI 跑完，仅消除 `ready_for_review` 注册空窗），确认 `ready_for_review` 已为 `<SHA>` 创建非 `skipped` 的新一轮 check runs（`queued` / `in_progress`，或晚于 ready 时间且 `conclusion != "skipped"` 的 `completed`）；若 30 秒后仍只有旧的 Draft `skipped` 记录，**禁止**开启 `--auto`，改查 `gh run list --commit <SHA>` 排查或上报；
+   4. 确认新检查已注册后再执行：
 
-   ```bash
-   gh pr view <PR> --json headRefOid,mergeable,mergeStateStatus
-   gh pr merge <PR> --auto --merge --match-head-commit <SHA>
-   gh pr view <PR> --json autoMergeRequest,headRefOid,state
-   ```
+      ```bash
+      gh pr merge <PR> --auto --merge --match-head-commit <SHA>
+      gh pr view <PR> --json autoMergeRequest,headRefOid,state
+      ```
 
-   不用 `--admin`，不直接 push master，不 force push。`--match-head-commit` 保证开启时的 head 没被意外替换；之后每次自己 push 都需重新自审并核实新的 head 与 auto-merge 状态。保护不要求 strict，所以不为单纯落后 master 而重复合并；有冲突时仍 fetch、merge master、验证、普通 push。
+      `--match-head-commit` 保证开启时的 head 没被意外替换；之后每次自己 push 都需重新自审并核实新的 head 与 auto-merge 状态。保护不要求 strict，所以不为单纯落后 `dev` 而重复合并；有冲突时仍 fetch、merge `dev`、验证、普通 push。
 5. 用已核实的条件参数注册下一次运行，然后结束当前运行，不执行 `gh pr checks --watch`：
 
    ```bash
@@ -73,7 +76,7 @@ scripts/remote-test.sh preflight
 
 ## CI 门禁与并行边界
 
-master 必需检查名：`changes`、`test-playwright`、`test-backend`、`test-docker-compose`、`test-production-install`、`test-pi`、`pre-commit`、`Run zizmor`。所有 workflow 都在每个 PR 上触发，无顶层 paths 过滤；Playwright 保留 job 级路径过滤，汇总 job 在无关改动时也返回成功，在过滤失败或任一 shard 失败时失败。
+`master` / `dev` 必需检查名：`changes`、`test-playwright`、`test-backend`、`test-docker-compose`、`test-production-install`、`test-pi`、`pre-commit`、`Run zizmor`。全部 6 个 workflow 均无顶层 `paths` / `paths-ignore` 过滤：`pull_request` 明确声明 `types: [opened, synchronize, reopened, ready_for_review]` 并在全部 job 上施加 Draft 守卫（`github.event_name != 'pull_request' || github.event.pull_request.draft == false`），使 Draft PR 期间跳过实际执行（`skipped`），转 Ready 后正常触发全套检查；`push` 到 `master`/`dev` 与 `workflow_dispatch` 则通过短路无条件照常执行。Playwright 保留 job 级路径过滤，汇总门禁 job（`test-backend`、`test-playwright`）通过 `always()` 叠加 Draft 守卫，保证非 Draft PR 与 `push` 下任一 shard 失败或取消时必定报错拦截。
 
 Playwright 分 3 个独立 runner，每个有自己的 Compose 网络、数据库和报告；每个 shard 仍用 1 worker。检查发现 admin-account-actions、admin-roles、admin-accounts、employees、approval-policy、drafting-settings 等使用共用演示企业，不能让同一数据库中的多个 worker 并发修改。已有 setup 和 admin-account-actions 的 serial 分组保留，不新增 serial 标记，不改变重试或 flaky 检查。
 
