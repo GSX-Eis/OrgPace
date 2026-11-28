@@ -616,11 +616,13 @@ def test_proposal_split_has_no_delayed_cycle_imports_and_keeps_facade() -> None:
 
 
 def test_demand_split_has_no_delayed_cycle_imports_and_keeps_facade() -> None:
+    from app.domains.capability import search
     from app.domains.capacity import (
         common,
         demand,
         demand_actions,
         demand_views,
+        models,
     )
 
     capacity_dir = APP / "domains" / "capacity"
@@ -638,8 +640,10 @@ def test_demand_split_has_no_delayed_cycle_imports_and_keeps_facade() -> None:
         "DEMAND_NOT_FOUND": common,
         "LOAD_WORDS": common,
         "CapacityConflict": common,
+        "CapacityDemand": models,
         "CapacityForbidden": common,
         "CapacityNotFound": common,
+        "find_people": search,
         "DemandReplyInvalid": common,
         "DemandReplyLoadInvalid": common,
         "RejectionReasonInvalid": common,

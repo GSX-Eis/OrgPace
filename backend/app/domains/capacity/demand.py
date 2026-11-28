@@ -1,5 +1,6 @@
 """Thin facade re-exporting capacity demand submodules."""
 
+from app.domains.capability.search import find_people as find_people
 from app.domains.capacity.common import (
     DEMAND_NOT_FOUND as DEMAND_NOT_FOUND,
 )
@@ -126,11 +127,13 @@ from app.domains.capacity.demand_views import (
 from app.domains.capacity.demand_views import (
     verified_skill_shortage as verified_skill_shortage,
 )
+from app.domains.capacity.models import CapacityDemand as CapacityDemand
 
 __all__ = [
     "DEMAND_NOT_FOUND",
     "LOAD_WORDS",
     "CapacityConflict",
+    "CapacityDemand",
     "CapacityForbidden",
     "CapacityNotFound",
     "DemandAwaitingSchedule",
@@ -146,6 +149,7 @@ __all__ = [
     "demands_public",
     "department",
     "department_reference",
+    "find_people",
     "get_demand",
     "get_demand_basis",
     "is_legacy_verbal_reply",
