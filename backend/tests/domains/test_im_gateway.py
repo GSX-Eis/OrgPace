@@ -1003,38 +1003,92 @@ def test_delivery_failure_keeps_polling(
     asyncio.run(run())
 
 
+@pytest.mark.parametrize(
+    "failure", ["runtime", "key", "value", "credentials", "invalid_json"]
+)
 def test_refresh_restarts_crashed_task_with_backoff(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, failure: str
 ) -> None:
     g = gateway.Gateway(engine)
     org_id = uuid4()
     key = (org_id, "telegram")
-    wanted = {key: "synthetic"}
-    attempts, delays = [], []
+    credentials = encrypt_secret(
+        "invalid json"
+        if failure == "invalid_json"
+        else json.dumps({"bot_token": TOKEN})
+    )
+    wanted = {key: credentials}
+    instances, delays = [], []
+    errors = {
+        "runtime": RuntimeError("synthetic private detail"),
+        "key": KeyError("synthetic private detail"),
+        "value": ValueError("synthetic private detail"),
+        "credentials": ImError("credentials", retryable=False),
+    }
 
-    async def connect(*_args: object) -> None:
-        attempts.append(True)
-        if len(attempts) <= 2:
-            raise RuntimeError("synthetic private detail")
-        # Clean return represents non-retryable credentials.
+    async def run() -> None:
+        delivered = asyncio.Event()
+
+        class Fake:
+            def __init__(self, *_args: object) -> None:
+                self.number = len(instances)
+                self.closed = False
+                instances.append(self)
+
+            async def test_connection(self) -> str:
+                return "12345"
+
+            async def poll(self) -> AsyncIterator[Event]:
+                if self.number < 2:
+                    raise errors[failure]
+                yield event(org_id, "next message")
+                await asyncio.Event().wait()
+
+            async def send_text(self, _chat: str, text: str) -> None:
+                assert text == "next response"
+                delivered.set()
+
+            async def close(self) -> None:
+                self.closed = True
+
+        monkeypatch.setitem(gateway.ADAPTERS, "telegram", Fake)
+        try:
+            await g.refresh()
+            original = g.tasks[key][1]
+            await asyncio.gather(original, return_exceptions=True)
+            await g.refresh()
+            if failure in ("credentials", "invalid_json"):
+                assert g.tasks[key][1] is original
+                assert not delays
+                assert len(instances) == (1 if failure == "credentials" else 0)
+                return
+            restarted = g.tasks[key][1]
+            assert restarted is not original
+            await asyncio.gather(restarted, return_exceptions=True)
+            await g.refresh()
+            newest = g.tasks[key][1]
+            assert newest is not restarted
+            await asyncio.wait_for(delivered.wait(), timeout=1)
+            assert not newest.done()
+            assert delays == [1, 2]
+            assert len(instances) == 3 and all(i.closed for i in instances[:2])
+            assert "IM connection crashed" in caplog.text
+            assert "invalid_credentials" not in caplog.text
+        finally:
+            for _, task in g.tasks.values():
+                task.cancel()
+            await asyncio.gather(
+                *(task for _, task in g.tasks.values()), return_exceptions=True
+            )
+            assert not g.identities and all(i.closed for i in instances)
 
     async def backoff(seconds: float) -> None:
         delays.append(seconds)
 
     monkeypatch.setattr(g, "wanted", lambda: wanted)
-    monkeypatch.setattr(g, "connect", connect)
-
-    async def run() -> None:
-        await g.refresh()
-        for _ in range(3):
-            task = g.tasks[key][1]
-            await asyncio.gather(task, return_exceptions=True)
-            await g.refresh()
-        assert delays == [1, 2]
-        assert len(attempts) == 3
-        assert g.tasks[key][1] is task
-        assert "synthetic private detail" not in caplog.text
-        assert "IM connection" in caplog.text
-
+    monkeypatch.setattr(g, "connection_state", lambda *_args: True)
+    monkeypatch.setattr(g, "enabled", lambda *_args: True)
+    monkeypatch.setattr(g, "dispatch", lambda *_args: "next response")
     monkeypatch.setattr(gateway.asyncio, "sleep", backoff)
     asyncio.run(run())
+    assert "synthetic private detail" not in caplog.text
