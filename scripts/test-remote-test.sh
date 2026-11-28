@@ -699,6 +699,228 @@ warm_env=(env PATH="$scratch/warm-bin:$PATH" EPP_WARM_DB_DIR="$warm_test_dir/dot
   if grep -Fq 'epp-warm-db' "$warm_test_dir/docker.log"; then exit 1; fi
 )
 
+python3 - "$metadata" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("metadata", sys.argv[1])
+assert spec and spec.loader
+m = importlib.util.module_from_spec(spec); sys.dont_write_bytecode = True; spec.loader.exec_module(m)
+fmt = lambda **kw: "\n".join(m.build_summary_lines(queue_wait_s="0.250", sync_s="0.800", total_s="4.642", vm_summary="VM: RUNNING | Cost $10", **kw))
+
+p_lines = m.build_summary_lines(
+    mode="pytest", project="nere1580", exit_code=0, queue_wait_s="0.250", sync_s="0.800", total_s="4.642",
+    vm_summary="VM: RUNNING | Cost $10",
+    raw_output="\x1b[32mNetwork epp-warm-db_default Creating\x1b[0m\nContainer epp-warm-db-db-1 Healthy\ntests/test_a.py::test_one PASSED\n=== slowest 10 durations ===\n1.84s call     tests/test_a.py::test_slow\n0.42s setup    tests/test_a.py::test_one\n====== 12 passed, 2 skipped, 1 xfailed in 3.45s ======\nEPP_METRIC db_mode=warm db_prep_s=0.142 template_status=hit test_exec_s=3.450\n",
+)
+p_txt = "\n".join(p_lines)
+assert 8 <= len(p_lines) <= 20, len(p_lines)
+for tok in ("[remote-test] PASS", "queue_wait=0.250s", "sync=0.800s", "db_prep=0.142s", "exec=3.450s", "total=4.642s", "db_mode=warm", "template_status=hit", "passed=12 skipped=2 failed=0 errors=0 xfailed=1", "1.84s call tests/test_a.py::test_slow"):
+    assert tok in p_txt, tok
+assert "Network epp-warm-db_default Creating" not in p_txt
+
+pw_txt = fmt(mode="playwright", project="nere1580", exit_code=0, raw_output="  1 skipped\n  4 passed (8.1s)\nEPP_METRIC db_mode=ephemeral db_prep_s=1.200 template_status=ephemeral test_exec_s=8.100\n")
+assert "db_mode=ephemeral template_status=ephemeral" in pw_txt and "passed=4 skipped=1 failed=0 errors=0 xfailed=0" in pw_txt and "top_slow: n/a" in pw_txt
+
+p_fail = "=== FAILURES ===\nE assert False\n=== short test summary info ===\nFAILED test_x.py::test_one\n1 failed in 0.1s\n"
+for kw, must, forbid in (
+    (dict(mode="pytest", project="nere1580", exit_code=1, raw_output="tests/test_a.py::test_ok PASSED\n" + p_fail + "Compose cleanup failed for nere1580.\nEPP_METRIC db_mode=warm db_prep_s=0.100 template_status=built test_exec_s=0.250\nShared connection to compute.123 closed.\n"),
+     ("[remote-test] FAIL", "exit_code: 1", "template_status=built", "=== FAILURES ===", "FAILED test_x.py::test_one", "Compose cleanup failed for nere1580."), ("Shared connection to", "EPP_METRIC ")),
+    (dict(mode="pytest", project="nere1580", exit_code=1, raw_output=p_fail + "Error response from daemon: volume fixture is in use\n"), ("volume fixture is in use",), ()),
+    (dict(mode="pytest", project="nere1580", exit_code=1, raw_output=p_fail + "ssh: Connection reset by peer\n"), ("Connection reset by peer",), ()),
+    (dict(mode="pytest", project="nere1580", exit_code=1, raw_output=p_fail.replace("=== short", "=== warnings summary ===\nfixture warning: diagnostic context\n=== short")), ("diagnostic context",), ()),
+    (dict(mode="preflight", project="nere1580", exit_code=1, raw_output="baseline verifier: fixture node id missing\n" + p_fail + "自检汇总（exit=1）\npytest: 失败 (1s)\n"), ("fixture node id missing",), ()),
+    (dict(mode="playwright", project="nere1580", exit_code=1, raw_output="Error: browser process exited unexpectedly\n  1) [chromium] › smoke.spec.ts:1:1 › test\n    Error: expected 1\n  1 failed\n"), ("browser process exited unexpectedly",), ()),
+    (dict(mode="pytest", project="nere1580", exit_code=1, raw_output="before failure: useful\rprogress overwrite\nOOM Killed\n"), ("before failure: useful", "OOM Killed"), ()),
+    (dict(mode="pytest", project="nere1580", exit_code=2, raw_output="=== ERRORS ===\n___ ERROR collecting tests/test_bad.py ___\nImportError: boom\n!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!\n"),
+     ("ImportError: boom", "Interrupted: 1 error during collection", "passed=n/a skipped=n/a failed=n/a errors=n/a xfailed=n/a"), ()),
+    (dict(mode="pytest", project="nere1580", exit_code=137, raw_output="Killed\nSyntaxError: bad token in conftest.py\n"),
+     ("exit_code: 137", "Killed", "SyntaxError: bad token in conftest.py"), ()),
+    (dict(mode="preflight", project="nere1580", exit_code=1, raw_output="ruff failed on app/main.py:12\n自检汇总（exit=1）\n同步检查: 通过 (0s)\n单一head: 通过 (1s)\npre-commit: 失败 (3s)\n数据库环境: 跳过 (0s)\npytest: 跳过 (0s)\n手动提示: 跳过 (0s)\n总耗时: 4s\n"),
+     ("ruff failed on app/main.py:12", "pre-commit=失败(3s)", "3s pre-commit (失败)", "passed=n/a"), ()),
+    (dict(mode="playwright", project="nere1580", exit_code=1, raw_output="  4 passed (8.1s)\n" + "\n".join(f"cleanup detail {i}" for i in range(45)) + "\nCompose cleanup failed for nere1580.\nEPP_METRIC db_mode=ephemeral\n", playwright_artifacts="/tmp/epp-playwright.fixture"),
+     ("Playwright artifacts: /tmp/epp-playwright.fixture", "passed=4 skipped=0 failed=0 errors=0 xfailed=0", "Compose cleanup failed"), ()),
+    (dict(mode="playwright", project="nere1580", exit_code=1, raw_output="  2 failed\n    [chromium] › a.spec.ts:1:1 › A\n    [chromium] › b.spec.ts:1:1 › B\n  1 skipped\n  3 did not run\n  4 passed (8.1s)\n"),
+     ("passed=4 skipped=1 failed=2 errors=0 xfailed=0 did_not_run=3",), ()),
+    (dict(mode="playwright", project="nere1580", exit_code=1, raw_output="  4 passed (8.1s)\n  1 error was not a part of any test, see above for details\n"),
+     ("passed=4 skipped=0 failed=0 errors=1 xfailed=0",), ()),
+    (dict(mode="playwright", project="nere1580", exit_code=1, raw_output="  1 flaky\n    a.spec.ts:1:1 › A\n  4 passed (8.1s)\n  2 errors were not a part of any test\n"),
+     ("passed=4 skipped=0 failed=0 errors=2 xfailed=0",), ()),
+    (dict(mode="pytest", project="nere1580", exit_code=0, raw_output="no tests ran in 0.05s\n"), ("passed=0 skipped=0 failed=0 errors=0 xfailed=0",), ()),
+):
+    txt = fmt(**kw)
+    for m_tok in must: assert m_tok in txt, (m_tok, txt)
+    for f_tok in forbid: assert f_tok not in txt, (f_tok, txt)
+PY
+
+mkdir -p "$scratch/e2e-bin"
+cat > "$scratch/e2e-bin/gcloud" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  'compute instances describe example-instance --project sample-project '*) printf '%s\n' '{"status":"RUNNING"}' ;;
+  'compute ssh '*)
+    for arg in "$@"; do [[ $arg == --command=* ]] && printf '%s\n' "${arg#--command=}" >> "$MOCK_E2E_SSH_LOG"; done
+    [[ -n ${MOCK_WORKER_OUTPUT_FILE:-} ]] && cat "$MOCK_WORKER_OUTPUT_FILE"
+    exit "${MOCK_WORKER_EXIT:-0}" ;;
+  *) echo "Unexpected gcloud: $*" >&2; exit 3 ;;
+esac
+MOCK
+printf '#!/usr/bin/env bash\nexit 0\n' > "$scratch/e2e-bin/rsync"
+cat > "$scratch/e2e-bin/queue-delay" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+sleep 0.15
+while [[ $# -gt 0 ]]; do [[ $1 == -- ]] && { shift; break; }; shift; done
+exec env CLOUD_TEST_QUEUE_HELD=1 CLOUD_TEST_QUEUE_SLOTS=2 "$@"
+MOCK
+chmod +x "$scratch/e2e-bin/"*
+
+cat > "$scratch/worker-pass.txt" <<'OUT'
+Network epp-warm-db_default Creating
+Container epp-warm-db-db-1 Healthy
+tests/test_a.py::test_ok PASSED
+=== slowest 5 durations ===
+1.11s call     tests/test_a.py::test_ok
+====== 3 passed in 1.25s ======
+EPP_METRIC db_mode=warm db_prep_s=0.120 template_status=hit test_exec_s=1.250
+OUT
+run_e2e() {
+  : > "$scratch/e2e-ssh.log"
+  env -u CLOUD_TEST_ENQUEUED_AT PATH="$scratch/e2e-bin:$PATH" MOCK_E2E_SSH_LOG="$scratch/e2e-ssh.log" \
+    MOCK_WORKER_OUTPUT_FILE="${MOCK_WORKER_OUTPUT_FILE:-$scratch/worker-pass.txt}" \
+    COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-nere123}" "$@"
+}
+compact_out=$(CLOUD_TEST_QUEUE_BIN="$scratch/e2e-bin/queue-delay" run_e2e "$runner" --force pytest tests/test_a.py -q)
+grep -Fq '[remote-test] PASS' <<< "$compact_out"
+grep -Fq 'vm_budget: VM: RUNNING |' <<< "$compact_out"
+[[ $(grep -c 'Observed VM uptime\|observed VM uptime' <<< "$compact_out") -eq 1 ]]
+if grep -Fq 'Network epp-warm-db_default Creating' <<< "$compact_out"; then exit 1; fi
+python3 -c 'import re, sys; m = re.search(r"queue_wait=([0-9.]+)s", sys.argv[1]); assert m and float(m.group(1)) >= 0.10, sys.argv[1]' "$compact_out"
+
+cached_hit_out=$(COMPOSE_PROJECT_NAME=nere124 run_e2e "$runner" pytest tests/test_a.py -q)
+grep -Fq '[cloud-test-cache] HIT' <<< "$cached_hit_out"
+grep -Fq '[remote-test] PASS' <<< "$cached_hit_out"
+if grep -Fq 'Network epp-warm-db_default Creating' <<< "$cached_hit_out"; then exit 1; fi
+
+# B4: VERBOSE=1 and --verbose bypass compact cache hits without requiring --no-cache.
+verb_bypass_env=$(CLOUD_TEST_QUEUE_BIN="" VERBOSE=1 run_e2e "$runner" --force pytest tests/test_a.py -q)
+grep -Fq 'Network epp-warm-db_default Creating' <<< "$verb_bypass_env"
+grep -Fq 'EPP_VERBOSE=1' "$scratch/e2e-ssh.log"
+verb_bypass_cli=$(CLOUD_TEST_QUEUE_BIN="" run_e2e "$runner" --force --verbose pytest tests/test_a.py -q)
+grep -Fq 'Network epp-warm-db_default Creating' <<< "$verb_bypass_cli"
+grep -Fq 'EPP_VERBOSE=1' "$scratch/e2e-ssh.log"
+
+printf 'FATAL_UNKNOWN_CRASH_SIGNAL\n' > "$scratch/worker-crash.txt"
+set +e
+fail_out=$(CLOUD_TEST_QUEUE_BIN="" MOCK_WORKER_EXIT=42 MOCK_WORKER_OUTPUT_FILE="$scratch/worker-crash.txt" run_e2e "$runner" --force --no-cache pytest tests/test_a.py 2>&1)
+fail_rc=$?
+set -e
+[[ $fail_rc == 42 ]]
+grep -Fq '[remote-test] FAIL' <<< "$fail_out"
+grep -Fq 'exit_code: 42' <<< "$fail_out"
+grep -Fq 'FATAL_UNKNOWN_CRASH_SIGNAL' <<< "$fail_out"
+
+# B3: formatter failure replays raw output.log and preserves original remote non-zero exit code.
+real_python=$(command -v python3)
+cat > "$scratch/e2e-bin/python3" <<MOCK
+#!/usr/bin/env bash
+case "\$*" in *" format-summary "*) exit 17 ;; esac
+exec "$real_python" "\$@"
+MOCK
+chmod +x "$scratch/e2e-bin/python3"
+set +e
+fmt_fail_out=$(CLOUD_TEST_QUEUE_BIN="" MOCK_WORKER_EXIT=42 MOCK_WORKER_OUTPUT_FILE="$scratch/worker-crash.txt" run_e2e "$runner" --force --no-cache pytest tests/test_a.py 2>&1)
+fmt_fail_rc=$?
+set -e
+rm -f "$scratch/e2e-bin/python3"
+[[ $fmt_fail_rc == 42 ]]
+grep -Fq 'FATAL_UNKNOWN_CRASH_SIGNAL' <<< "$fmt_fail_out"
+
+for v_cmd in "--verbose pytest tests/test_a.py" "pytest --verbose tests/test_a.py"; do
+  # shellcheck disable=SC2086
+  verb_cli_out=$(CLOUD_TEST_QUEUE_BIN="" run_e2e "$runner" --force --no-cache $v_cmd)
+  grep -Fq 'Network epp-warm-db_default Creating' <<< "$verb_cli_out"
+  grep -Fq 'EPP_VERBOSE=1' "$scratch/e2e-ssh.log"
+  grep -Fq -- '--verbose' "$scratch/e2e-ssh.log"
+done
+pf_verb_out=$(CLOUD_TEST_QUEUE_BIN="" run_e2e "$runner" --force --no-cache preflight --verbose --full)
+grep -Fq 'Network epp-warm-db_default Creating' <<< "$pf_verb_out"
+grep -Fq 'EPP_VERBOSE=1' "$scratch/e2e-ssh.log"
+if grep -Fq -- '--verbose' "$scratch/e2e-ssh.log"; then exit 1; fi
+sep_out=$(CLOUD_TEST_QUEUE_BIN="" run_e2e "$runner" --force --no-cache pytest tests/test_a.py -- --verbose)
+grep -Fq '[remote-test] PASS' <<< "$sep_out"
+if grep -Fq 'EPP_VERBOSE=1' "$scratch/e2e-ssh.log"; then exit 1; fi
+
+# B2 + B6: worker replays captured warnings on failure (stays silent on pass),
+# reports template_status=n/a when unused, and reports elapsed db_prep_s on DB startup failure.
+(
+  cd "$scratch/warm-repo"
+  quiet_out=$("${warm_env[@]}" env EPP_WARM_DB=0 bash scripts/remote-test-worker.sh run_quiet nere123 pytest '' tests/test_a.py -q)
+  if grep -Fq '跳过 npm ci' <<< "$quiet_out"; then exit 1; fi
+  grep -Fq 'EPP_METRIC db_mode=ephemeral' <<< "$quiet_out"
+  loud_out=$("${warm_env[@]}" env EPP_WARM_DB=0 EPP_VERBOSE=1 bash scripts/remote-test-worker.sh run_loud nere123 pytest '' tests/test_a.py -q)
+  grep -Fq '跳过 npm ci' <<< "$loud_out"
+  nopf_out=$("${warm_env[@]}" bash scripts/remote-test-worker.sh run_warm_nopf nere123 pytest '' tests/test_a.py -q)
+  grep -Fq 'template_status=n/a' <<< "$nopf_out"
+
+  cp "$scratch/warm-bin/docker" "$scratch/warm-bin/docker.orig"
+  cp "$scratch/warm-bin/uv" "$scratch/warm-bin/uv.orig"
+  cat > "$scratch/warm-bin/docker" <<'MOCK'
+#!/usr/bin/env bash
+case "$*" in
+  *" up -d "*) echo "DB START WARNING: fixture context" ;;
+  *" port db "*) echo "127.0.0.1:$POSTGRES_PORT" ;;
+esac
+MOCK
+  printf '#!/usr/bin/env bash\necho "fixture assertion failed"; exit 42\n' > "$scratch/warm-bin/uv"
+  chmod +x "$scratch/warm-bin/docker" "$scratch/warm-bin/uv"
+  set +e
+  b2_out=$("${warm_env[@]}" env EPP_WARM_DB=0 EPP_VERBOSE=0 bash scripts/remote-test-worker.sh run_b2 nere123 pytest '' tests/test_a.py 2>&1)
+  b2_rc=$?
+  set -e
+  [[ $b2_rc == 42 ]]
+  grep -Fq 'DB START WARNING: fixture context' <<< "$b2_out"
+  grep -Fq 'fixture assertion failed' <<< "$b2_out"
+
+  cat > "$scratch/warm-bin/docker" <<'MOCK'
+#!/usr/bin/env bash
+case "$*" in *" up -d "*) sleep 0.05; echo "COMPOSE_UP_BOOM" >&2; exit 29 ;; esac
+MOCK
+  chmod +x "$scratch/warm-bin/docker"
+  set +e
+  b6_fail=$("${warm_env[@]}" env EPP_WARM_DB=0 bash scripts/remote-test-worker.sh run_b6_fail nere123 pytest '' tests/test_a.py 2>&1)
+  b6_rc=$?
+  set -e
+  [[ $b6_rc == 29 ]]
+  grep -Fq 'COMPOSE_UP_BOOM' <<< "$b6_fail"
+  python3 -c 'import re, sys; m = re.search(r"db_prep_s=([0-9.]+)", sys.argv[1]); assert m and float(m.group(1)) >= 0.03, sys.argv[1]' "$b6_fail"
+
+  mv "$scratch/warm-bin/docker.orig" "$scratch/warm-bin/docker"
+  : > "$warm_test_dir/cleanup.log"
+  cat > "$scratch/warm-bin/uv" <<'MOCK'
+#!/usr/bin/env bash
+printf hit > "$EPP_TEMPLATE_STATUS_FILE"
+echo assertion_failed
+exit 42
+MOCK
+  real_cat=$(command -v cat)
+  cat > "$scratch/warm-bin/cat" <<MOCK
+#!/usr/bin/env bash
+case "\${1:-}" in */template-status) exit 17 ;; esac
+exec "$real_cat" "\$@"
+MOCK
+  chmod +x "$scratch/warm-bin/uv" "$scratch/warm-bin/cat"
+  set +e
+  bad_st=$("${warm_env[@]}" env EPP_WARM_DB=1 bash scripts/remote-test-worker.sh run_bad_status nere123 pytest '' tests/test_a.py -q 2>&1)
+  bad_st_rc=$?
+  set -e
+  rm -f "$scratch/warm-bin/cat"
+  mv "$scratch/warm-bin/uv.orig" "$scratch/warm-bin/uv"
+  [[ $bad_st_rc == 42 ]]
+  [[ -s $warm_test_dir/cleanup.log ]]
+  grep -Fq 'assertion_failed' <<< "$bad_st"
+  grep -Fq 'template_status=unknown' <<< "$bad_st"
+)
+
 grep -q -- '-oControlMaster=auto' "$runner"
 grep -q -- '-oControlPersist=10m' "$runner"
 grep -q -- '-oControlPath=' "$runner"

@@ -1,5 +1,6 @@
 """Create a filtered worktree snapshot and account for observed VM boot intervals."""
 
+import argparse
 import errno
 import fcntl
 import fnmatch
@@ -1189,7 +1190,11 @@ def cache_prepare(output_path: Path, mode: str, args: list[str]) -> None:
 
 
 def cache_store(
-    descriptor_path: Path, project: str, duration_raw: str, output_log: Path
+    descriptor_path: Path,
+    project: str,
+    duration_raw: str,
+    output_log: Path,
+    summary_path: Path | None = None,
 ) -> None:
     try:
         desc = json.loads(descriptor_path.read_text(encoding="utf-8"))
@@ -1200,9 +1205,28 @@ def cache_store(
 
     duration = float(duration_raw)
     tail_text = ""
-    if output_log.is_file():
-        lines = output_log.read_text(encoding="utf-8", errors="replace").splitlines()
+    if summary_path is not None and summary_path.is_file():
+        lines = summary_path.read_text(encoding="utf-8", errors="replace").splitlines()
         tail_text = "\n".join(lines[-CACHE_OUTPUT_TAIL_LINES:])
+    elif output_log.is_file():
+        raw_text = output_log.read_text(encoding="utf-8", errors="replace")
+        lines = raw_text.splitlines()
+        if len(lines) > CACHE_OUTPUT_TAIL_LINES or any(
+            line.startswith("EPP_METRIC ") for line in lines
+        ):
+            summary_lines = build_summary_lines(
+                mode=str(desc.get("mode") or "pytest"),
+                project=project,
+                exit_code=0,
+                queue_wait_s="0.000",
+                sync_s="0.000",
+                total_s=f"{max(0.0, duration):.3f}",
+                vm_summary="cached",
+                raw_output=raw_text,
+            )
+            tail_text = "\n".join(summary_lines[-CACHE_OUTPUT_TAIL_LINES:])
+        else:
+            tail_text = "\n".join(lines[-CACHE_OUTPUT_TAIL_LINES:])
 
     now = datetime.now(UTC)
     entry = {
@@ -1263,6 +1287,247 @@ def cache_store(
             os.close(lock_fd)
 
 
+_ANSI_RE = re.compile(
+    r"\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[PX^_].*?\x1b\\|[@-Z\\-_])"
+)
+_PYTEST_BANNER_RE = re.compile(r"^={3,}\s+(.+?)\s+={3,}$")
+_PYTEST_SUMMARY_RE = re.compile(
+    r"^(?:=+\s*)?((?:(?:\d+\s+(?:passed|failed|skipped|errors?|xfailed|xpassed|deselected|warnings?)|no tests ran)(?:,\s*)?)+\s+in\s+\d+(?:\.\d+)?s(?:\s+\([^)]+\))?)(?:\s*=+)?$"
+)
+_PYTEST_COUNT_RE = re.compile(
+    r"(\d+)\s+(passed|failed|skipped|errors?|xfailed|xpassed)"
+)
+_PYTEST_DURATION_LINE_RE = re.compile(
+    r"^\s*(\d+(?:\.\d+)?s)\s+(call|setup|teardown)\s+(.+?)\s*$"
+)
+_PLAYWRIGHT_COUNT_RE = re.compile(
+    r"^\s*(\d+)\s+(passed|failed|skipped|flaky|timed out|interrupted|did not run)(?:\s+\([^)]+\))?\s*$"
+)
+_PLAYWRIGHT_FATAL_ERROR_RE = re.compile(
+    r"^\s*(\d+)\s+errors?\s+(?:was|were)\s+not\s+a\s+part\s+of\s+any\s+test(?:,\s*see above for details)?\s*$"
+)
+_PLAYWRIGHT_SUMMARY_DETAIL_RE = re.compile(r"^\s{4,}.+\s+›\s+")
+_PREFLIGHT_STEP_RE = re.compile(
+    r"^(同步检查|单一head|pre-commit|数据库环境|pytest|手动提示):\s*(通过|跳过|失败)\s*\((\d+)s\)$"
+)
+_SSH_CLOSED_RE = re.compile(r"^Shared connection to .+ closed\.$")
+
+
+def _clean_output(raw: str) -> str:
+    return _ANSI_RE.sub("", raw.replace("\r\n", "\n").replace("\r", "\n"))
+
+
+def _fmt_sec(raw: str) -> str:
+    if raw in {"", "n/a", "unknown"}:
+        return "n/a"
+    try:
+        return f"{float(raw):.3f}s"
+    except ValueError:
+        return raw
+
+
+def _parse_counts_and_durations(
+    mode: str, lines: list[str]
+) -> tuple[dict[str, int] | None, int, list[str], list[tuple[str, str, int]]]:
+    counts: dict[str, int] | None = None
+    did_not_run = 0
+    if mode != "playwright":
+        summary_idx = next(
+            (
+                i
+                for i in range(len(lines) - 1, -1, -1)
+                if _PYTEST_SUMMARY_RE.match(lines[i].strip())
+            ),
+            None,
+        )
+        if summary_idx is not None and (
+            m := _PYTEST_SUMMARY_RE.match(lines[summary_idx].strip())
+        ):
+            counts = {"passed": 0, "skipped": 0, "failed": 0, "errors": 0, "xfailed": 0}
+            for num_raw, kind in _PYTEST_COUNT_RE.findall(m.group(1)):
+                k = "errors" if kind in {"error", "errors"} else kind
+                if k in counts:
+                    counts[k] += int(num_raw)
+
+    durations: list[str] = []
+    dur_start = next(
+        (
+            i + 1
+            for i, ln in enumerate(lines)
+            if (b := _PYTEST_BANNER_RE.match(ln.strip()))
+            and re.fullmatch(
+                r"slowest(?:\s+\d+)?\s+durations", b.group(1), re.IGNORECASE
+            )
+        ),
+        None,
+    )
+    if dur_start is not None:
+        for ln in lines[dur_start:]:
+            if _PYTEST_BANNER_RE.match(ln.strip()):
+                break
+            if dm := _PYTEST_DURATION_LINE_RE.match(ln):
+                durations.append(f"{dm.group(1)} {dm.group(2)} {dm.group(3)}")
+
+    if mode == "playwright":
+        last_pw = next(
+            (
+                i
+                for i in range(len(lines) - 1, -1, -1)
+                if _PLAYWRIGHT_COUNT_RE.match(lines[i])
+                or _PLAYWRIGHT_FATAL_ERROR_RE.match(lines[i])
+            ),
+            None,
+        )
+        if last_pw is not None:
+            pw = {"passed": 0, "skipped": 0, "failed": 0, "errors": 0, "xfailed": 0}
+            for i in range(last_pw, -1, -1):
+                ln = lines[i]
+                if fm := _PLAYWRIGHT_FATAL_ERROR_RE.match(ln):
+                    pw["errors"] += int(fm.group(1))
+                elif pm := _PLAYWRIGHT_COUNT_RE.match(ln):
+                    num, kind = int(pm.group(1)), pm.group(2)
+                    if kind == "did not run":
+                        did_not_run += num
+                    elif kind in {"failed", "timed out"}:
+                        pw["failed"] += num
+                    elif kind == "interrupted":
+                        pw["errors"] += num
+                    elif kind in {"passed", "skipped"}:
+                        pw[kind] += num
+                elif not _PLAYWRIGHT_SUMMARY_DETAIL_RE.match(ln):
+                    break
+            counts = pw
+
+    pf_header = (
+        next(
+            (
+                i
+                for i in range(len(lines) - 1, -1, -1)
+                if lines[i].startswith("自检汇总（exit=")
+            ),
+            None,
+        )
+        if mode == "preflight"
+        else None
+    )
+    pf_steps = (
+        [
+            (sm.group(1), sm.group(2), int(sm.group(3)))
+            for ln in lines[pf_header + 1 : pf_header + 8]
+            if (sm := _PREFLIGHT_STEP_RE.match(ln.strip()))
+        ]
+        if pf_header is not None
+        else []
+    )
+    return counts, did_not_run, durations[:5], pf_steps
+
+
+def build_summary_lines(
+    *,
+    mode: str,
+    project: str,
+    exit_code: int,
+    queue_wait_s: str,
+    sync_s: str,
+    total_s: str,
+    vm_summary: str,
+    raw_output: str,
+    playwright_artifacts: str = "",
+) -> list[str]:
+    lines = _clean_output(raw_output).splitlines()
+    metric = dict(
+        tok.partition("=")[::2]
+        for ln in lines
+        if ln.startswith("EPP_METRIC ")
+        for tok in ln[11:].split()
+        if "=" in tok
+    )
+    counts, did_not_run, durations, pf_steps = _parse_counts_and_durations(mode, lines)
+    top_slow = list(durations)
+    if not top_slow and pf_steps:
+        active = sorted(
+            ((s, n, st) for n, st, s in pf_steps if st != "跳过"), reverse=True
+        )
+        top_slow = [f"{s}s {n} ({st})" for s, n, st in active[:5]]
+
+    counts_str = (
+        f"passed={counts['passed']} skipped={counts['skipped']} failed={counts['failed']} errors={counts['errors']} xfailed={counts['xfailed']}"
+        + (f" did_not_run={did_not_run}" if did_not_run > 0 else "")
+        if counts is not None
+        else "passed=n/a skipped=n/a failed=n/a errors=n/a xfailed=n/a"
+    )
+    out = [
+        f"[remote-test] {'PASS' if exit_code == 0 else 'FAIL'}",
+        f"  mode: {mode}",
+        f"  project: {project}",
+        f"  exit_code: {exit_code}",
+        f"  vm_budget: {vm_summary or 'n/a'}",
+        f"  timings: queue_wait={_fmt_sec(queue_wait_s)} sync={_fmt_sec(sync_s)} db_prep={_fmt_sec(metric.get('db_prep_s', 'n/a'))} exec={_fmt_sec(metric.get('test_exec_s', 'n/a'))} total={_fmt_sec(total_s)}",
+        f"  db: db_mode={metric.get('db_mode', 'unknown')} template_status={metric.get('template_status', 'unknown')}",
+        f"  counts: {counts_str}",
+    ]
+    if pf_steps:
+        out.append(
+            "  preflight_steps: "
+            + ", ".join(f"{n}={st}({s}s)" for n, st, s in pf_steps)
+        )
+    out.extend(
+        ["  top_slow:", *(f"    - {x}" for x in top_slow)]
+        if top_slow
+        else ["  top_slow: n/a"]
+    )
+    if exit_code != 0:
+        replay = [
+            ln
+            for ln in lines
+            if not ln.startswith("EPP_METRIC ") and not _SSH_CLOSED_RE.match(ln.strip())
+        ]
+        out.append("--- failure diagnostics ---")
+        if playwright_artifacts:
+            out.append(f"Playwright artifacts: {playwright_artifacts}")
+        out.extend(replay or ["(no output captured)"])
+    return out
+
+
+def format_summary_cli(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="remote-test-metadata.py format-summary")
+    for flag in (
+        "--mode",
+        "--project",
+        "--queue-wait",
+        "--sync-seconds",
+        "--total-seconds",
+        "--vm-summary",
+        "--playwright-artifacts",
+    ):
+        parser.add_argument(flag, default="")
+    parser.add_argument("--exit-code", type=int, required=True)
+    parser.add_argument("--output-log", type=Path, required=True)
+    parser.add_argument("--summary-out", type=Path, default=None)
+    ns = parser.parse_args(argv)
+    raw = (
+        ns.output_log.read_text(encoding="utf-8", errors="replace")
+        if ns.output_log.is_file()
+        else ""
+    )
+    lines = build_summary_lines(
+        mode=ns.mode,
+        project=ns.project,
+        exit_code=ns.exit_code,
+        queue_wait_s=ns.queue_wait or "0.000",
+        sync_s=ns.sync_seconds or "0.000",
+        total_s=ns.total_seconds or "0.000",
+        vm_summary=ns.vm_summary,
+        raw_output=raw,
+        playwright_artifacts=ns.playwright_artifacts,
+    )
+    rendered = "\n".join(lines) + "\n"
+    if ns.summary_out is not None:
+        ns.summary_out.write_text(rendered, encoding="utf-8")
+    sys.stdout.write(rendered)
+    return 0
+
+
 if __name__ == "__main__":
     try:
         command, *args = sys.argv[1:]
@@ -1292,10 +1557,23 @@ if __name__ == "__main__":
                 out_arg, mode_arg, extra_args = args[0], args[1], args[2:]
             cache_prepare(Path(out_arg), mode_arg, extra_args)
         elif command == "cache-store":
-            cache_store(Path(args[0]), args[1], args[2], Path(args[3]))
+            summary_arg: Path | None = None
+            pos_args = args
+            if len(args) >= 6 and args[4] == "--summary":
+                summary_arg = Path(args[5])
+                pos_args = args[:4]
+            cache_store(
+                Path(pos_args[0]),
+                pos_args[1],
+                pos_args[2],
+                Path(pos_args[3]),
+                summary_path=summary_arg,
+            )
+        elif command == "format-summary":
+            sys.exit(format_summary_cli(args))
         else:
             sys.exit(
-                "Expected snapshot, estimate, queue-run, cache-lookup, cache-prepare or cache-store"
+                "Expected snapshot, estimate, queue-run, cache-lookup, cache-prepare, cache-store or format-summary"
             )
     except (
         OSError,

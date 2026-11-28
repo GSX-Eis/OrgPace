@@ -2,11 +2,13 @@
 set -euo pipefail
 
 usage() {
-  echo 'Usage: scripts/remote-test.sh [--force] [--no-cache] {preflight [--full] [--baseline-gate]|pytest [args...]|playwright [args...]|status}'
+  echo 'Usage: scripts/remote-test.sh [--force] [--no-cache] [--verbose] {preflight [--full] [--baseline-gate]|pytest [args...]|playwright [args...]|status}'
   echo 'Set COMPOSE_PROJECT_NAME=nere<issue-number> (optional -review suffix) for test runs.'
   echo 'Use preflight --full or PREFLIGHT_FULL_PYTEST=1 for the full selected pytest set.'
   echo 'Use preflight --baseline-gate or PREFLIGHT_BASELINE_GATE=1 to enforce the Node ID baseline gate.'
   echo 'Use --no-cache or CLOUD_TEST_NO_CACHE=1 to bypass the local content-addressed result cache.'
+  echo 'Use --verbose or VERBOSE=1 for full live streaming output (default prints compact summary; failures keep full diagnostics).'
+  echo 'Warm shared Postgres (EPP_WARM_DB=1 default) reuses orgpace_tpl_<hash> templates; set EPP_WARM_DB=0 to force ephemeral Compose DB.'
 }
 
 die() { echo "$*" >&2; exit 2; }
@@ -14,10 +16,16 @@ die() { echo "$*" >&2; exit 2; }
 orig_args=("$@")
 force=false
 no_cache=false
+verbose=false
+verbose_cli=false
+case "${VERBOSE:-0}" in
+  1|true|TRUE|yes|YES) verbose=true ;;
+esac
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --force) force=true; shift ;;
     --no-cache) no_cache=true; shift ;;
+    --verbose) verbose=true; verbose_cli=true; shift ;;
     *) break ;;
   esac
 done
@@ -30,16 +38,27 @@ esac
 if [[ $mode != status ]]; then
   filtered_args=()
   seen_sep=false
+  has_verbose_after_mode=false
   for arg in "$@"; do
     if ! $seen_sep && [[ $arg == -- ]]; then
       seen_sep=true
       filtered_args+=("$arg")
     elif ! $seen_sep && [[ $arg == --no-cache ]]; then
       no_cache=true
+    elif ! $seen_sep && [[ $arg == --verbose ]]; then
+      verbose=true
+      verbose_cli=true
+      if [[ $mode == pytest ]]; then
+        has_verbose_after_mode=true
+        filtered_args+=("$arg")
+      fi
     else
       filtered_args+=("$arg")
     fi
   done
+  if [[ $mode == pytest ]] && $verbose_cli && ! $has_verbose_after_mode; then
+    filtered_args=("--verbose" ${filtered_args[@]+"${filtered_args[@]}"})
+  fi
   set -- ${filtered_args[@]+"${filtered_args[@]}"}
 fi
 case "$mode" in
@@ -111,13 +130,17 @@ metadata=$scripts_dir/remote-test-metadata.py
 umask 077
 
 observe() {
+  local quiet=${1:-false}
   local instance estimate
   instance=$(gcloud compute instances describe "$GCP_INSTANCE" --project "$GCP_PROJECT" \
     --zone "$GCP_ZONE" --format='json(status,lastStartTimestamp,lastStopTimestamp)') || return
   vm_status=$(python3 -c 'import json, sys; print(json.load(sys.stdin)["status"])' <<< "$instance") || return
   estimate=$(python3 "$metadata" estimate "$ledger" "$instance" "$disk" "$SPOT_HOURLY_RATE_USD" "$cap" "$monthly") || return
   budget_state=${estimate##*$'\n'}
-  printf 'VM: %s\n%s\n' "$vm_status" "${estimate%$'\n'*}"
+  vm_summary="VM: $vm_status | ${estimate%$'\n'*}"
+  if [[ $quiet != true ]]; then
+    printf 'VM: %s\n%s\n' "$vm_status" "${estimate%$'\n'*}"
+  fi
 }
 
 ssh_control_dir=${CLOUD_TEST_SSH_DIR:-$HOME/.cache/cloud_test_ssh}
@@ -141,7 +164,7 @@ cloud_ssh() {
     --ssh-flag="-oControlPath=$ssh_control_path" "$@"
 }
 
-if [[ $mode != status && $no_cache != true && ${CLOUD_TEST_NO_CACHE:-0} != 1 ]]; then
+if [[ $mode != status && $no_cache != true && ${CLOUD_TEST_NO_CACHE:-0} != 1 && $verbose != true ]]; then
   if (cd "$scripts_dir/.." && python3 "$metadata" cache-lookup "$mode" -- "$@"); then
     exit 0
   fi
@@ -162,6 +185,10 @@ resolve_queue_bin() {
 }
 
 if [[ $mode != status && ${CLOUD_TEST_QUEUE_HELD:-0} != 1 && ${CLOUD_TEST_QUEUE_DISABLE:-0} != 1 ]]; then
+  if [[ -z ${CLOUD_TEST_ENQUEUED_AT:-} ]]; then
+    CLOUD_TEST_ENQUEUED_AT=$(python3 -c 'import time; print(f"{time.time():.6f}")')
+    export CLOUD_TEST_ENQUEUED_AT
+  fi
   queue_timeout=${CLOUD_TEST_LOCK_TIMEOUT:-900}
   queue_bin=$(resolve_queue_bin)
   if [[ -n $queue_bin ]]; then
@@ -183,7 +210,21 @@ if [[ -n $slot_cap ]]; then
   [[ $slot_cap =~ ^[1-9][0-9]*$ ]] || die "Invalid CLOUD_TEST_QUEUE_SLOTS: $slot_cap"
 fi
 
-observe
+lock_acquired_mono=$(python3 -c 'import time; print(f"{time.monotonic():.6f}")')
+queue_wait_s=0.000
+if [[ $mode != status && -n ${CLOUD_TEST_ENQUEUED_AT:-} ]]; then
+  queue_wait_s=$(python3 -c 'import sys, time; print(f"{max(0.0, time.time() - float(sys.argv[1])):.3f}")' "$CLOUD_TEST_ENQUEUED_AT" 2>/dev/null || echo 0.000)
+fi
+
+observe_for_mode() {
+  if [[ $mode == status ]] || $verbose; then
+    observe
+  else
+    observe true
+  fi
+}
+
+observe_for_mode
 if [[ $mode == status ]]; then
   queue_bin=$(resolve_queue_bin)
   if [[ -n $queue_bin ]]; then
@@ -198,13 +239,21 @@ if [[ $mode == status ]]; then
 fi
 
 scratch=$(mktemp -d)
+observed_exit=false
+output_flushed=false
 finish() {
   local code=$1
   trap - EXIT
+  if [[ ${output_flushed:-false} != true && $code != 0 && -s $scratch/output.log ]]; then
+    cat "$scratch/output.log" >&2 || true
+    output_flushed=true
+  fi
   rm -rf -- "$scratch"
-  if ! (observe); then
-    echo 'Could not update the local usage estimate at exit.' >&2
-    if [[ $code == 0 ]]; then code=1; fi
+  if [[ ${observed_exit:-false} != true ]]; then
+    if ! observe_for_mode; then
+      echo 'Could not update the local usage estimate at exit.' >&2
+      if [[ $code == 0 ]]; then code=1; fi
+    fi
   fi
   exit "$code"
 }
@@ -237,7 +286,7 @@ if $need_ssh_probe; then
     sleep 5
   done
   $ready || die 'IAP SSH did not become ready'
-  observe
+  observe_for_mode
 fi
 
 cd "$scripts_dir/.."
@@ -279,9 +328,11 @@ locked="$lease epp-$project -- flock -n -E 75 $remote_lock"
 # The lease runner backgrounds its child, which otherwise receives /dev/null.
 receiver="test ! -L $remote_dir && rm -f $remote_dir/.remote-test-snapshot/id && exec \"\$@\" <&8"
 upload="umask 077 && mkdir -p $remote_root && exec 8<&0 && exec $locked bash -c $(printf '%q' "$receiver") epp-receiver"
+sync_started=$(python3 -c 'import time; print(f"{time.monotonic():.6f}")')
 EPP_RSYNC_PREFIX=$upload rsync -rpt --checksum --timeout=60 --delete --exclude='/.git' --exclude=.venv --exclude=node_modules \
   -e "$(printf '%q' "$scratch/iap-ssh")" \
   "$scratch/tree/" "$GCP_INSTANCE:epp-runs/$project/" || die 'Workspace sync failed (project may be busy)'
+sync_s=$(python3 -c 'import sys, time; print(f"{max(0.0, time.monotonic() - float(sys.argv[1])):.3f}")' "$sync_started")
 
 # Quote each argument for the VM shell. A tty gives the remote worker a HUP
 # on disconnect, including when the caller interrupts gcloud or SSH.
@@ -293,6 +344,10 @@ if [[ -n ${PREFLIGHT_BASE_REF:-} ]]; then
   remote_env=${remote_env:-env }
   remote_env+="PREFLIGHT_BASE_REF=$(printf '%q' "$PREFLIGHT_BASE_REF") "
 fi
+if $verbose; then
+  remote_env=${remote_env:-env }
+  remote_env+="EPP_VERBOSE=1 "
+fi
 for env_name in EPP_WARM_DB EPP_WARM_DB_PORT; do
   if [[ -n ${!env_name:-} ]]; then
     remote_env=${remote_env:-env }
@@ -302,25 +357,73 @@ done
 args=$(printf ' %q' "$run_id" "$project" "$mode" "$workers" "$@")
 execute="cd $remote_dir && test \"\$(cat .remote-test-snapshot/id)\" = $run_id || { echo 'Snapshot changed; retry the run.' >&2; exit 75; }; exec ${remote_env}bash scripts/remote-test-worker.sh$args"
 set +e
-cloud_ssh --command="exec $locked bash -c $(printf '%q' "$execute")" -- -tt 2>&1 | tee "$scratch/output.log"
-code=${PIPESTATUS[0]}
+if $verbose; then
+  cloud_ssh --command="exec $locked bash -c $(printf '%q' "$execute")" -- -tt 2>&1 | tee "$scratch/output.log"
+  code=${PIPESTATUS[0]}
+  output_flushed=true
+else
+  cloud_ssh --command="exec $locked bash -c $(printf '%q' "$execute")" -- -tt >"$scratch/output.log" 2>&1
+  code=$?
+fi
 set -e
 
-if [[ $code == 0 && -f $scratch/cache-meta.json ]]; then
-  run_duration=$(python3 -c 'import sys, time; print(f"{max(0.0, time.monotonic() - float(sys.argv[1])):.3f}")' "$run_started")
-  python3 "$metadata" cache-store "$scratch/cache-meta.json" "$project" "$run_duration" "$scratch/output.log" || true
-fi
-
+playwright_artifacts=''
 if [[ $mode == playwright && $code != 0 ]]; then
   report=$(mktemp -d "${TMPDIR:-/tmp}/epp-playwright.XXXXXXXX")
   remote_report="epp-runs/.artifacts/$project/$run_id"
   if rsync -rpt --timeout=60 -e "$(printf '%q' "$scratch/iap-ssh")" \
       "$GCP_INSTANCE:$remote_report/" "$report/"; then
-    echo "Playwright artifacts: $report"
+    playwright_artifacts=$report
+    if $verbose; then
+      echo "Playwright artifacts: $report"
+    fi
     cloud_ssh --command="rm -rf -- \"\$HOME/$remote_report\"" || true
   else
     rmdir "$report" 2>/dev/null || true
     echo "Playwright artifact download failed. VM path: ~/$remote_report" >&2
+  fi
+fi
+
+if ! observe_for_mode; then
+  echo 'Could not update the local usage estimate at exit.' >&2
+  if [[ $code == 0 ]]; then code=1; fi
+fi
+observed_exit=true
+
+total_s=$(python3 -c 'import sys, time; print(f"{float(sys.argv[1]) + max(0.0, time.monotonic() - float(sys.argv[2])):.3f}")' "$queue_wait_s" "$lock_acquired_mono" 2>/dev/null || echo 0.000)
+summary_args=(
+  --mode "$mode"
+  --project "$project"
+  --exit-code "$code"
+  --queue-wait "$queue_wait_s"
+  --sync-seconds "$sync_s"
+  --total-seconds "$total_s"
+  --vm-summary "${vm_summary:-VM: $vm_status}"
+  --output-log "$scratch/output.log"
+)
+if [[ -n $playwright_artifacts ]]; then
+  summary_args+=(--playwright-artifacts "$playwright_artifacts")
+fi
+if ! $verbose; then
+  set +e
+  python3 "$metadata" format-summary "${summary_args[@]}" --summary-out "$scratch/summary.txt"
+  fmt_rc=$?
+  set -e
+  if [[ $fmt_rc != 0 ]]; then
+    echo "[remote-test] format-summary failed (exit=$fmt_rc); replaying raw output:" >&2
+    cat "$scratch/output.log" >&2 || true
+  fi
+  output_flushed=true
+elif [[ $code == 0 && -f $scratch/cache-meta.json ]]; then
+  python3 "$metadata" format-summary "${summary_args[@]}" --summary-out "$scratch/summary.txt" >/dev/null || true
+fi
+
+if [[ $code == 0 && -f $scratch/cache-meta.json ]]; then
+  run_duration=$(python3 -c 'import sys, time; print(f"{max(0.0, time.monotonic() - float(sys.argv[1])):.3f}")' "$run_started")
+  if [[ -f $scratch/summary.txt ]]; then
+    python3 "$metadata" cache-store "$scratch/cache-meta.json" "$project" "$run_duration" "$scratch/output.log" --summary "$scratch/summary.txt" || true
+  else
+    python3 "$metadata" cache-store "$scratch/cache-meta.json" "$project" "$run_duration" "$scratch/output.log" || true
   fi
 fi
 finish "$code"
