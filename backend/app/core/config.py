@@ -1,7 +1,11 @@
+import base64
+import binascii
+import re
 import warnings
 from pathlib import Path
 from typing import Literal, Self
 
+from cryptography.fernet import Fernet
 from pydantic import (
     EmailStr,
     Field,
@@ -23,6 +27,7 @@ class Settings(BaseSettings):
     )
     API_V1_STR: str = "/api/v1"
     SECRET_KEY: str
+    ENCRYPTION_KEYS: SecretStr | None = Field(default=None, repr=False)
     # 60 minutes * 24 hours * 8 days = 8 days
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 8
     LOGIN_MAX_FAILURES: int = Field(default=5, gt=0)
@@ -79,6 +84,11 @@ class Settings(BaseSettings):
                 "Configure both FIRST_SUPERUSER and FIRST_SUPERUSER_PASSWORD, or neither"
             )
         self._check_default_secret("SECRET_KEY", self.SECRET_KEY)
+        if self.ENCRYPTION_KEYS is not None:
+            raw_keys = self.ENCRYPTION_KEYS.get_secret_value()
+            for segment in raw_keys.split(","):
+                self._check_default_secret("ENCRYPTION_KEYS", segment.strip())
+            parse_encryption_keys(raw_keys)
         self._check_default_secret(
             "PI_SERVICE_TOKEN", self.PI_SERVICE_TOKEN.get_secret_value()
         )
@@ -98,6 +108,34 @@ class Settings(BaseSettings):
         if self.CHATGPT_LOCAL_AUTH and self.FASTAPI_ENV != "development":
             raise ValueError("CHATGPT_LOCAL_AUTH 只允许在开发模式使用")
         return self
+
+
+_FERNET_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{43}=$")
+
+
+def parse_encryption_keys(raw: str) -> tuple[bytes, ...]:
+    """Parse comma-separated 32-byte urlsafe base64 Fernet keys without echoing secrets."""
+    keys: list[bytes] = []
+    for segment in raw.split(","):
+        candidate = segment.strip()
+        if not candidate:
+            raise ValueError("ENCRYPTION_KEYS must not contain empty entries")
+        if not _FERNET_KEY_RE.fullmatch(candidate):
+            raise ValueError(
+                "ENCRYPTION_KEYS entries must be valid 32-byte urlsafe base64 Fernet keys"
+            )
+        try:
+            key_bytes = candidate.encode("ascii")
+            decoded = base64.urlsafe_b64decode(key_bytes)
+        except (UnicodeEncodeError, binascii.Error, ValueError) as exc:
+            raise ValueError(
+                "ENCRYPTION_KEYS entries must be valid 32-byte urlsafe base64 Fernet keys"
+            ) from exc
+        if len(decoded) != 32:
+            raise ValueError("ENCRYPTION_KEYS entries must decode to 32 bytes")
+        Fernet(key_bytes)
+        keys.append(key_bytes)
+    return tuple(keys)
 
 
 settings = Settings()  # type: ignore
