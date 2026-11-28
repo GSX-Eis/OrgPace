@@ -15,11 +15,8 @@ from app.domains.capacity.common import (
     CapacityForbidden,
     CapacityNotFound,
     audit,
-    notify_employee,
-)
-from app.domains.capacity.demand import (
     demand_row,
-    get_demand,
+    notify_employee,
     represents_department,
     require_rejection_reason,
     responder_user_ids,
@@ -29,7 +26,6 @@ from app.domains.capacity.demand import (
 from app.domains.capacity.demand_schemas import (
     BorrowLineInput,
     ChangeProposalInput,
-    DemandPublic,
     ProposalLineInput,
 )
 from app.domains.capacity.models import (
@@ -823,7 +819,7 @@ def accept(
     session.flush()
 
 
-def respond(
+def respond_proposal(
     principal: Principal,
     session: Session,
     demand: CapacityDemand,
@@ -834,7 +830,7 @@ def respond(
     *,
     reason_code: ReasonCode | None = None,
     via: Via,
-) -> DemandPublic:
+) -> None:
     if row.kind == "change" and via != "web":
         raise ProposalConflict("请在网页发起或确认变更")
     if row.kind == "change" and action == "withdraw":
@@ -891,7 +887,6 @@ def respond(
         )
     else:
         withdraw_locked(principal, session, demand, row, withdraw_demand=True, via=via)
-    return get_demand(principal, session, demand.id)
 
 
 def withdraw_locked(
@@ -945,9 +940,9 @@ def withdraw_locked(
     session.flush()
 
 
-def withdraw(
+def withdraw_proposal(
     principal: Principal, session: Session, proposal_id: UUID, revision: int
-) -> DemandPublic:
+) -> UUID:
     row = session.exec(
         select(CapacityProposal).where(
             CapacityProposal.org_id == principal.org_id,
@@ -964,7 +959,7 @@ def withdraw(
     if expire_locked(principal, session, demand, row):
         raise ProposalFailed("方案已过期，请重新规划", code="proposal_expired")
     withdraw_locked(principal, session, demand, row)
-    return get_demand(principal, session, demand.id)
+    return demand.id
 
 
 def expire(principal: Principal, session: Session) -> int:

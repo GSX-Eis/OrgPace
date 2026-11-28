@@ -9,7 +9,7 @@ from sqlmodel import Session, col, select
 
 from app.authz.policies import employee_scope_clause
 from app.authz.principal import Principal
-from app.domains.capacity.demand import can_view_demand_internals
+from app.domains.capacity.common import can_view_demand_internals
 from app.domains.capacity.demand_schemas import (
     ChangeProposalParticipant,
     CommitmentArrangement,

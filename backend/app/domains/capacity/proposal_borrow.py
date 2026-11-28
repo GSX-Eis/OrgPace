@@ -7,10 +7,11 @@ from sqlmodel import Session, col, select
 from app.authz.policies import employee_scope_clause
 from app.authz.principal import Principal
 from app.domains.base import utc_now
-from app.domains.capacity.common import CapacityNotFound
-from app.domains.capacity.demand import (
+from app.domains.capacity.common import (
+    CapacityNotFound,
     department,
     qualified_people,
+    require_enabled,
     require_rejection_reason,
     responder_user_ids,
 )
@@ -37,7 +38,6 @@ from app.domains.capacity.proposal_state import (
 )
 from app.domains.capacity.proposal_validation import ProposalConflict, check_lines
 from app.domains.capacity.proposal_views import approvals_for, lines_for
-from app.domains.capacity.settings import require_enabled
 from app.domains.inbox.models import InboxItem, InboxKind
 from app.domains.inbox.service import add_item
 from app.domains.org.models import Employee, OrgMembership

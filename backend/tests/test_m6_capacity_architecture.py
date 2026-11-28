@@ -449,3 +449,167 @@ def test_workload_split_has_no_delayed_cycle_imports_and_keeps_facade() -> None:
     for name, source_mod in expected_sources.items():
         assert name in facade_dict
         assert facade_dict[name] is getattr(source_mod, name)
+
+
+def test_proposal_split_has_no_delayed_cycle_imports_and_keeps_facade() -> None:
+    from app.domains.capacity import (
+        demand,
+        proposal,
+        proposal_borrow,
+        proposal_state,
+        proposal_validation,
+        proposal_views,
+    )
+
+    capacity_dir = APP / "domains" / "capacity"
+    prefix = "app.domains.capacity."
+    targets = (
+        f"{prefix}proposal",
+        f"{prefix}demand",
+    )
+    checked = [
+        capacity_dir / name
+        for name in (
+            "common.py",
+            "demand.py",
+            "proposal.py",
+            "proposal_views.py",
+            "proposal_validation.py",
+            "proposal_state.py",
+            "proposal_borrow.py",
+        )
+    ]
+    delayed: list[str] = []
+    for path in checked:
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for inner in ast.walk(node):
+                    if isinstance(inner, ast.Import):
+                        for alias in inner.names:
+                            if alias.name.startswith(targets):
+                                delayed.append(f"{path.name}: {alias.name}")
+                    elif isinstance(inner, ast.ImportFrom) and inner.module:
+                        if inner.module.startswith(targets) or (
+                            inner.module == "app.domains.capacity"
+                            and any(
+                                a.name in {"demand", "proposal"} for a in inner.names
+                            )
+                        ):
+                            delayed.append(f"{path.name}: {inner.module}")
+    assert delayed == []
+
+    # Forbid dynamic __getattr__ / import_module indirection on the proposal facade.
+    proposal_tree = ast.parse((capacity_dir / "proposal.py").read_text())
+    proposal_funcs = {
+        n.name for n in proposal_tree.body if isinstance(n, ast.FunctionDef)
+    }
+    assert "__getattr__" not in proposal_funcs
+    assert "import_module" not in {
+        alias.name
+        for n in ast.walk(proposal_tree)
+        if isinstance(n, ast.ImportFrom) and n.module == "importlib"
+        for alias in n.names
+    }
+
+    # Verify the top-level static dependency graph across capacity modules is a strict DAG.
+    dag_names = {
+        "common",
+        "settings",
+        "workload_views",
+        "workload_weeks",
+        "workload_carry_over",
+        "workload_requests",
+        "workload",
+        "forecast_policy",
+        "forecast",
+        "extension",
+        "tracking",
+        "assignment",
+        "demand",
+        "proposal_views",
+        "proposal_validation",
+        "proposal_state",
+        "proposal_borrow",
+        "proposal",
+    }
+    dag: dict[str, set[str]] = {}
+    for mod_name in dag_names:
+        mod_tree = ast.parse((capacity_dir / f"{mod_name}.py").read_text())
+        deps: set[str] = set()
+        for stmt in mod_tree.body:
+            if isinstance(stmt, ast.ImportFrom) and stmt.module:
+                if stmt.module == "app.domains.capacity":
+                    deps.update(
+                        alias.name for alias in stmt.names if alias.name in dag_names
+                    )
+                elif stmt.module.startswith(prefix):
+                    target = stmt.module.removeprefix(prefix).split(".", 1)[0]
+                    if target in dag_names:
+                        deps.add(target)
+            elif isinstance(stmt, ast.Import):
+                for alias in stmt.names:
+                    if alias.name.startswith(prefix):
+                        target = alias.name.removeprefix(prefix).split(".", 1)[0]
+                        if target in dag_names:
+                            deps.add(target)
+        dag[mod_name] = deps
+    assert len(list(TopologicalSorter(dag).static_order())) == len(dag_names)
+
+    expected_reexports = {
+        "BORROW_ACCEPTED_PENDING": proposal_views,
+        "BORROW_COMMITTED": proposal_views,
+        "active_segments": proposal_views,
+        "approvals_for": proposal_views,
+        "arrangement": proposal_views,
+        "decision_history": proposal_views,
+        "latest": proposal_views,
+        "lines_for": proposal_views,
+        "public": proposal_views,
+        "reply_superseded": proposal_views,
+        "schedule_summary": proposal_views,
+        "schedules_for_demands": proposal_views,
+        "ProposalConflict": proposal_validation,
+        "check_lines": proposal_validation,
+        "conflict_sources": proposal_validation,
+        "is_direct_commit": proposal_validation,
+        "plan_lines": proposal_validation,
+        "HOLD_DURATION": proposal_state,
+        "ProposalFailed": proposal_state,
+        "ProposalOwnershipError": proposal_state,
+        "ProposalSelfApprovalForbidden": proposal_state,
+        "accept": proposal_state,
+        "assert_assignment_line": proposal_state,
+        "check_pending": proposal_state,
+        "check_requester_decision": proposal_state,
+        "create": proposal_state,
+        "current_principal": proposal_state,
+        "decided": proposal_state,
+        "expire": proposal_state,
+        "expire_locked": proposal_state,
+        "fail": proposal_state,
+        "notify_parties": proposal_state,
+        "withdraw_locked": proposal_state,
+        "borrow_requests": proposal_borrow,
+        "decide_borrow": proposal_borrow,
+    }
+    facade_dict = vars(proposal)
+    assert set(proposal.__all__) == set(expected_reexports) | {"respond", "withdraw"}
+    for name, source_mod in expected_reexports.items():
+        assert name in facade_dict
+        assert facade_dict[name] is getattr(source_mod, name)
+    for name in (
+        "respond",
+        "withdraw",
+        "_aligned_participants",
+        "_grouped_lines",
+        "_over_week_entry",
+        "_public_approvals",
+        "_ready_requester_approval",
+        "_recheck_acceptance",
+        "_replace_segments",
+        "_schedule_phases",
+        "_verify_employee_weeks",
+    ):
+        assert name in facade_dict and callable(facade_dict[name])
+    assert demand.respond_demand is not None

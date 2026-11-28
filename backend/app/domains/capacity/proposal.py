@@ -1,5 +1,13 @@
 """Thin facade re-exporting capacity proposal submodules."""
 
+from uuid import UUID
+
+from sqlmodel import Session
+
+from app.authz.principal import Principal
+from app.domains.capacity.demand import get_demand
+from app.domains.capacity.demand_schemas import DemandPublic
+from app.domains.capacity.models import CapacityDemand, CapacityProposal
 from app.domains.capacity.proposal_borrow import (
     borrow_requests as borrow_requests,
 )
@@ -61,10 +69,8 @@ from app.domains.capacity.proposal_state import (
     notify_parties as notify_parties,
 )
 from app.domains.capacity.proposal_state import (
-    respond as respond,
-)
-from app.domains.capacity.proposal_state import (
-    withdraw as withdraw,
+    respond_proposal,
+    withdraw_proposal,
 )
 from app.domains.capacity.proposal_state import (
     withdraw_locked as withdraw_locked,
@@ -138,6 +144,41 @@ from app.domains.capacity.proposal_views import (
 from app.domains.capacity.proposal_views import (
     schedules_for_demands as schedules_for_demands,
 )
+from app.domains.capacity.schemas import ReasonCode, Via
+
+
+def respond(
+    principal: Principal,
+    session: Session,
+    demand: CapacityDemand,
+    row: CapacityProposal,
+    action: str,
+    revision: int,
+    text: str | None,
+    *,
+    reason_code: ReasonCode | None = None,
+    via: Via,
+) -> DemandPublic:
+    respond_proposal(
+        principal,
+        session,
+        demand,
+        row,
+        action,
+        revision,
+        text,
+        reason_code=reason_code,
+        via=via,
+    )
+    return get_demand(principal, session, demand.id)
+
+
+def withdraw(
+    principal: Principal, session: Session, proposal_id: UUID, revision: int
+) -> DemandPublic:
+    demand_id = withdraw_proposal(principal, session, proposal_id, revision)
+    return get_demand(principal, session, demand_id)
+
 
 __all__ = [
     "BORROW_ACCEPTED_PENDING",

@@ -13,11 +13,14 @@ from app.authz.policies import can_view_employee
 from app.authz.principal import Principal
 from app.domains.base import utc_now
 from app.domains.capacity import calendar
-from app.domains.capacity.common import audit
-from app.domains.capacity.demand import (
-    get_demand_basis,
+from app.domains.capacity.common import (
+    DEMAND_NOT_FOUND,
+    CapacityNotFound,
+    audit,
     qualified_people,
     represents_department,
+    require_enabled,
+    set_week,
 )
 from app.domains.capacity.demand_schemas import (
     BorrowLineInput,
@@ -34,7 +37,6 @@ from app.domains.capacity.models import (
     ProposalStatus,
 )
 from app.domains.capacity.schemas import Via
-from app.domains.capacity.workload import set_week
 from app.domains.org.models import Employee, EmploymentStatus
 from app.domains.org.service import managed_scope
 from app.i18n import tr
@@ -244,13 +246,11 @@ def check_lines(
         people[employee_id] = person
     target_id = lender_department_id or demand.target_department_id
     target = managed_scope(session, principal.org_id, frozenset({target_id}))
-    basis = (
-        set(qualified_people(principal, session, demand, target_id))
-        if lender_department_id is not None
-        else {
-            p.employee_id for p in get_demand_basis(principal, session, demand.id).data
-        }
-    )
+    if lender_department_id is None:
+        require_enabled(principal, session)
+        if not represents_department(principal, demand.target_department_id):
+            raise CapacityNotFound(DEMAND_NOT_FOUND)
+    basis = set(qualified_people(principal, session, demand, target_id))
     requested: dict[UUID, dict[date, int]] = defaultdict(lambda: defaultdict(int))
     for line in lines:
         person = people[line.employee_id]

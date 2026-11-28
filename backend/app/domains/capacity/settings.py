@@ -15,6 +15,9 @@ from app.domains.capacity.common import (
 from app.domains.capacity.common import (
     audit as audit,
 )
+from app.domains.capacity.common import (
+    require_enabled as require_enabled,
+)
 from app.domains.capacity.models import CapacitySetting
 from app.domains.capacity.schemas import CapacitySettingsInput, Via
 from app.domains.org.service import lock_org
@@ -25,17 +28,6 @@ def read_settings(principal: Principal, session: Session) -> CapacitySettingsInp
         select(CapacitySetting).where(CapacitySetting.org_id == principal.org_id)
     ).one_or_none()
     return CapacitySettingsInput.model_validate(row) if row else CapacitySettingsInput()
-
-
-def require_enabled(principal: Principal, session: Session) -> None:
-    row = session.exec(
-        select(CapacitySetting)
-        .where(CapacitySetting.org_id == principal.org_id)
-        .with_for_update(read=True)
-        .execution_options(populate_existing=True)
-    ).one_or_none()
-    if row is None or not row.enabled:
-        raise CapacityNotFound("规划与负荷功能未开启")
 
 
 def save_settings(

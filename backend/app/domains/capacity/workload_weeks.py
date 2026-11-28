@@ -6,7 +6,6 @@ from sqlmodel import Session, col, select
 
 from app.authz.policies import can_view_employee, employee_scope_clause
 from app.authz.principal import Principal
-from app.domains.base import utc_now
 from app.domains.capacity import calendar
 from app.domains.capacity.common import (
     CapacityForbidden,
@@ -15,8 +14,11 @@ from app.domains.capacity.common import (
     employee,
     notify_employee,
 )
+from app.domains.capacity.common import (
+    set_week as set_week,
+)
 from app.domains.capacity.forecast import refresh_org_forecasts
-from app.domains.capacity.models import CapacityUnavailability, CapacityWeek
+from app.domains.capacity.models import CapacityUnavailability
 from app.domains.capacity.schemas import (
     UnavailabilityInput,
     UnavailabilityList,
@@ -32,37 +34,6 @@ from app.domains.inbox.models import InboxItem, InboxKind
 from app.domains.inbox.service import add_item
 from app.domains.org.models import Employee
 from app.i18n import bilingual
-
-
-def set_week(
-    principal: Principal, session: Session, employee_id: UUID, percent: int, start: date
-) -> int | None:
-    if principal.user_id is None:
-        raise CapacityForbidden()
-    row = session.exec(
-        select(CapacityWeek).where(
-            CapacityWeek.org_id == principal.org_id,
-            CapacityWeek.employee_id == employee_id,
-            CapacityWeek.week_start == start,
-        )
-    ).one_or_none()
-    before = row.other_percent if row else None
-    if row is None:
-        row = CapacityWeek(
-            org_id=principal.org_id,
-            employee_id=employee_id,
-            week_start=start,
-            other_percent=percent,
-            confirmed_by_user_id=principal.user_id,
-        )
-    row.other_percent, row.confirmed_at, row.confirmed_by_user_id = (
-        percent,
-        utc_now(),
-        principal.user_id,
-    )
-    session.add(row)
-    session.flush()
-    return before
 
 
 def _group_dates(days: list[date]) -> list[tuple[date, date]]:
