@@ -10,7 +10,6 @@ from sqlmodel import Session, col, select
 
 from app.authz.principal import Principal
 from app.domains.audit.service import record_audit
-from app.domains.capability.department import DepartmentArgs
 from app.domains.org.models import (
     Department,
     Employee,
@@ -20,7 +19,7 @@ from app.domains.org.models import (
     RoleGrant,
 )
 from app.domains.org.paths import department_paths
-from app.domains.org.schemas import DepartmentPublic
+from app.domains.org.schemas import DepartmentArgs, DepartmentPublic
 from app.domains.org.service import lock_admin_org, managed_scope, require_admin
 from app.i18n import tr
 from app.models import Message, User

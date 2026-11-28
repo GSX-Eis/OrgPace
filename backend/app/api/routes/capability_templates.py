@@ -12,6 +12,7 @@ from app.domains.capability.schemas import (
 )
 from app.domains.capability.service import activate_template
 from app.domains.capability.templates import get_template, load_catalog
+from app.domains.change_request.handover import notify_dictionary_changed
 
 router = APIRouter(tags=["capability-templates"])
 
@@ -44,6 +45,11 @@ def preview_template(
 def activate_capability_schema(
     body: ActivateCapabilitySchema, session: SessionDep, principal: OrgAdminDep
 ) -> ActiveSchemaPublic:
-    schema = activate_template(session, principal, body.template_id)
+    schema = activate_template(
+        session,
+        principal,
+        body.template_id,
+        on_request_remapped=notify_dictionary_changed,
+    )
     session.commit()
     return ActiveSchemaPublic.model_validate(schema)

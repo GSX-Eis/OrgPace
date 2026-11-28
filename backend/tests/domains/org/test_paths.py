@@ -1,3 +1,5 @@
+import ast
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -65,3 +67,127 @@ def test_require_admin_and_lock_org_options() -> None:
     missing = _FakeSession(None)
     assert lock_org(missing, org_id, skip_locked=True) is None  # type: ignore[arg-type]
     assert "FOR UPDATE SKIP LOCKED" in missing.sql
+
+
+L0_PACKAGES = ("org", "account", "audit", "evidence", "profile", "capability")
+FORBIDDEN_L2_L3 = {
+    "admin",
+    "admin_assistant",
+    "bot",
+    "capacity",
+    "change_request",
+    "drafting",
+    "im",
+    "inbox",
+    "planning",
+    "review",
+    "setup",
+    "source",
+    "work",
+}
+
+
+def _is_type_checking(node: ast.If) -> bool:
+    test = node.test
+    return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
+        isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+    )
+
+
+def _iter_runtime_imports(tree: ast.AST) -> list[tuple[str, int]]:
+    results: list[tuple[str, int]] = []
+    stack: list[ast.AST] = [tree]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ast.If) and _is_type_checking(node):
+            stack.extend(node.orelse)
+            continue
+        if isinstance(node, ast.Import):
+            results.extend((alias.name, 0) for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            prefix = node.module or ""
+            for alias in node.names:
+                mod = f"{prefix}.{alias.name}" if prefix else alias.name
+                results.append((mod, node.level))
+        stack.extend(ast.iter_child_nodes(node))
+    return results
+
+
+def _l0_boundary_violations(domains: Path) -> list[str]:
+    violations: list[str] = []
+    for package in L0_PACKAGES:
+        pkg_dir = domains / package
+        if not pkg_dir.exists():
+            continue
+        for path in sorted(pkg_dir.rglob("*.py")):
+            if path.name in ("models.py", "schemas.py"):
+                continue
+            rel = path.relative_to(domains)
+            rel_parts = ["app", "domains", *rel.parts[:-1]]
+            for module, level in _iter_runtime_imports(ast.parse(path.read_text())):
+                if level:
+                    base = rel_parts[: len(rel_parts) - level + 1]
+                    resolved = ".".join([*base, *([module] if module else [])])
+                else:
+                    resolved = module
+                if not resolved.startswith("app.domains."):
+                    continue
+                parts = resolved.split(".")
+                if len(parts) < 3:
+                    continue
+                target = parts[2]
+                tail = parts[3] if len(parts) > 3 else ""
+                if (
+                    target == "base"
+                    or tail in ("models", "schemas")
+                    or tail.endswith("_schemas")
+                ):
+                    continue
+                if target in FORBIDDEN_L2_L3 or (
+                    package == "org" and target == "capability"
+                ):
+                    violations.append(f"{rel.as_posix()}: {resolved}")
+    return violations
+
+
+def test_l0_layer_boundaries(tmp_path: Path) -> None:
+    domains = Path(__file__).resolve().parents[3] / "app" / "domains"
+    assert not (domains / "profile" / "coverage.py").exists()
+    assert (domains / "admin" / "coverage.py").exists()
+    assert _l0_boundary_violations(domains) == []
+
+    # Counterexamples: top-level import, lazy local import, and relative import are caught;
+    # TYPE_CHECKING and models/schemas imports are allowed.
+    probe = tmp_path / "domains"
+    (probe / "profile").mkdir(parents=True)
+    (probe / "capability").mkdir(parents=True)
+    (probe / "org").mkdir(parents=True)
+    (probe / "profile" / "bad_top.py").write_text(
+        "import app.domains.drafting.update_settings\nfrom app.domains import drafting\n"
+    )
+    (probe / "capability" / "bad_lazy.py").write_text(
+        "def f():\n"
+        "    from app.domains.inbox.service import notify\n"
+        "    from ..drafting.service import queue_drafting\n"
+        "    from .. import inbox\n"
+    )
+    (probe / "org" / "bad_cap.py").write_text(
+        "from app.domains.capability.department import DepartmentArgs\n"
+    )
+    (probe / "profile" / "ok.py").write_text(
+        "from typing import TYPE_CHECKING\n"
+        "from app.domains.change_request.models import ProfileChangeRequest\n"
+        "from app.domains.change_request.schemas import ChangeRequestPublic\n"
+        "if TYPE_CHECKING:\n"
+        "    from app.domains.drafting.service import queue_drafting\n"
+    )
+    assert sorted(_l0_boundary_violations(probe)) == sorted(
+        [
+            "profile/bad_top.py: app.domains.drafting.update_settings",
+            "profile/bad_top.py: app.domains.drafting",
+            "capability/bad_lazy.py: app.domains.inbox.service.notify",
+            "capability/bad_lazy.py: app.domains.drafting.service.queue_drafting",
+            "capability/bad_lazy.py: app.domains.inbox",
+            "org/bad_cap.py: app.domains.capability.department.DepartmentArgs",
+        ]
+    )

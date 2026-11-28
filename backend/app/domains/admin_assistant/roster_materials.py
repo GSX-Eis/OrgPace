@@ -10,6 +10,7 @@ from sqlmodel import Session, col, select
 from app.authz.principal import Principal
 from app.domains.account.service import require_admin
 from app.domains.admin_assistant.materials import Material, validate_attachments
+from app.domains.change_request.handover import withdraw_deactivated_requests
 from app.domains.change_request.schemas import ToolInput
 from app.domains.org.employee_fields import FIELD_LABELS
 from app.domains.org.models import Employee, EmploymentStatus, Organization
@@ -23,6 +24,7 @@ from app.domains.org.roster.schemas import (
     RosterRow,
 )
 from app.domains.org.roster.single import PersonnelInput, current_roster
+from app.domains.source.identities import sync_roster_identities
 from app.i18n import tr
 
 
@@ -300,6 +302,8 @@ def apply(
                 base_revision=record.base_revision, confirm_mass_deactivation=True
             ),
             commit=commit,
+            on_deactivated=withdraw_deactivated_requests,
+            link_identities=sync_roster_identities,
         )
         result.issues.extend(notices)
         return result

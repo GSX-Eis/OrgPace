@@ -16,6 +16,7 @@ from app.domains.bot import store, tools
 from app.domains.capability.schemas import DictionaryDefinition
 from app.domains.capability.service import save_version
 from app.domains.change_request import employee
+from app.domains.change_request.handover import withdraw_deactivated_requests
 from app.domains.change_request.models import (
     ProfileChangeRequest,
     RequestOrigin,
@@ -198,6 +199,7 @@ def depart(db: Session, company: tuple, *, commit: bool = True) -> None:
         principals["admin"],
         single.Offboard(employee_ids=[people["owner"].id]),
         commit=commit,
+        on_deactivated=withdraw_deactivated_requests,
     )
 
 
@@ -379,6 +381,7 @@ def test_departure_withdraws_atomically_without_changing_evidence(
             ApplyImport(
                 base_revision=preview.base_revision, confirm_mass_deactivation=True
             ),
+            on_deactivated=withdraw_deactivated_requests,
         )
     else:
         depart(db, company, commit=via != "rollback")

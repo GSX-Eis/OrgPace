@@ -1,4 +1,5 @@
 import uuid
+from calendar import monthrange
 from datetime import UTC, datetime
 from enum import StrEnum
 
@@ -8,6 +9,14 @@ from sqlmodel import Field, SQLModel
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def months_before(now: datetime, months: int) -> datetime:
+    year, month = divmod(now.year * 12 + now.month - 1 - months, 12)
+    month += 1
+    return now.replace(
+        year=year, month=month, day=min(now.day, monthrange(year, month)[1])
+    )
 
 
 def enum_type(enum: type[StrEnum]) -> Enum:

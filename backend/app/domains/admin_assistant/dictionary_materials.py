@@ -18,7 +18,9 @@ from app.domains.capability.schemas import (
     SaveDictionary,
 )
 from app.domains.capability.service import preview_version, read_editor
+from app.domains.change_request.handover import notify_dictionary_changed
 from app.domains.change_request.schemas import ToolInput
+from app.domains.drafting.service import queue_drafting
 from app.i18n import tr
 
 
@@ -117,6 +119,15 @@ def apply(
         "material_names": [m.label for m in args.materials],
     }
     try:
-        return save_dictionary(db, p, body, commit=commit)
+        return save_dictionary(
+            db,
+            p,
+            body,
+            commit=commit,
+            on_redraft=lambda s, org_id: queue_drafting(
+                s, org_id, "all", pending_owner_only=True, commit=False
+            ),
+            on_request_remapped=notify_dictionary_changed,
+        )
     finally:
         db.info["audit_context"] = context

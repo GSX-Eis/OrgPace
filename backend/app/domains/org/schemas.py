@@ -52,6 +52,11 @@ class MembershipPublic(SQLModel):
     managed_department_ids: list[UUID]
 
 
+class DepartmentArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    department_id: UUID
+
+
 class DepartmentSummary(SQLModel):
     id: UUID
     name: str

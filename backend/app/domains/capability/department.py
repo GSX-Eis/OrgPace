@@ -16,6 +16,7 @@ from app.domains.capability.models import (
     SchemaStatus,
 )
 from app.domains.org.models import Department
+from app.domains.org.schemas import DepartmentArgs as DepartmentArgs
 from app.domains.org.service import lock_admin_org
 from app.i18n import tr
 
@@ -27,11 +28,6 @@ class DepartmentCapabilityError(HTTPException):
 class DepartmentCapabilitiesInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     capability_keys: list[str]
-
-
-class DepartmentArgs(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    department_id: UUID
 
 
 class SetDepartmentCapabilities(DepartmentCapabilitiesInput):

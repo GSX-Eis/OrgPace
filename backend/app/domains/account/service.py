@@ -28,7 +28,6 @@ from app.domains.account.schemas import (
 from app.domains.audit.models import AuditEvent
 from app.domains.audit.service import record_audit
 from app.domains.base import utc_now
-from app.domains.change_request.service import coverage_status_clause
 from app.domains.org.models import (
     Department,
     Employee,
@@ -39,6 +38,7 @@ from app.domains.org.models import (
     RoleGrant,
 )
 from app.domains.org.paths import department_paths
+from app.domains.org.review_status import coverage_status_clause
 from app.domains.org.schemas import DepartmentSummary
 from app.domains.org.service import lock_admin_org
 from app.domains.profile.models import ProgressReviewStatus

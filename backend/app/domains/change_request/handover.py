@@ -1,4 +1,5 @@
 from datetime import timedelta
+from uuid import UUID
 
 from sqlmodel import Session, col, select
 
@@ -85,3 +86,65 @@ def hand_over(
         else:
             session.flush()
     return len(requests)
+
+
+def notify_dictionary_changed(
+    session: Session,
+    request: ProfileChangeRequest,
+    message_zh: str,
+    message_en: str,
+) -> None:
+    """Notify a request owner when an updated capability dictionary remaps their draft."""
+    notify(
+        session,
+        request,
+        InboxKind.DICTIONARY_CHANGED,
+        message_zh,
+        message_en=message_en,
+    )
+
+
+def withdraw_deactivated_requests(
+    session: Session, principal: Principal, deactivated: set[UUID]
+) -> None:
+    """Withdraw open change requests when their subject employees are deactivated."""
+    for request in session.exec(
+        select(ProfileChangeRequest)
+        .where(
+            ProfileChangeRequest.org_id == principal.org_id,
+            col(ProfileChangeRequest.subject_employee_id).in_(deactivated),
+            col(ProfileChangeRequest.status).in_(
+                [
+                    RequestStatus.DRAFT,
+                    RequestStatus.PENDING_OWNER,
+                    RequestStatus.PENDING_REVIEW,
+                ]
+            ),
+        )
+        .order_by(col(ProfileChangeRequest.id))
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).all():
+        if request.status == RequestStatus.PENDING_OWNER:
+            # shortcut: use one transition when pending_owner can move directly to withdrawn.
+            transition(request, RequestStatus.DRAFT)
+        transition(request, RequestStatus.WITHDRAWN)
+        session.add(request)
+        record_audit(
+            session,
+            org_id=principal.org_id,
+            actor_type=principal.actor_type,
+            actor_id=str(principal.user_id),
+            action="change_request.withdrawn",
+            target_type="profile_change_request",
+            target_id=str(request.id),
+            details={},
+        )
+        msg_zh, msg_en = bilingual("员工已离职，请求已撤回")
+        notify(
+            session,
+            request,
+            InboxKind.STATUS_CHANGED,
+            msg_zh,
+            message_en=msg_en,
+        )

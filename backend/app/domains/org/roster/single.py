@@ -234,7 +234,13 @@ def preview(
 
 
 def apply(
-    db: Session, p: Principal, args: SingleChange, *, commit: bool = True
+    db: Session,
+    p: Principal,
+    args: SingleChange,
+    *,
+    commit: bool = True,
+    on_deactivated: service.OnDeactivated | None = None,
+    link_identities: service.LinkIdentities | None = None,
 ) -> RosterImportResult:
     record = preview(db, p, args, commit=False)
     return service.apply_import(
@@ -246,6 +252,8 @@ def apply(
             confirm_mass_deactivation=True,
         ),
         commit=commit,
+        on_deactivated=on_deactivated,
+        link_identities=link_identities,
     )
 
 

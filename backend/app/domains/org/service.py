@@ -21,7 +21,6 @@ from app.domains.change_request.models import (
     ReviewDecision,
     ReviewVia,
 )
-from app.domains.change_request.service import coverage_status_clause, review_statuses
 from app.domains.evidence.models import Evidence, EvidenceKind, EvidenceStatus
 from app.domains.org.models import (
     Department,
@@ -34,6 +33,7 @@ from app.domains.org.models import (
     Role,
     RoleGrant,
 )
+from app.domains.org.review_status import coverage_status_clause, review_statuses
 from app.domains.org.schemas import (
     DepartmentManager,
     DepartmentSummary,
