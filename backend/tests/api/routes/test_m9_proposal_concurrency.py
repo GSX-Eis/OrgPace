@@ -299,11 +299,13 @@ def test_accept_rechecks_expiry_after_waiting_for_employee(
     from sqlmodel import select
 
     from app.domains.base import utc_now
+    from app.domains.capacity import proposal_state, proposal_validation
     from app.domains.org.models import Employee
 
     now = utc_now()
     current = now
-    monkeypatch.setattr(proposal, "utc_now", lambda: current)
+    for mod in (proposal_state, proposal_validation):
+        monkeypatch.setattr(mod, "utc_now", lambda: current)
     hold_demand(db, case)
     reply = propose(client, case)
     assert reply.status_code == 200, reply.text
