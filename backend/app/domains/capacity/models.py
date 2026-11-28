@@ -142,6 +142,13 @@ class CapacityUnavailability(TenantRecord, table=True):
         UniqueConstraint("org_id", "id"),
         tenant_fk("employee_id", "employee"),
         member_fk("created_by_user_id"),
+        Index(
+            "ix_capacity_unavailability_org_emp_dates",
+            "org_id",
+            "employee_id",
+            "start_date",
+            "end_date",
+        ),
         CheckConstraint("end_date >= start_date", name="unavailability_dates"),
     )
     employee_id: UUID
@@ -224,6 +231,13 @@ class CapacityDemand(TenantRecord, table=True):
             name="fk_demand_project",
         ),
         Index("ix_capacity_demand_project", "org_id", "project_id"),
+        Index(
+            "ix_capacity_demand_org_target_status",
+            "org_id",
+            "target_department_id",
+            "status",
+        ),
+        Index("ix_capacity_demand_org_requester", "org_id", "requester_user_id"),
         CheckConstraint(
             "project_id IS NULL OR (role_name IS NOT NULL AND length(role_name) BETWEEN 1 AND 50)",
             name="demand_project_role",
@@ -293,6 +307,12 @@ class CapacityDemandEvent(TenantRecord, table=True):
         UniqueConstraint("org_id", "id"),
         tenant_fk("demand_id", "capacity_demand"),
         member_fk("actor_user_id"),
+        Index(
+            "ix_capacity_demand_event_org_demand_created",
+            "org_id",
+            "demand_id",
+            "created_at",
+        ),
         CheckConstraint(REASON_CODE_CHECK, name="demand_event_reason_code"),
         CheckConstraint("length(text) <= 2000", name="demand_event_text"),
         CheckConstraint(
@@ -345,6 +365,13 @@ class CapacityAssignment(TenantRecord, table=True):
             unique=True,
             postgresql_where=text("proposal_line_id IS NOT NULL"),
         ),
+        Index(
+            "ix_capacity_assignment_org_emp_status",
+            "org_id",
+            "employee_id",
+            "status",
+        ),
+        Index("ix_capacity_assignment_org_demand", "org_id", "demand_id"),
     )
     demand_id: UUID
     employee_id: UUID
@@ -449,6 +476,8 @@ class CapacityProposalLine(TenantRecord, table=True):
         tenant_fk("proposal_id", "capacity_proposal"),
         tenant_fk("employee_id", "employee"),
         tenant_fk("lender_department_id", "department"),
+        Index("ix_capacity_proposal_line_org_proposal", "org_id", "proposal_id"),
+        Index("ix_capacity_proposal_line_org_employee", "org_id", "employee_id"),
         CheckConstraint(
             "employee_id IS NOT NULL OR lender_department_id IS NOT NULL",
             name="proposal_line_subject",
@@ -481,6 +510,7 @@ class CapacityApproval(TenantRecord, table=True):
             ],
         ),
         member_fk("user_id"),
+        Index("ix_capacity_approval_org_proposal", "org_id", "proposal_id"),
         UniqueConstraint(
             "proposal_id",
             "party",

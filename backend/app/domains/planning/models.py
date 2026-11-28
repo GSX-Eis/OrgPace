@@ -2,7 +2,7 @@ from enum import StrEnum
 from uuid import UUID
 
 from pydantic import JsonValue
-from sqlalchemy import Column, Text, UniqueConstraint
+from sqlalchemy import Column, Index, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field
 
@@ -46,6 +46,7 @@ class PlanningSnapshot(TenantRecord, table=True):
         UniqueConstraint("org_id", "id"),
         tenant_fk("case_id", "planning_case"),
         member_fk("created_by_user_id"),
+        Index("ix_planning_snapshot_org_case", "org_id", "case_id"),
     )
     case_id: UUID
     data: dict[str, JsonValue] = Field(sa_column=Column(JSONB, nullable=False))
@@ -58,6 +59,7 @@ class PlanningOption(TenantRecord, table=True):
     __table_args__ = (
         UniqueConstraint("org_id", "id"),
         tenant_fk("snapshot_id", "planning_snapshot"),
+        Index("ix_planning_option_org_snapshot", "org_id", "snapshot_id"),
     )
     snapshot_id: UUID
     kind: OptionKind = Field(sa_type=enum_type(OptionKind))

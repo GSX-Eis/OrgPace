@@ -3,7 +3,7 @@ from datetime import datetime
 from enum import StrEnum
 
 from pydantic import JsonValue
-from sqlalchemy import Column, DateTime, UniqueConstraint
+from sqlalchemy import Column, DateTime, Index, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
@@ -64,6 +64,8 @@ class ProfileClaim(TenantRecord, table=True):
         tenant_fk("subject_employee_id", "employee"),
         tenant_fk("capability_definition_id", "capability_definition"),
         tenant_fk("supersedes_claim_id", "profile_claim"),
+        Index("ix_profile_claim_org_subject", "org_id", "subject_employee_id"),
+        Index("ix_profile_claim_org_supersedes", "org_id", "supersedes_claim_id"),
     )
     subject_employee_id: uuid.UUID
     capability_definition_id: uuid.UUID
