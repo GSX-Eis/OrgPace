@@ -435,8 +435,8 @@ def test_shared_template_race_failure_readonly_cloning_and_pruning(
         with pytest.raises(ValueError, match="len <= 40"):
             migrations_mod.cleanup_run_databases(admin_dsn, "a" * 41)
 
-        sim_a = f"{run_prefix}_sa_{suffix[:4]}"
-        sim_b = f"{run_prefix}_sb_{suffix[:4]}"
+        sim_a = f"{run_prefix[:11]}_a_{suffix[:4]}"
+        sim_b = f"{run_prefix[:11]}_b_{suffix[:4]}"
         # B1: Production ensure_shared_template staging DB uses run_scoped_db_name("stg")
         # when PYTEST_DB_PREFIX is set (and legacy prefix when unset), so crash cleanup reclaims it.
         real_stg_a: list[str] = []
