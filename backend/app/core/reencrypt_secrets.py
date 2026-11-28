@@ -7,7 +7,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, cast
 
-from sqlalchemy import Column, Table, or_, select, tuple_, update
+from sqlalchemy import Column, Table, func, or_, select, tuple_, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, SQLModel
 
@@ -22,11 +22,18 @@ from app.domains.admin_assistant.models import (
 )
 from app.domains.bot.models import BotAttachment, BotMessage, BotSession
 from app.domains.im.models import ImSetting
+from app.domains.model.chatgpt import refresh_lock_key
 from app.domains.model.models import ModelSetting
 from app.domains.source.models import SourceConnection
 
-_ATTACHMENT_MAX_BATCH_SIZE = 10
 _MAX_CAS_RETRIES = 2
+_OUTCOME_FIELD = {
+    "rotated": "rotated_values",
+    "already_current": "already_current_values",
+    "skipped": "skipped_concurrent_values",
+    "failed": "failed_values",
+    "unresolved": "unresolved_values",
+}
 
 
 class ReencryptDatabaseError(RuntimeError):
@@ -58,18 +65,10 @@ ENCRYPTED_TARGETS: tuple[EncryptedTarget, ...] = (
     EncryptedTarget(AdminChangeSet, ("secrets",)),
     EncryptedTarget(BotSession, ("state_ciphertext",)),
     EncryptedTarget(BotMessage, ("ciphertext",)),
-    EncryptedTarget(
-        BotAttachment,
-        ("ciphertext", "text_ciphertext"),
-        max_batch_size=_ATTACHMENT_MAX_BATCH_SIZE,
-    ),
+    EncryptedTarget(BotAttachment, ("ciphertext", "text_ciphertext"), 10),
     EncryptedTarget(AdminAssistantSession, ("state_ciphertext",)),
     EncryptedTarget(AdminAssistantMessage, ("ciphertext",)),
-    EncryptedTarget(
-        AdminAssistantAttachment,
-        ("ciphertext", "text_ciphertext"),
-        max_batch_size=_ATTACHMENT_MAX_BATCH_SIZE,
-    ),
+    EncryptedTarget(AdminAssistantAttachment, ("ciphertext", "text_ciphertext"), 10),
 )
 
 
@@ -109,40 +108,27 @@ def _apply_cas_with_reread(
     table: Table,
     pk_pred: list[Any],
     col: Column[Any],
-    initial_token: str,
-    initial_new_token: str,
-    pk_repr: str,
-    stats: TableReencryptStats,
-    failures: list[tuple[str, str, str]],
-    unresolved: list[tuple[str, str, str]],
-) -> bool:
-    token = initial_token
-    new_token = initial_new_token
+    token: str,
+    new_token: str,
+) -> str:
     for _ in range(_MAX_CAS_RETRIES + 1):
         res = session.execute(
             update(table).where(*pk_pred, col == token).values({col.name: new_token})
         )
         if (res.rowcount or 0) == 1:  # type: ignore[attr-defined]
-            stats.rotated_values += 1
-            return True
+            return "rotated"
         latest = session.execute(select(col).where(*pk_pred)).one_or_none()
         if latest is None or not latest[0]:
-            stats.skipped_concurrent_values += 1
-            return False
+            return "skipped"
         token = cast(str, latest[0])
         try:
             rotated = rotate_if_needed(token)
         except SecretUnavailable:
-            stats.failed_values += 1
-            failures.append((table.name, pk_repr, col.name))
-            return False
+            return "failed"
         if rotated is None:
-            stats.already_current_values += 1
-            return False
+            return "already_current"
         new_token = rotated
-    stats.unresolved_values += 1
-    unresolved.append((table.name, pk_repr, col.name))
-    return False
+    return "unresolved"
 
 
 def _reencrypt_table(
@@ -188,8 +174,22 @@ def _reencrypt_table(
                 pk_values = tuple(row[:pk_count])
                 pk_repr = _format_pk(pk_cols, pk_values)
                 pk_pred = [c == v for c, v in zip(pk_cols, pk_values, strict=True)]
+                values: Sequence[Any] = row[pk_count:]
+                if target.model is ModelSetting and not dry_run:
+                    session.execute(
+                        select(
+                            func.pg_advisory_xact_lock(refresh_lock_key(pk_values[0]))
+                        )
+                    )
+                    fresh = session.execute(
+                        select(*secret_cols).where(*pk_pred)
+                    ).one_or_none()
+                    if fresh is None:
+                        session.commit()
+                        continue
+                    values = tuple(fresh)
                 row_rotated = False
-                for col, token in zip(secret_cols, row[pk_count:], strict=True):
+                for col, token in zip(secret_cols, values, strict=True):
                     if not token:
                         continue
                     try:
@@ -204,23 +204,24 @@ def _reencrypt_table(
                     if dry_run:
                         stats.rotated_values += 1
                         row_rotated = True
-                    elif _apply_cas_with_reread(
-                        session,
-                        table,
-                        pk_pred,
-                        col,
-                        token,
-                        new_token,
-                        pk_repr,
-                        stats,
-                        failures,
-                        unresolved,
-                    ):
+                        continue
+                    outcome = _apply_cas_with_reread(
+                        session, table, pk_pred, col, token, new_token
+                    )
+                    field_name = _OUTCOME_FIELD[outcome]
+                    setattr(stats, field_name, getattr(stats, field_name) + 1)
+                    if outcome == "rotated":
                         row_rotated = True
+                    elif outcome == "failed":
+                        failures.append((table.name, pk_repr, col.name))
+                    elif outcome == "unresolved":
+                        unresolved.append((table.name, pk_repr, col.name))
                 if row_rotated:
                     stats.rotated_rows += 1
+                if target.model is ModelSetting and not dry_run:
+                    session.commit()
 
-            if not dry_run:
+            if not dry_run and target.model is not ModelSetting:
                 session.commit()
         except SQLAlchemyError as exc:
             with suppress(SQLAlchemyError):
@@ -248,13 +249,8 @@ def reencrypt_secrets(
         summary.tables.append(stats)
         summary.failures.extend(table_failures)
         summary.unresolved.extend(table_unresolved)
-        summary.scanned_rows += stats.scanned_rows
-        summary.rotated_rows += stats.rotated_rows
-        summary.rotated_values += stats.rotated_values
-        summary.already_current_values += stats.already_current_values
-        summary.skipped_concurrent_values += stats.skipped_concurrent_values
-        summary.unresolved_values += stats.unresolved_values
-        summary.failed_values += stats.failed_values
+        for f in ("scanned_rows", "rotated_rows", *_OUTCOME_FIELD.values()):
+            setattr(summary, f, getattr(summary, f) + getattr(stats, f))
     return summary
 
 
@@ -300,27 +296,26 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     mode = "dry-run" if summary.dry_run else "apply"
     label = "pending_values" if summary.dry_run else "rotated_values"
+
+    def _fmt(name: str, s: Any, extra: str = "") -> str:
+        return (
+            f"[{mode}] {name}: scanned_rows={s.scanned_rows}{extra} "
+            f"{label}={s.rotated_values} already_current={s.already_current_values} "
+            f"skipped_concurrent={s.skipped_concurrent_values} "
+            f"unresolved={s.unresolved_values} failed={s.failed_values}\n"
+        )
+
     for t in summary.tables:
-        sys.stdout.write(
-            f"[{mode}] {t.table_name}: scanned_rows={t.scanned_rows} "
-            f"{label}={t.rotated_values} already_current={t.already_current_values} "
-            f"skipped_concurrent={t.skipped_concurrent_values} "
-            f"unresolved={t.unresolved_values} failed={t.failed_values}\n"
-        )
-    sys.stdout.write(
-        f"[{mode}] summary: scanned_rows={summary.scanned_rows} rotated_rows={summary.rotated_rows} "
-        f"{label}={summary.rotated_values} already_current={summary.already_current_values} "
-        f"skipped_concurrent={summary.skipped_concurrent_values} "
-        f"unresolved={summary.unresolved_values} failed={summary.failed_values}\n"
-    )
-    for table_name, pk_repr, col_name in summary.failures:
-        sys.stderr.write(
-            f"ERROR: unable to decrypt table={table_name} pk={pk_repr} column={col_name}\n"
-        )
-    for table_name, pk_repr, col_name in summary.unresolved:
-        sys.stderr.write(
-            f"ERROR: unresolved concurrent update table={table_name} pk={pk_repr} column={col_name}\n"
-        )
+        sys.stdout.write(_fmt(t.table_name, t))
+    sys.stdout.write(_fmt("summary", summary, f" rotated_rows={summary.rotated_rows}"))
+    for msg, rows in (
+        ("unable to decrypt", summary.failures),
+        ("unresolved concurrent update", summary.unresolved),
+    ):
+        for table_name, pk_repr, col_name in rows:
+            sys.stderr.write(
+                f"ERROR: {msg} table={table_name} pk={pk_repr} column={col_name}\n"
+            )
     return 1 if (summary.failures or summary.unresolved) else 0
 
 

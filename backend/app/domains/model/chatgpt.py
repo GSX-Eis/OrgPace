@@ -237,11 +237,15 @@ def local_auth() -> bool:
     return settings.FASTAPI_ENV == "development" and settings.CHATGPT_LOCAL_AUTH
 
 
+def refresh_lock_key(org_id: UUID) -> Any:
+    return func.hashtextextended(f"chatgpt-refresh:{org_id}", 0)
+
+
 @contextmanager
 def refresh_session(org_id: UUID) -> Generator[Session]:
     # Keep the connection leased: this lock must survive the durable intent commit.
     with engine.connect() as connection, Session(connection) as session:
-        key = func.hashtextextended(f"chatgpt-refresh:{org_id}", 0)
+        key = refresh_lock_key(org_id)
         try:
             session.exec(select(func.pg_advisory_lock(key)))
             yield session

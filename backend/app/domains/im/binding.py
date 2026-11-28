@@ -11,6 +11,7 @@ from sqlmodel import Session, col, delete, select
 
 from app.authz.principal import Principal
 from app.core.config import settings
+from app.core.secrets import secret_fingerprint
 from app.domains.access_token.auth import account_principal
 from app.domains.account.limiter import check_login_limit, record_login_attempt
 from app.domains.audit.service import record_audit
@@ -229,10 +230,12 @@ def bind_email(
 ) -> bool:
     lock_org(db, event.org_id)
     setting = db.get(ImSetting, (event.org_id, event.platform), populate_existing=True)
+    expected = secret_fingerprint(credentials)
     if (
         not event.private
+        or expected is None
         or not setting
-        or setting.credentials != credentials
+        or secret_fingerprint(setting.credentials) != expected
         or not wants_email(db, event, identity)
     ):
         return False

@@ -11,6 +11,7 @@ before falling back to the legacy ``SECRET_KEY``-derived key.
 """
 
 import base64
+import hashlib
 from functools import lru_cache
 
 from cryptography.fernet import Fernet, InvalidToken, MultiFernet
@@ -89,3 +90,16 @@ def rotate_if_needed(token: str) -> str | None:
         return rotate_secret(token)
     except UnicodeError:
         raise SecretUnavailable() from None
+
+
+def secret_fingerprint(token: str | None) -> str | None:
+    """Return a collision-free content digest to compare credentials across re-encryption."""
+    if not token:
+        return None
+    try:
+        plain = decrypt_secret(token)
+    except SecretUnavailable:
+        return (
+            "raw:" + hashlib.sha256(token.encode("utf-8", "surrogatepass")).hexdigest()
+        )
+    return "v1:" + hashlib.sha256(plain.encode("utf-8")).hexdigest()
