@@ -13,7 +13,7 @@ from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from pydantic import SecretStr, ValidationError
-from sqlalchemy import Table, delete, select
+from sqlalchemy import Table, delete, select, text
 from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, SQLModel
 from sqlmodel import select as sm_select
@@ -77,15 +77,11 @@ def _org_ctx(db: Session, demo_data: tuple) -> tuple[Any, UUID, UUID]:
 
 
 def _ctx(session: object) -> Callable[..., Any]:
-    return type(
-        "_Ctx",
-        (),
-        {
-            "__init__": lambda *_a: None,
-            "__enter__": lambda _s: session,
-            "__exit__": lambda *_a: None,
-        },
-    )
+    @contextmanager
+    def _cm(*_a: object) -> Iterator[object]:
+        yield session
+
+    return _cm
 
 
 class _FakeIm:
@@ -113,11 +109,12 @@ def _tok(a: str, r: str, dt: int) -> dict[str, Any]:
 
 
 def _cfg(**kw: Any) -> Settings:
+    url = "postgresql://postgres:p@localhost/app"
     base = {
         "PROJECT_NAME": "t",
         "SECRET_KEY": "s",
         "PI_SERVICE_TOKEN": "t",
-        "DATABASE_URL": "postgresql://postgres:p@localhost/app",
+        "DATABASE_URL": url,
     }
     return Settings(_env_file=None, **{**base, **kw})  # type: ignore[call-arg, arg-type]
 
@@ -128,12 +125,8 @@ def test_legacy_hkdf_and_key_chain(monkeypatch: pytest.MonkeyPatch) -> None:
     assert LEGACY_HKDF_INFO == b"employee-profile/stored-credentials/v1"
     leg = encrypt_secret("from-legacy")
     drv = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=LEGACY_HKDF_INFO)
-    assert (
-        Fernet(base64.urlsafe_b64encode(drv.derive(b"legacy-sec"))).decrypt(
-            leg.encode()
-        )
-        == b"from-legacy"
-    )
+    lk = base64.urlsafe_b64encode(drv.derive(b"legacy-sec"))
+    assert Fernet(lk).decrypt(leg.encode()) == b"from-legacy"
 
     k1, k2 = _fk(), _fk()
     _set_keys(monkeypatch, "legacy-sec", k1)
@@ -173,15 +166,8 @@ def test_rotate_secret_secondary_to_primary_and_retire(
 
 
 _BAD_KEYS = (
-    "",
-    "   ",
-    ", ",
-    f"{_K1},",
-    f",{_K1}",
-    f"{_K1}, ,{_K2}",
-    "changethis",
-    f"{_K1},changethis",
-    "bad",
+    *("", "   ", ", ", f"{_K1},", f",{_K1}", f"{_K1}, ,{_K2}"),
+    *("changethis", f"{_K1},changethis", "bad"),
     base64.b64encode(b"\xfb\xff" * 16).decode(),
     base64.urlsafe_b64encode(b"0" * 16).decode(),
 )
@@ -269,13 +255,13 @@ def test_settings_validation_and_db_errors_redact_secrets(
     assert "input_value=" not in msg and all(c not in msg for c in canaries)
 
     class _Fail:
+        rollback = lambda _s: None  # noqa: E731
+
         def execute(self, *_a: object, **_k: object) -> object:
-            raise OperationalError(
+            op = OperationalError(
                 "SELECT", {"s": "CIPHER-C", "p": "PLAIN-C"}, RuntimeError("KEY-C")
             )
-
-        def rollback(self) -> None:
-            return None
+            raise op
 
     with pytest.raises(ReencryptDatabaseError) as db_exc:
         reencrypt_secrets(cast(Session, _Fail()))
@@ -298,15 +284,12 @@ def test_attachment_tables_cap_batch_size() -> None:
         commit = lambda _s: None  # noqa: E731
 
         def execute(self, stmt: Any) -> Any:
-            if stmt._limit_clause is not None:
-                limits[stmt.selected_columns[0].table.name] = int(
-                    stmt._limit_clause.value
-                )
+            if (cl := stmt._limit_clause) is not None:
+                limits[stmt.selected_columns[0].table.name] = int(cl.value)
             return type("_E", (), {"all": staticmethod(list)})()
 
     reencrypt_secrets(cast(Session, _Rec()), batch_size=500)
-    assert limits["bot_attachment"] <= 10
-    assert limits["admin_assistant_attachment"] <= 10
+    assert limits["bot_attachment"] <= 10 and limits["admin_assistant_attachment"] <= 10
     assert limits["oauth_client"] == 500
 
 
@@ -327,9 +310,8 @@ def test_reencrypt_cas_rowcount_zero_reread_and_exit_code(
     exp_out: str,
 ) -> None:
     _set_target(monkeypatch, OC)
-    monkeypatch.setattr(
-        reencrypt_mod, "rotate_if_needed", lambda t: "new-s" if t == "old-s" else None
-    )
+    fn = lambda t: "new-s" if t == "old-s" else None  # noqa: E731
+    monkeypatch.setattr(reencrypt_mod, "rotate_if_needed", fn)
 
     class _Stub:
         batches = 0
@@ -391,38 +373,33 @@ def _seed_all_tables(
     oa = [f"test-oauth-{uuid4().hex}-{i}" for i in range(4)]
     bs, as_, cs, src, bm, b_att, am, aa = (uuid4() for _ in range(8))
     att: dict[str, Any] = {"kind": "file", "filename": "f", "mime_type": "t", "size": 5}
-    ov: list[dict[str, Any]] = [
-        e(OC, oa[0]),
-        e(OC, oa[1]),
-        {"client_secret_encrypted": ""},
-        {"client_secret_encrypted": None},
+    ov = [e(OC, c) for c in oa[:2]] + [
+        {"client_secret_encrypted": v} for v in ("", None)
     ]
     kw: dict[str, Any] = {"org_id": oid, "updated_by_user_id": uid}
     sc_kw: dict[str, Any] = {**kw, "kind": "jira", "config": {"deployment": "cloud"}}
     ocs = [_mk_oc(c, **v) for c, v in zip(oa, ov, strict=True)]
-    db.add_all(
-        [
-            MS(**kw, **e(MS, oid)),
-            SC(id=src, **sc_kw, **e(SC, src)),
-            IS(**kw, platform="feishu", **e(IS, f"{oid}:feishu")),
-            BS(id=bs, org_id=oid, employee_id=eid, **e(BS, bs)),
-            AS(id=as_, org_id=oid, user_id=uid, **e(AS, as_)),
-            *ocs,
-        ]
-    )
+    r1 = [
+        MS(**kw, **e(MS, oid)),
+        SC(id=src, **sc_kw, **e(SC, src)),
+        IS(**kw, platform="feishu", **e(IS, f"{oid}:feishu")),
+        BS(id=bs, org_id=oid, employee_id=eid, **e(BS, bs)),
+        AS(id=as_, org_id=oid, user_id=uid, **e(AS, as_)),
+        *ocs,
+    ]
+    db.add_all(r1)
     db.flush()
     b_kw: dict[str, Any] = {"org_id": oid, "session_id": bs}
     a_kw: dict[str, Any] = {"org_id": oid, "session_id": as_}
     ac_kw: dict[str, Any] = {**a_kw, "created_by_user_id": uid, "items": [{"k": "v"}]}
-    db.add_all(
-        [
-            AC(id=cs, **ac_kw, **e(AC, cs)),
-            BM(id=bm, **b_kw, role="user", **e(BM, bm)),
-            BAtt(id=b_att, **b_kw, **att, **e(BAtt, b_att)),
-            AM(id=am, **a_kw, role="user", **e(AM, am)),
-            AA(id=aa, **a_kw, **att, **e(AA, aa)),
-        ]
-    )
+    r2 = [
+        AC(id=cs, **ac_kw, **e(AC, cs)),
+        BM(id=bm, **b_kw, role="user", **e(BM, bm)),
+        BAtt(id=b_att, **b_kw, **att, **e(BAtt, b_att)),
+        AM(id=am, **a_kw, role="user", **e(AM, am)),
+        AA(id=aa, **a_kw, **att, **e(AA, aa)),
+    ]
+    db.add_all(r2)
     db.commit()
     return plain, oa
 
@@ -510,11 +487,9 @@ def test_reencrypt_cli_reports_corrupted_rows_without_secret_leak(
         assert main(["--batch-size", "1"]) == 1
         cap = capsys.readouterr()
         assert "failed=2" in cap.out
-        assert (
-            f"model_setting pk=org_id={oid} column=chatgpt_auth_ciphertext" in cap.err
-        )
+        p1 = f"model_setting pk=org_id={oid} column=chatgpt_auth_ciphertext"
         p2 = f"im_setting pk=org_id={oid},platform=telegram column=credentials"
-        assert p2 in cap.err
+        assert p1 in cap.err and p2 in cap.err
         leaked = cap.out + cap.err + caplog.text
         assert all(s not in leaked for s in (canary, bad, old_s, k1))
 
@@ -568,32 +543,59 @@ def test_reencrypt_respects_chatgpt_refresh_lock_without_needs_relogin(
     _set_keys(monkeypatch, "old-chatgpt-secret")
     monkeypatch.setattr(settings, "CHATGPT_LOCAL_AUTH", False)
     acct = {"account_id": "a1", "needs_relogin": False}
+    auth_c = encrypt_secret(json.dumps(_tok("old-a", "old-r", -60)))
     kw: dict[str, Any] = {"org_id": oid, "updated_by_user_id": uid, "enabled": True}
-    kw["kind"] = "chatgpt_subscription"
-    kw["chatgpt_auth_ciphertext"] = encrypt_secret(
-        json.dumps(_tok("old-a", "old-r", -60))
-    )
-    kw["chatgpt_account"] = acct
-    db.add(MS(**kw))
+    ms_k: dict[str, Any] = {"kind": "chatgpt_subscription", "chatgpt_account": acct}
+    db.add(MS(**kw, **ms_k, chatgpt_auth_ciphertext=auth_c))
     db.commit()
 
-    _set_keys(monkeypatch, "old-chatgpt-secret", _fk())
-    _set_target(monkeypatch, MS)
-    entered, res = threading.Event(), {}
+    mp = monkeypatch
+    _set_keys(mp, "old-chatgpt-secret", _fk())
+    _set_target(mp, MS)
+    entered, allow = threading.Event(), threading.Event()
+    res: dict[str, Any] = {}
+    orig_rs = chatgpt.refresh_session
 
-    def fake_auth(*_a: object, **_k: object) -> dict[str, Any]:
-        entered.set()
-        time.sleep(0.15)
-        return _tok("fresh-a", "fresh-r", 3600)
+    @contextmanager
+    def paused_rs(org_id: UUID) -> Iterator[Session]:
+        with orig_rs(org_id) as s:
+            orig_commit = s.commit
 
-    monkeypatch.setattr(chatgpt, "auth_request", fake_auth)
-    t = threading.Thread(target=lambda: res.__setitem__("t", chatgpt.access_token(oid)))
+            def pause_first() -> None:
+                orig_commit()
+                if not entered.is_set():
+                    entered.set()
+                    assert allow.wait(timeout=5)
+
+            s.commit = pause_first  # type: ignore[method-assign]
+            yield s
+
+    mp.setattr(chatgpt, "refresh_session", paused_rs)
+    af = lambda *_a, **_k: _tok("fresh-a", "fresh-r", 3600)  # noqa: E731
+    mp.setattr(chatgpt, "auth_request", af)
+    tf = lambda: res.__setitem__("t", chatgpt.access_token(oid))  # noqa: E731
+    t = threading.Thread(target=tf)
     t.start()
     assert entered.wait(timeout=5)
-    s = reencrypt_secrets(db, batch_size=1)
+
+    with Session(engine) as r_db:
+        r_pid = r_db.execute(text("SELECT pg_backend_pid()")).scalar_one()
+        rf = lambda: res.__setitem__("s", reencrypt_secrets(r_db, batch_size=1))  # noqa: E731
+        rt = threading.Thread(target=rf)
+        rt.start()
+        sql = "SELECT 1 FROM pg_locks WHERE pid=:p AND locktype='advisory' AND NOT granted"
+        q, blocked, end = text(sql), False, time.monotonic() + 5
+        while time.monotonic() < end and rt.is_alive():
+            if db.execute(q, {"p": r_pid}).first() is not None:
+                blocked = True
+                break
+            time.sleep(0.01)
+        allow.set()
+        rt.join(timeout=5)
     t.join(timeout=5)
 
-    assert res.get("t") == "fresh-a"
+    assert blocked and res.get("t") == "fresh-a"
+    s = res["s"]
     assert s.already_current_values == 1 and s.rotated_values == 0
     db.expire_all()
     saved = db.get(MS, oid)
