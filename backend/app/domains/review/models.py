@@ -52,6 +52,7 @@ class ReviewAppeal(TenantRecord, table=True):
     resolution_note: str | None = None
 
 
+# deprecated: retained until drop migration
 class ReviewDelegation(TenantRecord, table=True):
     __tablename__ = "review_delegation"
     __table_args__ = (
@@ -101,7 +102,7 @@ class ApprovalPolicy(TenantRecord, table=True):
     version: int
     require_manager: bool = True
     category_overrides: dict[str, bool] = Field(default_factory=dict, sa_type=JSONB)
-    no_approval: bool = False
+    no_approval: bool = False  # deprecated: retained until drop migration
     no_approval_category_overrides: dict[str, bool] = Field(
         default_factory=dict, sa_type=JSONB
     )

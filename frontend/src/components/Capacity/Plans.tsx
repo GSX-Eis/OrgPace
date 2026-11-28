@@ -901,7 +901,7 @@ function OptionCard({
   )
 }
 
-export type PlanningCaseApi = {
+type PlanningCaseApi = {
   getCase: (caseId: string) => Promise<CasePublic>
   createCase: (elastic: boolean) => Promise<CasePublic>
 }

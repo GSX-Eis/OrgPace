@@ -9,7 +9,6 @@ EN: dict[str, str] = {
     "新密码不能与当前密码相同": "New password cannot be the same as the current password",
     "新密码不能与登录名相同": "New password cannot be the same as your login username",
     # Common authorization & routing errors
-    "权限不足，请联系企业管理员": "Insufficient permissions. Please contact your organization administrator.",
     "未找到该企业或你没有权限访问": "Organization not found or you do not have access",
     "需要企业管理员权限": "Organization administrator permission required",
     "请求的接口不存在": "Requested endpoint does not exist",

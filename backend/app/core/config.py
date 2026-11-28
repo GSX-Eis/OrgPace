@@ -63,7 +63,6 @@ class Settings(BaseSettings):
                 return database_url.replace(scheme, "postgresql+psycopg://", 1)
         return database_url
 
-    EMAIL_TEST_USER: EmailStr = "test@example.com"
     FIRST_SUPERUSER: EmailStr | None = None
     FIRST_SUPERUSER_PASSWORD: str | None = None
 

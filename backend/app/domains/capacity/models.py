@@ -83,7 +83,7 @@ class ForecastSource(StrEnum):
     MANAGER_OVERRIDE = "manager_override"
 
 
-class ForecastPreset(StrEnum):
+class ForecastPreset(StrEnum):  # deprecated: retained until drop migration
     PULSE = "pulse"
     PROJECT = "project"
     CYCLICAL = "cyclical"
@@ -657,6 +657,8 @@ class CapacityForecastPolicy(TenantRecord, table=True):
     )
     department_id: UUID | None = None
     job_family: str | None = Field(default=None, max_length=50)
+    # deprecated: retained until drop migration (preset, baseline_percent, near_weeks,
+    # bidirectional_regression, use_jira_signal, use_assignment_signal)
     preset: ForecastPreset | None = Field(
         default=None, sa_type=enum_type(ForecastPreset)
     )
