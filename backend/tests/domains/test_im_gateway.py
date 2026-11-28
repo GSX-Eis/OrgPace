@@ -1057,7 +1057,9 @@ def test_refresh_restarts_crashed_task_with_backoff(
         try:
             await g.refresh()
             original = g.tasks[key][1]
-            await asyncio.gather(original, return_exceptions=True)
+            await asyncio.wait_for(
+                asyncio.gather(original, return_exceptions=True), timeout=1
+            )
             await g.refresh()
             if failure in ("credentials", "invalid_json"):
                 assert g.tasks[key][1] is original
@@ -1071,7 +1073,9 @@ def test_refresh_restarts_crashed_task_with_backoff(
                 return
             restarted = g.tasks[key][1]
             assert restarted is not original
-            await asyncio.gather(restarted, return_exceptions=True)
+            await asyncio.wait_for(
+                asyncio.gather(restarted, return_exceptions=True), timeout=1
+            )
             await g.refresh()
             newest = g.tasks[key][1]
             assert newest is not restarted
