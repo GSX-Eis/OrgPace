@@ -37,6 +37,7 @@ from app.domains.org.models import (
 )
 from app.domains.org.roster import service, single
 from app.domains.profile.models import ProfileVersion
+from app.domains.source import linking
 from tests.admin_assistant.test_personnel import principal
 from tests.admin_assistant.test_personnel import roster as roster
 from tests.admin_assistant.test_personnel import tenant as tenant
@@ -458,17 +459,17 @@ def test_offboard_stale_and_rollback(
     row = propose(db, tenant, values)
     assert c.apply(db, p, row.id, row.revision).status == "draft"
     before = state(db, tenant)
-    original = service.auto_link_identities
+    original = linking.auto_link_identities
 
     def fail(*_args: object, **_kwargs: object) -> None:
         raise service.RosterError(422, "合成中途失败")
 
-    monkeypatch.setattr(service, "auto_link_identities", fail)
+    monkeypatch.setattr(linking, "auto_link_identities", fail)
     with pytest.raises(c.ChangeSetError, match="均已回滚"):
         c.apply(db, p, row.id, row.revision)
     assert state(db, tenant) == before
     assert c.get(db, p, row.id).status == "draft"
-    monkeypatch.setattr(service, "auto_link_identities", original)
+    monkeypatch.setattr(linking, "auto_link_identities", original)
     assert c.apply(db, p, row.id, row.revision).status == "applied"
     assert employees(db, tenant)["B"].employment_status == EmploymentStatus.INACTIVE
     assert employees(db, tenant)["C"].title == "新职位"

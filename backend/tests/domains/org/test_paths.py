@@ -1,3 +1,5 @@
+import ast
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -65,3 +67,41 @@ def test_require_admin_and_lock_org_options() -> None:
     missing = _FakeSession(None)
     assert lock_org(missing, org_id, skip_locked=True) is None  # type: ignore[arg-type]
     assert "FOR UPDATE SKIP LOCKED" in missing.sql
+
+
+def test_org_account_and_coverage_layer_boundaries() -> None:
+    domains = Path(__file__).resolve().parents[3] / "app" / "domains"
+    assert not (domains / "profile" / "coverage.py").exists()
+    assert (domains / "admin" / "coverage.py").exists()
+    forbidden = {
+        "admin",
+        "admin_assistant",
+        "bot",
+        "capacity",
+        "change_request",
+        "drafting",
+        "im",
+        "inbox",
+        "planning",
+        "review",
+        "setup",
+        "source",
+        "work",
+    }
+    for package in ("org", "account"):
+        for path in sorted((domains / package).rglob("*.py")):
+            if path.name in ("models.py", "schemas.py"):
+                continue
+            for node in ast.walk(ast.parse(path.read_text())):
+                if not isinstance(node, ast.ImportFrom) or not node.module:
+                    continue
+                if not node.module.startswith("app.domains."):
+                    continue
+                parts = node.module.split(".")
+                target = parts[2]
+                tail = parts[3] if len(parts) > 3 else ""
+                if tail in ("models", "schemas") or tail.endswith("_schemas"):
+                    continue
+                assert target not in forbidden, f"{path}: {node.module}"
+                if package == "org":
+                    assert target != "capability", f"{path}: {node.module}"

@@ -24,6 +24,7 @@ from app.core.config import settings
 from app.domains.access_token import service as access
 from app.domains.account import service as accounts
 from app.domains.account.schemas import AccountStatus
+from app.domains.admin.coverage import read_coverage
 from app.domains.admin.overview import build_overview
 from app.domains.admin_assistant import (
     dictionary_materials,
@@ -62,6 +63,7 @@ from app.domains.capacity.project import get_project
 from app.domains.capacity.settings import CapacityNotFound
 from app.domains.capacity.settings import read_settings as read_capacity_settings
 from app.domains.capacity.tools import list_projects
+from app.domains.change_request.handover import withdraw_deactivated_requests
 from app.domains.drafting import settings as drafting
 from app.domains.drafting import update_settings as updates
 from app.domains.drafting.note import read_note
@@ -75,7 +77,6 @@ from app.domains.org.models import EmploymentStatus, Organization
 from app.domains.org.roster import service as roster
 from app.domains.org.roster import single
 from app.domains.org.service import read_org_chart, visible_employee
-from app.domains.profile.coverage import read_coverage
 from app.domains.profile.service import read_profile
 from app.domains.review import appeal
 from app.domains.review.policy import PolicyInput, policy_view, read_policy, save_policy
@@ -1002,7 +1003,14 @@ for name, title, input_type in (
         ),
         description=title,
         input_model=input_type,
-        handler=single.apply,
+        handler=lambda d, p, a, **kw: single.apply(
+            d,
+            p,
+            a,
+            on_deactivated=withdraw_deactivated_requests,
+            link_identities=identities.sync_roster_identities,
+            **kw,
+        ),
         page="/employees",
         # All three operations share a discriminated route, classified once.
         endpoints=(("POST", "/roster/single-change"),)

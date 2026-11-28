@@ -16,8 +16,8 @@ from app.domains.change_request.models import (
     RequestOrigin,
     RequestStatus,
 )
-from app.domains.change_request.service import review_statuses
 from app.domains.org.models import Department, Employee, EmploymentStatus
+from app.domains.org.review_status import review_statuses
 from app.domains.profile.models import ProfileVersion, ProgressReviewStatus
 from app.domains.review.policy import read_policy
 from app.domains.source.models import SourceConnection, SyncRun

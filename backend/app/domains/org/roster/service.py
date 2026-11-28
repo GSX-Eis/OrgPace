@@ -1,5 +1,6 @@
 import csv
 import hashlib
+from collections.abc import Callable, Sequence
 from io import StringIO
 from uuid import UUID
 
@@ -10,10 +11,6 @@ from sqlmodel import Session, col, select
 from app.authz.principal import Principal
 from app.domains.audit.service import record_audit
 from app.domains.base import utc_now
-from app.domains.change_request.models import ProfileChangeRequest, RequestStatus
-from app.domains.change_request.service import transition
-from app.domains.inbox.models import InboxKind
-from app.domains.inbox.service import notify
 from app.domains.org.employee_fields import FIELD_LABELS
 from app.domains.org.models import (
     Department,
@@ -39,10 +36,11 @@ from app.domains.org.roster.schemas import (
     RosterIssue,
 )
 from app.domains.org.service import lock_admin_org as lock_org
-from app.domains.source.linking import auto_link_identities
-from app.domains.work.ingest import rederive_identities
-from app.i18n import bilingual, tr
+from app.i18n import tr
 from app.models import User, uses_email_login
+
+type OnDeactivated = Callable[[Session, Principal, set[UUID]], None]
+type LinkIdentities = Callable[[Session, UUID, Sequence[ExternalIdentity]], None]
 
 MAX_FILE_SIZE = 5 * 1024 * 1024
 
@@ -145,6 +143,8 @@ def apply_import(
     body: ApplyImport,
     *,
     commit: bool = True,
+    on_deactivated: OnDeactivated | None = None,
+    link_identities: LinkIdentities | None = None,
 ) -> RosterImportResult:
     org = lock_org(session, principal)
     record = session.exec(
@@ -304,46 +304,8 @@ def apply_import(
             account.is_active = False
             session.add(account)
     session.flush()
-    for request in session.exec(
-        select(ProfileChangeRequest)
-        .where(
-            ProfileChangeRequest.org_id == principal.org_id,
-            col(ProfileChangeRequest.subject_employee_id).in_(deactivated),
-            col(ProfileChangeRequest.status).in_(
-                [
-                    RequestStatus.DRAFT,
-                    RequestStatus.PENDING_OWNER,
-                    RequestStatus.PENDING_REVIEW,
-                ]
-            ),
-        )
-        .order_by(col(ProfileChangeRequest.id))
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    ).all():
-        if request.status == RequestStatus.PENDING_OWNER:
-            # shortcut: use one transition when pending_owner can move directly to withdrawn.
-            transition(request, RequestStatus.DRAFT)
-        transition(request, RequestStatus.WITHDRAWN)
-        session.add(request)
-        record_audit(
-            session,
-            org_id=principal.org_id,
-            actor_type=principal.actor_type,
-            actor_id=str(principal.user_id),
-            action="change_request.withdrawn",
-            target_type="profile_change_request",
-            target_id=str(request.id),
-            details={},
-        )
-        msg_zh, msg_en = bilingual("员工已离职，请求已撤回")
-        notify(
-            session,
-            request,
-            InboxKind.STATUS_CHANGED,
-            msg_zh,
-            message_en=msg_en,
-        )
+    if on_deactivated is not None and deactivated:
+        on_deactivated(session, principal, deactivated)
     lines = {
         line.employee_id: line
         for line in session.exec(
@@ -386,18 +348,18 @@ def apply_import(
                     roster_import_id=record.id,
                 )
             )
-    identities = session.exec(
-        select(ExternalIdentity)
-        .where(
-            ExternalIdentity.org_id == principal.org_id,
-            col(ExternalIdentity.employee_id).is_(None),
-            ~col(ExternalIdentity.auto_link_blocked),
-        )
-        .order_by(col(ExternalIdentity.id))
-        .with_for_update()
-    ).all()
-    linked = auto_link_identities(session, principal.org_id, identities)
-    rederive_identities(session, org_id=principal.org_id, identities=linked)
+    if link_identities is not None:
+        identities = session.exec(
+            select(ExternalIdentity)
+            .where(
+                ExternalIdentity.org_id == principal.org_id,
+                col(ExternalIdentity.employee_id).is_(None),
+                ~col(ExternalIdentity.auto_link_blocked),
+            )
+            .order_by(col(ExternalIdentity.id))
+            .with_for_update()
+        ).all()
+        link_identities(session, principal.org_id, identities)
     org.roster_revision += 1
     record.status = "applied"
     record.applied_at = now

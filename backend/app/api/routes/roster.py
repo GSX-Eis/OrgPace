@@ -4,6 +4,7 @@ from fastapi import APIRouter, Query, UploadFile
 
 from app.api.deps import SessionDep
 from app.authz.deps import OrgAdminDep
+from app.domains.change_request.handover import withdraw_deactivated_requests
 from app.domains.org.roster import service
 from app.domains.org.roster.rehire import PreviousManager, previous_manager
 from app.domains.org.roster.schemas import (
@@ -13,6 +14,7 @@ from app.domains.org.roster.schemas import (
     RosterImportsPublic,
 )
 from app.domains.org.roster.single import SingleChange, preview
+from app.domains.source.identities import sync_roster_identities
 
 router = APIRouter(prefix="/orgs/{org_id}/roster", tags=["roster"])
 
@@ -45,7 +47,14 @@ def upload_import(
 def apply_import(
     id: UUID, body: ApplyImport, session: SessionDep, principal: OrgAdminDep
 ) -> RosterImportResult:
-    return service.apply_import(session, principal, id, body)
+    return service.apply_import(
+        session,
+        principal,
+        id,
+        body,
+        on_deactivated=withdraw_deactivated_requests,
+        link_identities=sync_roster_identities,
+    )
 
 
 @router.get("/imports", response_model=RosterImportsPublic)

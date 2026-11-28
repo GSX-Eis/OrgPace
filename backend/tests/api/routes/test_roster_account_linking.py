@@ -17,6 +17,7 @@ from app.domains.change_request.models import (
 )
 from app.domains.org.models import Employee, OrgMembership, ReportingLine, RoleGrant
 from app.domains.org.roster import service
+from app.domains.source import linking
 from app.models import User
 from tests.admin_assistant.test_personnel import principal
 from tests.api.routes.test_roster import apply, employees, upload
@@ -389,7 +390,7 @@ def test_link_rolls_back_with_failed_roster(
     def fail(*_args: object, **_kwargs: object) -> None:
         raise service.RosterError(422, "合成失败")
 
-    monkeypatch.setattr(service, "auto_link_identities", fail)
+    monkeypatch.setattr(linking, "auto_link_identities", fail)
     assert apply(client, tenant, preview).status_code == 422
     db.expire_all()
     assert membership(db, tenant, admin).employee_id is None

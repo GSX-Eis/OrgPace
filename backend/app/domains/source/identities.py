@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import Literal, cast
 from uuid import UUID
 
@@ -16,6 +17,7 @@ from app.domains.org.models import (
     ExternalIdentity,
 )
 from app.domains.org.schemas import DepartmentSummary
+from app.domains.source import linking
 from app.domains.source.linking import assign_identity, identity_audit
 from app.domains.source.schemas import (
     ExternalIdentitiesPublic,
@@ -156,6 +158,14 @@ def list_identities(
             )
         )
     return ExternalIdentitiesPublic(data=data, count=count)
+
+
+def sync_roster_identities(
+    session: Session, org_id: UUID, identities: Sequence[ExternalIdentity]
+) -> None:
+    """Auto-link unlinked external identities and rederive their work evidence."""
+    linked = linking.auto_link_identities(session, org_id, identities)
+    rederive_identities(session, org_id=org_id, identities=linked)
 
 
 def link_identities(

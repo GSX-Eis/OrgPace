@@ -5,6 +5,7 @@ from sqlmodel import col, select
 
 from app.api.deps import SessionDep
 from app.authz.deps import OrgAdminDep, OrgPrincipalDep
+from app.domains.admin.coverage import CoveragePublic, read_coverage
 from app.domains.capability import department as capabilities
 from app.domains.org import departments as edits
 from app.domains.org import service
@@ -17,7 +18,6 @@ from app.domains.org.schemas import (
     OrganizationUpdate,
     OrgChartPublic,
 )
-from app.domains.profile.coverage import CoveragePublic, read_coverage
 from app.models import Message
 
 router = APIRouter(prefix="/orgs/{org_id}", tags=["orgs"])
