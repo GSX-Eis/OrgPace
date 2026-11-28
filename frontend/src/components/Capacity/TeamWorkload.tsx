@@ -29,7 +29,6 @@ import { useOrg } from "@/hooks/useOrg"
 import { cn } from "@/lib/utils"
 import { addWeeks } from "./dateUtils"
 import { ForecastPolicyPanel } from "./ForecastPolicyPanel"
-import { Unavailability } from "./MyWorkload"
 import { capacityKeys, invalidateWorkloadMutation } from "./queries"
 import {
   hasForecast,
@@ -48,6 +47,7 @@ import {
   WorkloadLegend,
   type WorkloadSelection,
 } from "./TeamWorkloadGantt"
+import { Unavailability } from "./UnavailabilityPanel"
 
 type WorkloadDialog =
   | { mode: "details"; selection: WorkloadSelection }
