@@ -107,13 +107,9 @@ class _FakeIm:
         self.closed = True
 
 
-def _tok(access: str, refresh: str, dt: int) -> dict[str, Any]:
-    return {
-        "access": access,
-        "refresh": refresh,
-        "expires": (time.time() + dt) * 1000,
-        "accountId": "a1",
-    }
+def _tok(a: str, r: str, dt: int) -> dict[str, Any]:
+    exp = (time.time() + dt) * 1000
+    return {"access": a, "refresh": r, "expires": exp, "accountId": "a1"}
 
 
 def _cfg(**kw: Any) -> Settings:
@@ -658,7 +654,9 @@ def test_im_rotation_preserves_gateway_delivery_binding_and_blocks_real_change(
             await g.refresh()
             assert orig_adapter.closed and g.tasks[wecom][1] is not orig_task
         finally:
-            ts = [t.cancel() or t for _, t in g.tasks.values()]  # type: ignore[func-returns-value]
+            for _, t in g.tasks.values():
+                t.cancel()
+            ts = [t for _, t in g.tasks.values()]
             await asyncio.gather(*ts, return_exceptions=True)
 
     asyncio.run(exercise())
