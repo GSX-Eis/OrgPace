@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKeyConstraint,
     Index,
+    String,
     Text,
     UniqueConstraint,
 )
@@ -27,6 +28,19 @@ class InboxKind(StrEnum):
     REVIEW_REQUESTED = "review_requested"
     DECIDED = "decided"
     ADMIN_TODOS = "admin_todos"
+
+
+class InboxTargetType(StrEnum):
+    CAPACITY = "capacity"
+    CAPACITY_TEAM = "capacity_team"
+    CAPACITY_BORROWS = "capacity_borrows"
+    CAPACITY_OUTGOING = "capacity_outgoing"
+    CAPACITY_INCOMING = "capacity_incoming"
+    CAPACITY_PLANS = "capacity_plans"
+    REVIEWS_BORROW = "reviews_borrow"
+    REVIEWS_WORKLOAD = "reviews_workload"
+    REVIEWS_DEMAND = "reviews_demand"
+    ASSISTANT_ADMIN = "assistant_admin"
 
 
 class InboxItem(TenantRecord, table=True):
@@ -58,6 +72,8 @@ class InboxItem(TenantRecord, table=True):
     kind: InboxKind = Field(sa_type=enum_type(InboxKind))
     request_id: UUID | None = None
     question_id: UUID | None = None
+    target_type: str | None = Field(default=None, sa_type=String(64))
+    target_id: UUID | None = None
     message: str
     message_en: str | None = Field(default=None, sa_type=Text)
     admin_todo_date: date | None = Field(default=None, sa_type=Date)

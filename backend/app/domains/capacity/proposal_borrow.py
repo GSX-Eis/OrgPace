@@ -38,7 +38,7 @@ from app.domains.capacity.proposal_state import (
 )
 from app.domains.capacity.proposal_validation import ProposalConflict, check_lines
 from app.domains.capacity.proposal_views import approvals_for, lines_for
-from app.domains.inbox.models import InboxItem, InboxKind
+from app.domains.inbox.models import InboxItem, InboxKind, InboxTargetType
 from app.domains.inbox.service import add_item
 from app.domains.org.models import Employee, OrgMembership
 from app.i18n import bilingual
@@ -265,6 +265,7 @@ def decide_borrow(
                 org_id=row.org_id,
                 recipient_employee_id=line.employee_id,
                 kind=InboxKind.CAPACITY,
+                target_type=InboxTargetType.REVIEWS_BORROW,
                 message=msg_zh,
                 message_en=msg_en,
             ),

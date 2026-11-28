@@ -34,7 +34,7 @@ from app.domains.capacity.models import (
     CapacityWeek,
 )
 from app.domains.capacity.schemas import REASON_LABELS, ReasonCode, Via
-from app.domains.inbox.models import InboxItem, InboxKind
+from app.domains.inbox.models import InboxItem, InboxKind, InboxTargetType
 from app.domains.inbox.service import add_item
 from app.domains.org.models import (
     Department,
@@ -438,11 +438,15 @@ def notify_employee(
     message_en: str | None = None,
     workload_request_id: UUID | None = None,
     extension_request_id: UUID | None = None,
+    target_type: InboxTargetType | None = InboxTargetType.CAPACITY,
+    target_id: UUID | None = None,
 ) -> None:
     item = InboxItem(
         org_id=principal.org_id,
         recipient_employee_id=employee_id,
         kind=InboxKind.CAPACITY,
+        target_type=target_type,
+        target_id=target_id,
         message=message,
         message_en=message_en,
     )

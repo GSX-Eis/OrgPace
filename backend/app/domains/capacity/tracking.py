@@ -34,7 +34,7 @@ from app.domains.capacity.models import (
 )
 from app.domains.capacity.project import unavailability_impact
 from app.domains.capacity.schemas import CapacityInput
-from app.domains.inbox.models import InboxItem, InboxKind
+from app.domains.inbox.models import InboxItem, InboxKind, InboxTargetType
 from app.domains.inbox.service import add_item
 from app.domains.org.models import (
     Employee,
@@ -658,6 +658,12 @@ def notify_managers(
                 org_id=demand.org_id,
                 recipient_user_id=user_id,
                 kind=InboxKind.CAPACITY,
+                target_type=(
+                    InboxTargetType.CAPACITY_BORROWS
+                    if url == BORROW_TRACKING_URL
+                    else InboxTargetType.CAPACITY_PLANS
+                ),
+                target_id=None if url == BORROW_TRACKING_URL else demand.id,
                 message=msg_zh,
                 message_en=msg_en,
             ),

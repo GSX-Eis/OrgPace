@@ -52,7 +52,7 @@ from app.domains.capacity.models import (
     DemandStatus,
 )
 from app.domains.capacity.schemas import Via
-from app.domains.inbox.models import InboxItem, InboxKind
+from app.domains.inbox.models import InboxItem, InboxKind, InboxTargetType
 from app.domains.inbox.service import add_item
 from app.domains.org.models import Department, Employee, EmploymentStatus
 from app.domains.org.service import managed_scope
@@ -298,6 +298,8 @@ def change_due_date(
                     org_id=principal.org_id,
                     recipient_user_id=user_id,
                     kind=InboxKind.CAPACITY,
+                    target_type=InboxTargetType.CAPACITY_OUTGOING,
+                    target_id=demand.id,
                     message=msg_zh,
                     message_en=msg_en,
                 ),

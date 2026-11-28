@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 from sqlmodel import Session, col, select
 
 from app.domains.base import utc_now
-from app.domains.inbox.models import InboxItem, InboxKind
+from app.domains.inbox.models import InboxItem, InboxKind, InboxTargetType
 from app.domains.inbox.service import add_item
 from app.domains.org.models import Organization, OrgMembership, Role, RoleGrant
 from app.domains.org.service import lock_org
@@ -85,6 +85,7 @@ def dispatch_worker_alerts(db: Session, now: datetime) -> None:
                     org_id=org_id,
                     recipient_user_id=user_id,
                     kind=InboxKind.ADMIN_TODOS,
+                    target_type=InboxTargetType.ASSISTANT_ADMIN,
                     admin_todo_count=1,
                     message=message,
                     message_en=message_en,

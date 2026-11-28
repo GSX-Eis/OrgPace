@@ -12,7 +12,7 @@ from app.domains.change_request.models import (
     RequestStatus,
 )
 from app.domains.change_request.schemas import ToolInput
-from app.domains.inbox.models import InboxKind, QuestionStatus
+from app.domains.inbox.models import InboxKind, InboxTargetType, QuestionStatus
 from app.domains.profile.models import AssessmentStatus
 
 CapacityRequestResultStatus = Literal["pending", "approved", "returned"]
@@ -25,6 +25,8 @@ class InboxPublic(SQLModel):
     question_id: UUID | None
     workload_request_id: UUID | None = None
     extension_request_id: UUID | None = None
+    target_type: InboxTargetType | None = None
+    target_id: UUID | None = None
     message: str
     created_at: datetime
     read_at: datetime | None

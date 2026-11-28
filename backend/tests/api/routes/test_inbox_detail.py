@@ -1,11 +1,14 @@
 import json
 from collections.abc import Generator
 from datetime import date, timedelta
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
+from alembic import command
+from alembic.config import Config
 from fastapi.testclient import TestClient
-from sqlalchemy import Engine, delete, inspect
+from sqlalchemy import Engine, delete, inspect, text
 from sqlmodel import Session, select
 
 from app.authz.deps import get_org_principal
@@ -35,8 +38,12 @@ from app.domains.change_request.models import ItemDecision
 from app.domains.change_request.schemas import ItemInput
 from app.domains.evidence.models import EvidenceKind, Visibility
 from app.domains.evidence.service import append_evidence
-from app.domains.inbox.models import InboxItem, InboxKind
-from app.domains.inbox.service import REDACTED_EXTENSION_RECEIPT_MESSAGE, add_item
+from app.domains.inbox.models import InboxItem, InboxKind, InboxTargetType
+from app.domains.inbox.service import (
+    REDACTED_EXTENSION_RECEIPT_MESSAGE,
+    _resolve_target,
+    add_item,
+)
 from app.domains.org.models import (
     Department,
     Employee,
@@ -1538,3 +1545,329 @@ def test_d086_historical_handler_respects_current_department_visibility(
         for user in users.values():
             db.delete(user)
         db.commit()
+
+
+def test_inbox_target_migration_roundtrip(migration_engine: Engine) -> None:
+    previous = "e57a1b2c3d4f"
+    target = "e58a1b2c3d4f"
+    for action, revision in [
+        ("downgrade", previous),
+        ("upgrade", target),
+        ("downgrade", previous),
+        ("upgrade", target),
+    ]:
+        migrate(migration_engine, action, revision)
+        cols = {c["name"] for c in inspect(migration_engine).get_columns("inbox_item")}
+        assert ({"target_type", "target_id"} <= cols) == (action == "upgrade")
+    backend_dir = Path(__file__).resolve().parents[3]
+    config = Config(str(backend_dir / "alembic.ini"))
+    config.set_main_option("script_location", str(backend_dir / "app/alembic"))
+    config.attributes["configure_logger"] = False
+    with migration_engine.connect() as connection:
+        config.attributes["connection"] = connection
+        command.check(config)
+        assert (
+            connection.execute(
+                text("SELECT count(*) FROM alembic_version")
+            ).scalar_one()
+            == 1
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    (
+        "kind",
+        "message",
+        "stored_type",
+        "stored_id",
+        "wl_id",
+        "ext_id",
+        "redacted",
+        "expected_type",
+        "has_target_id",
+    ),
+    [
+        (
+            InboxKind.CAPACITY,
+            "Arbitrary changed copy",
+            InboxTargetType.REVIEWS_BORROW.value,
+            UUID("00000000-0000-0000-0000-000000000011"),
+            None,
+            None,
+            False,
+            InboxTargetType.REVIEWS_BORROW,
+            True,
+        ),
+        (
+            InboxKind.CAPACITY,
+            "New collaboration demand received\n/capacity?tab=incoming&demand=00000000-0000-0000-0000-000000000022",
+            None,
+            None,
+            None,
+            None,
+            False,
+            InboxTargetType.CAPACITY_INCOMING,
+            True,
+        ),
+        (
+            InboxKind.CAPACITY,
+            "Plan status\n/capacity?tab=incoming&demand=00000000-0000-0000-0000-000000000022&plans=1",
+            None,
+            None,
+            None,
+            None,
+            False,
+            InboxTargetType.CAPACITY_PLANS,
+            True,
+        ),
+        (
+            InboxKind.CAPACITY,
+            "Tracking\n/capacity?tab=borrows",
+            None,
+            None,
+            None,
+            None,
+            False,
+            InboxTargetType.CAPACITY_BORROWS,
+            False,
+        ),
+        (
+            InboxKind.CAPACITY,
+            "You have a workload adjustment request awaiting approval",
+            None,
+            None,
+            None,
+            None,
+            False,
+            InboxTargetType.REVIEWS_WORKLOAD,
+            False,
+        ),
+        (
+            InboxKind.CAPACITY,
+            "Borrow request (Delivery, 2026-12-01 to 2026-12-10)",
+            None,
+            None,
+            None,
+            None,
+            False,
+            InboxTargetType.REVIEWS_BORROW,
+            False,
+        ),
+        (
+            InboxKind.CAPACITY,
+            "收到新的协作需求",
+            None,
+            None,
+            None,
+            None,
+            False,
+            InboxTargetType.REVIEWS_DEMAND,
+            False,
+        ),
+        (
+            InboxKind.CAPACITY,
+            "协作需求已收到答复",
+            None,
+            None,
+            None,
+            None,
+            False,
+            InboxTargetType.CAPACITY_OUTGOING,
+            False,
+        ),
+        (
+            InboxKind.CAPACITY,
+            "Alice recorded leave (2026-12-01 to 2026-12-03).",
+            None,
+            None,
+            None,
+            None,
+            False,
+            InboxTargetType.CAPACITY_TEAM,
+            False,
+        ),
+        (
+            InboxKind.ADMIN_TODOS,
+            "You have 3 admin to-dos",
+            None,
+            None,
+            None,
+            None,
+            False,
+            InboxTargetType.ASSISTANT_ADMIN,
+            False,
+        ),
+        (
+            InboxKind.CAPACITY,
+            "Secret extension receipt",
+            InboxTargetType.CAPACITY_OUTGOING.value,
+            UUID("00000000-0000-0000-0000-000000000033"),
+            None,
+            UUID("00000000-0000-0000-0000-000000000044"),
+            True,
+            InboxTargetType.CAPACITY,
+            False,
+        ),
+        (
+            InboxKind.PROFILE_EDITED,
+            "Profile updated",
+            None,
+            None,
+            None,
+            None,
+            False,
+            None,
+            False,
+        ),
+    ],
+)
+def test_resolve_target_structured_and_legacy(
+    kind: InboxKind,
+    message: str,
+    stored_type: str | None,
+    stored_id: UUID | None,
+    wl_id: UUID | None,
+    ext_id: UUID | None,
+    redacted: bool,
+    expected_type: InboxTargetType | None,
+    has_target_id: bool,
+) -> None:
+    item = InboxItem(
+        org_id=uuid4(),
+        recipient_user_id=uuid4(),
+        kind=kind,
+        target_type=stored_type,
+        target_id=stored_id,
+        message=message,
+    )
+    resolved_type, resolved_id = _resolve_target(item, wl_id, ext_id, redacted=redacted)
+    assert resolved_type == expected_type
+    assert (resolved_id is not None) == has_target_id
+
+
+def test_structured_inbox_targets_bilingual_and_legacy_fallback(
+    capacity_demo: tuple, db: Session, client: TestClient
+) -> None:
+    url, employees, auth = capacity_demo
+    e02 = employees["E02"]
+    mgr_emp = employees["E01"]
+    mgr_user_id = db.exec(
+        select(OrgMembership.user_id).where(
+            OrgMembership.org_id == e02.org_id, OrgMembership.employee_id == mgr_emp.id
+        )
+    ).one()
+    db.add(
+        CapacitySetting(org_id=e02.org_id, enabled=True, updated_by_user_id=mgr_user_id)
+    )
+    monday = this_week(db, e02.org_id)
+    db.add(
+        CapacityWeek(
+            org_id=e02.org_id,
+            employee_id=e02.id,
+            week_start=monday,
+            other_percent=20,
+            confirmed_by_user_id=mgr_user_id,
+        )
+    )
+    demand = CapacityDemand(
+        org_id=e02.org_id,
+        requesting_department_id=e02.department_id,
+        requester_user_id=mgr_user_id,
+        target_department_id=e02.department_id,
+        capability_key="backend_api",
+        capability_name="后端与接口",
+        headcount=1,
+        allocation_percent=30,
+        window_start=monday,
+        window_end=monday + timedelta(days=14),
+        description="结构化跳转测试需求",
+    )
+    db.add(demand)
+    db.flush()
+    assignment = CapacityAssignment(
+        org_id=e02.org_id,
+        demand_id=demand.id,
+        employee_id=e02.id,
+        allocation_percent=30,
+        start_date=monday,
+        due_date=monday + timedelta(days=7),
+        status=AssignmentStatus.ACTIVE,
+        assigned_by_user_id=mgr_user_id,
+    )
+    db.add(assignment)
+    db.flush()
+    # Historical DB row with no target_type/target_id stored.
+    legacy_item = InboxItem(
+        org_id=e02.org_id,
+        recipient_user_id=mgr_user_id,
+        kind=InboxKind.CAPACITY,
+        message="收到新的协作需求",
+    )
+    add_item(db, legacy_item)
+    db.commit()
+
+    wl_res = client.post(
+        f"{url}/capacity/workloads/me/requests",
+        headers=auth["employee"],
+        json={
+            "requested_percent": 55,
+            "reason": "专项支持",
+            "start_week": monday.isoformat(),
+            "end_week": monday.isoformat(),
+        },
+    )
+    assert wl_res.status_code == 200
+    ext_res = client.post(
+        f"{url}/capacity/assignments/{assignment.id}/extension-requests",
+        headers=auth["employee"],
+        json={
+            "requested_due_date": (monday + timedelta(days=12)).isoformat(),
+            "reason": "联调延期",
+        },
+    )
+    assert ext_res.status_code == 200
+
+    # Verify exclude_own filters applicant's own extension requests while preserving reviewer view.
+    emp_exts = client.get(
+        f"{url}/capacity/extension-requests", headers=auth["employee"]
+    ).json()["data"]
+    assert len(emp_exts) == 1
+    assert (
+        client.get(
+            f"{url}/capacity/extension-requests?exclude_own=true",
+            headers=auth["employee"],
+        ).json()["data"]
+        == []
+    )
+    mgr_exts = client.get(
+        f"{url}/capacity/extension-requests?exclude_own=true", headers=auth["manager"]
+    ).json()["data"]
+    assert len(mgr_exts) == 1
+
+    # Verify MembershipPublic.can_review for plain employee vs manager.
+    emp_memberships = client.get(
+        "/api/v1/me/memberships", headers=auth["employee"]
+    ).json()
+    mgr_memberships = client.get(
+        "/api/v1/me/memberships", headers=auth["manager"]
+    ).json()
+    assert emp_memberships[0]["can_review"] is False
+    assert mgr_memberships[0]["can_review"] is True
+
+    # Verify structured targets stay identical across zh-CN and en locales.
+    zh_rows = client.get(
+        f"{url}/me/inbox",
+        headers={**auth["manager"], "Accept-Language": "zh-CN"},
+    ).json()["data"]
+    en_rows = client.get(
+        f"{url}/me/inbox",
+        headers={**auth["manager"], "Accept-Language": "en"},
+    ).json()["data"]
+    assert [r["target_type"] for r in zh_rows] == [r["target_type"] for r in en_rows]
+    assert [r["target_id"] for r in zh_rows] == [r["target_id"] for r in en_rows]
+    assert any(
+        r["id"] == str(legacy_item.id) and r["target_type"] == "reviews_demand"
+        for r in en_rows
+    )
+    assert sum(1 for r in en_rows if r["target_type"] == "reviews_workload") >= 2
