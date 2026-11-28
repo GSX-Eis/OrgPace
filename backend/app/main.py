@@ -1,6 +1,5 @@
 from pathlib import Path
 
-import sentry_sdk
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from fastapi.routing import APIRoute
@@ -12,6 +11,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.api.main import api_router
 from app.core.config import settings
+from app.core.observability import init_observability
 from app.i18n import current_locale, parse_accept_language, tr
 from app.mcp.oauth import oauth_routes
 from app.mcp.server import endpoint, lifespan
@@ -23,8 +23,7 @@ def custom_generate_unique_id(route: APIRoute) -> str:
     return f"{route.tags[0]}-{route.name}"
 
 
-if settings.SENTRY_DSN and settings.FASTAPI_ENV != "development":
-    sentry_sdk.init(dsn=str(settings.SENTRY_DSN), enable_tracing=True)
+init_observability()
 
 app = FastAPI(
     lifespan=lifespan,

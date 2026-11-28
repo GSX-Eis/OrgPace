@@ -20,7 +20,7 @@ jobs:
         working-directory: pi
       - run: npm test && npm run demo
         working-directory: pi
-      - run: docker compose -p nere85 -f pi/compose.yml build
-      - run: docker compose -p nere85 -f pi/compose.yml run --rm sample
+      - run: docker compose -p orgpace-pi-ci -f pi/compose.yml build
+      - run: docker compose -p orgpace-pi-ci -f pi/compose.yml run --rm sample
       - if: always()
-        run: docker compose -p nere85 -f pi/compose.yml down -v --rmi local --remove-orphans
+        run: docker compose -p orgpace-pi-ci -f pi/compose.yml down -v --rmi local --remove-orphans

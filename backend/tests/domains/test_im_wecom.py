@@ -16,6 +16,7 @@ from sqlmodel import Session, col, select
 from websockets.asyncio.server import ServerConnection, serve
 
 from app.core.db import engine
+from app.core.observability import before_breadcrumb
 from app.core.secrets import encrypt_secret
 from app.domains.base import utc_now
 from app.domains.bot import core
@@ -323,7 +324,9 @@ def test_connection_and_privacy(
             assert not (await settings.test_connection(db, p.org_id, "wecom")).ok
             setting.enabled = False
             db.commit()
-            with sentry_sdk.init(dsn="", default_integrations=True):
+            with sentry_sdk.init(
+                dsn="", default_integrations=True, before_breadcrumb=before_breadcrumb
+            ):
 
                 def fail_release() -> None:
                     pytest.fail("Must not detect Sentry release during requests")

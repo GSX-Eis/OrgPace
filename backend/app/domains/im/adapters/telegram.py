@@ -6,7 +6,6 @@ from typing import ClassVar
 from uuid import UUID
 
 import httpx
-import sentry_sdk
 from pydantic import BaseModel, Field, JsonValue, TypeAdapter, ValidationError
 
 from app.domains.im.adapters.base import Event, ImError
@@ -84,18 +83,11 @@ class Telegram:
             if self.client.is_closed:
                 raise ImError("network", retryable=True)
             try:
-                # Telegram embeds credentials in URLs; disable tracing at this boundary.
-                with sentry_sdk.new_scope() as scope:
-                    scope.set_client(
-                        sentry_sdk.Client(
-                            dsn="", default_integrations=False, release=""
-                        )
-                    )
-                    response = (
-                        await self.client.get(method)
-                        if body is None
-                        else await self.client.post(method, json=body)
-                    )
+                response = (
+                    await self.client.get(method)
+                    if body is None
+                    else await self.client.post(method, json=body)
+                )
                 # Transport cancellation can race with a completed HTTP response.
                 task = asyncio.current_task()
                 if task is not None and task.cancelling():

@@ -17,6 +17,7 @@ from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 from sqlmodel import Session, select
 
 from app.core.db import engine
+from app.core.observability import before_breadcrumb
 from app.core.secrets import decrypt_secret, encrypt_secret
 from app.domains.bot import attachments, core, store
 from app.domains.bot import schemas as s
@@ -719,7 +720,9 @@ def test_connection(
     url = base + "/im-settings/feishu"
     client.put(url, headers=auth["admin"], json={"credentials": CREDS})
     caplog.set_level(logging.DEBUG)
-    with sentry_sdk.init(dsn="", default_integrations=True):
+    with sentry_sdk.init(
+        dsn="", default_integrations=True, before_breadcrumb=before_breadcrumb
+    ):
 
         def unexpected_release() -> None:
             pytest.fail("Feishu must not auto-detect Sentry release")

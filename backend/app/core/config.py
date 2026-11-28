@@ -45,6 +45,7 @@ class Settings(BaseSettings):
 
     PROJECT_NAME: str
     SENTRY_DSN: HttpUrl | None = None
+    SENTRY_TRACES_SAMPLE_RATE: float = Field(default=0.1, ge=0.0, le=1.0)
     DATABASE_URL: PostgresDsn
 
     @field_validator("DATABASE_URL", mode="before")
@@ -86,6 +87,13 @@ class Settings(BaseSettings):
         self._check_default_secret(
             "FIRST_SUPERUSER_PASSWORD", self.FIRST_SUPERUSER_PASSWORD
         )
+
+        if (
+            self.SEED_DEMO_DATA
+            and self.FASTAPI_ENV != "development"
+            and self.DEMO_USER_PASSWORD in {"changethis", "demo-password-2026"}
+        ):
+            raise ValueError("DEMO_USER_PASSWORD must not use an example password")
 
         if self.CHATGPT_LOCAL_AUTH and self.FASTAPI_ENV != "development":
             raise ValueError("CHATGPT_LOCAL_AUTH 只允许在开发模式使用")

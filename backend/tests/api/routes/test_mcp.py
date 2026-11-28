@@ -370,6 +370,8 @@ def test_boundaries_and_safe_errors(
     monkeypatch.setattr(employee, "read_profile", fail)
     result = call(client, active, "get_my_profile", {})
     assert result["isError"] and "操作失败" in result["content"][0]["text"]
+    assert "MCP tool get_my_profile failed (RuntimeError)" in caplog.text
+    assert "SQL synthetic failure" not in caplog.text
     events = db.exec(
         select(AuditEvent).where(
             AuditEvent.org_id == row.org_id, AuditEvent.action == "mcp.tool_called"

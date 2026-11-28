@@ -8,15 +8,16 @@ source deploy/common.sh
 previous=$(git rev-parse HEAD)
 backup=''
 rollback() {
-    echo '升级失败。回退命令：' >&2
-    printf 'git checkout %q\n' "$previous" >&2
     if [[ -n "$backup" ]]; then
+        echo '升级失败。回退命令：' >&2
+        printf 'git checkout %q\n' "$previous" >&2
         printf './restore.sh %q\n' "$backup" >&2
     else
-        echo '尚未生成本次备份；数据库未执行迁移，使用已有备份或重新启动旧代码。' >&2
+        echo '升级前备份失败；代码与数据库未变更，修复备份问题后重试。' >&2
     fi
 }
 trap rollback ERR
+backup=$(./backup.sh)
 if [[ $# == 1 ]]; then
     git fetch origin
     git checkout --detach "$1"
@@ -24,7 +25,6 @@ else
     git pull --ff-only
 fi
 ensure_pi_token
-backup=$(./backup.sh)
 docker compose build
 docker compose up -d --wait
 check_health
