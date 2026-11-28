@@ -12,13 +12,18 @@ if TYPE_CHECKING:
     from sentry_sdk._types import Breadcrumb, BreadcrumbHint, Event, Hint
 
 _REDACTED = "[Filtered]"
+_PRIVATE_ID = r"(?:corp_?id|(?:open_?)?user_?id)"
 _SENSITIVE = re.compile(
-    r"(?:token|secret|password|api[_-]?key|authorization|cookie|credentials?)$",
+    rf"(?:token|secret|password|api[_-]?key|authorization|cookie|credentials?)$|^{_PRIVATE_ID}$",
     re.IGNORECASE,
 )
 _TELEGRAM = re.compile(r"/bot\d+(?::|%3a)[^/\s?#\"']+", re.IGNORECASE)
+_FEISHU_ID = re.compile(
+    r"(/(?:im/v1/(?:messages|chats)|contact/v3/users)/)[^/\s?#\"']+"
+)
+_FEISHU_RESOURCE = re.compile(r"(/im/v1/messages/[^/\s?#\"']+/resources/)[^/\s?#\"']+")
 _TEXT_SECRET = re.compile(
-    r"(?i)\b([\w.-]*(?:token|secret|password|api[_-]?key))([\"']?\s*[:=]\s*[\"']?)([^&\s,;\"'<>}]+)"
+    rf"(?i)\b([\w.-]*(?:token|secret|password|api[_-]?key)|{_PRIVATE_ID})([\"']?\s*[:=]\s*[\"']?)([^&\s,;\"'<>}}]+)"
 )
 _AUTH = re.compile(
     r"(?i)\b((?:proxy-)?authorization[\"']?\s*[:=]\s*[\"']?)(?:(?:bearer|basic)\s+)?[^&\s,;\"'<>}]+"
@@ -40,6 +45,8 @@ def _redact(value: Any) -> Any:
         return [_redact(item) for item in value]
     elif isinstance(value, str):
         value = _TELEGRAM.sub(f"/bot{_REDACTED}", value)
+        value = _FEISHU_ID.sub(r"\1" + _REDACTED, value)
+        value = _FEISHU_RESOURCE.sub(r"\1" + _REDACTED, value)
         value = _TEXT_SECRET.sub(r"\1\2" + _REDACTED, value)
         return _AUTH.sub(r"\1" + _REDACTED, value)
     return value
