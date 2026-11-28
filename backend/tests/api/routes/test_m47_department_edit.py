@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session, select
 
 from app.authz.deps import get_org_principal
-from app.domains.account.service import AccountError
+from app.authz.policies import OrgAdminRequired
 from app.domains.admin_assistant import change_set as c
 from app.domains.audit.models import AuditEvent
 from app.domains.capability.models import DepartmentCapability
@@ -189,9 +189,9 @@ def test_permissions(db: Session, demo: tuple, client: TestClient, role: str) ->
         )
         assert response.status_code == (404 if role == "foreign" else 403)
     p = principal(db, demo, "employee")
-    with pytest.raises(AccountError, match="需要企业管理员"):
+    with pytest.raises(OrgAdminRequired, match="需要企业管理员"):
         edits.update_department(db, p, row.id, edits.DepartmentUpdate(name="越权"))
-    with pytest.raises(AccountError, match="需要企业管理员"):
+    with pytest.raises(OrgAdminRequired, match="需要企业管理员"):
         edits.delete_department(db, p, edits.DepartmentArgs(department_id=row.id))
 
 

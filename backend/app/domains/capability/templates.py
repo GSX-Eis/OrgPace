@@ -98,3 +98,10 @@ def get_template(template_id: str) -> CapabilityTemplate:
         if template.entry.id == template_id:
             return template
     raise TemplateNotFound()
+
+
+def template_names() -> dict[str, str]:
+    return {
+        template.entry.id: template.entry.name
+        for template in load_catalog(settings.CAPABILITY_TEMPLATES_DIR)
+    }

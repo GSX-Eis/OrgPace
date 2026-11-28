@@ -27,7 +27,7 @@ from app.domains.change_request.models import (
 )
 from app.domains.inbox.models import InboxKind
 from app.domains.inbox.service import notify
-from app.domains.org.models import Organization
+from app.domains.org.service import lock_org
 from app.domains.profile.models import ProfileClaim
 from app.i18n import bilingual, tr, use_locale
 
@@ -36,11 +36,7 @@ def activate_template(
     session: Session, principal: Principal, template_id: str
 ) -> CapabilitySchemaVersion:
     template = get_template(template_id)
-    session.exec(
-        select(Organization)
-        .where(Organization.id == principal.org_id)
-        .with_for_update()
-    ).one()
+    lock_org(session, principal.org_id)
     active = session.exec(
         select(CapabilitySchemaVersion).where(
             CapabilitySchemaVersion.org_id == principal.org_id,
@@ -149,9 +145,7 @@ def save_version(
     SaveDictionary(definitions=definitions, expected_version=expected_version or 0)
     org_id = principal.org_id
     # Serialize saves, including the first version for an organization.
-    session.exec(
-        select(Organization).where(Organization.id == org_id).with_for_update()
-    ).one()
+    lock_org(session, org_id)
     version = (
         session.exec(
             select(func.max(CapabilitySchemaVersion.version)).where(

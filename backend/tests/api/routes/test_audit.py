@@ -223,6 +223,29 @@ def test_labels_and_role_details(
     assert result[str(missing)]["actor"] is None
     for id_, label in labels.items():
         assert result[str(id_)]["target_label"] == label
+    schema_event = next(
+        e
+        for e in result.values()
+        if e["target_type"] == "capability_schema_version"
+        and e["details"].get("template_id") == "tech-rnd"
+    )
+    without_names = {
+        str(e.id): e.target_label for e in list_events(db, orgs[0].id, limit=50).data
+    }
+    assert without_names[schema_event["id"]] == "第 1 版"
+    with_names = {
+        str(e.id): e.target_label
+        for e in list_events(
+            db,
+            orgs[0].id,
+            limit=50,
+            template_names={"tech-rnd": get_template("tech-rnd").entry.name},
+        ).data
+    }
+    assert (
+        with_names[schema_event["id"]]
+        == f"{get_template('tech-rnd').entry.name} · 第 1 版"
+    )
     assert result[str(no_name)]["actor"] == {
         "user_id": str(users[0].id),
         "username": users[0].username,

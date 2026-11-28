@@ -7,6 +7,7 @@ from app.domains.base import utc_now
 from app.domains.inbox.models import InboxItem, InboxKind
 from app.domains.inbox.service import add_item
 from app.domains.org.models import Organization, OrgMembership, Role, RoleGrant
+from app.domains.org.service import lock_org
 from app.domains.org.timezone import read_timezone
 from app.i18n import tr, use_locale
 from app.models import User
@@ -28,11 +29,7 @@ def dispatch_worker_alerts(db: Session, now: datetime) -> None:
     db.commit()
     for org_id in org_ids:
         # Serialize with other gateways; the inbox persists deduplication across restarts.
-        org = db.exec(
-            select(Organization)
-            .where(Organization.id == org_id)
-            .with_for_update(skip_locked=True)
-        ).one_or_none()
+        org = lock_org(db, org_id, skip_locked=True)
         if org is None:
             db.rollback()
             continue

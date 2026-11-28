@@ -8,7 +8,6 @@ from sqlalchemy import func
 from sqlmodel import Session, col, select
 
 from app.authz.principal import Principal
-from app.domains.account.service import lock_org
 from app.domains.audit.service import record_audit
 from app.domains.base import utc_now
 from app.domains.change_request.models import ProfileChangeRequest, RequestStatus
@@ -39,6 +38,7 @@ from app.domains.org.roster.schemas import (
     RosterImportsPublic,
     RosterIssue,
 )
+from app.domains.org.service import lock_admin_org as lock_org
 from app.domains.source.linking import auto_link_identities
 from app.domains.work.ingest import rederive_identities
 from app.i18n import bilingual, tr

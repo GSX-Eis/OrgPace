@@ -59,8 +59,8 @@ from app.domains.evidence.service import (
 )
 from app.domains.inbox.models import InboxKind
 from app.domains.inbox.service import notify
-from app.domains.org.models import Employee, Organization
-from app.domains.org.service import visible_employee
+from app.domains.org.models import Employee
+from app.domains.org.service import lock_org, visible_employee
 from app.domains.org.timezone import read_timezone
 from app.domains.profile.models import AssessmentStatus, EvidenceRelation, ProfileClaim
 from app.domains.profile.schemas import ClaimPublic, ProfileView
@@ -392,11 +392,7 @@ def _validate(
 
 
 def _lock_organization(principal: Principal, session: Session) -> None:
-    session.exec(
-        select(Organization)
-        .where(Organization.id == principal.org_id)
-        .with_for_update(read=True)
-    ).one()
+    lock_org(session, principal.org_id, read=True)
 
 
 def _can_clone_source(

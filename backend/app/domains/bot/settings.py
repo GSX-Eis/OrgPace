@@ -1,12 +1,12 @@
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from app.authz.principal import Principal
 from app.domains.audit.service import record_audit
 from app.domains.bot.models import BotSetting
-from app.domains.org.models import Organization
+from app.domains.org.service import lock_org
 
 
 class BotSettings(BaseModel):
@@ -25,11 +25,7 @@ def read_settings(db: Session, org_id: UUID) -> BotSettings:
 def save_settings(
     db: Session, principal: Principal, body: BotSettings, *, commit: bool = True
 ) -> BotSettings:
-    db.exec(
-        select(Organization)
-        .where(Organization.id == principal.org_id)
-        .with_for_update()
-    ).one()
+    lock_org(db, principal.org_id)
     before = read_settings(db, principal.org_id)
     row = db.get(BotSetting, principal.org_id) or BotSetting(org_id=principal.org_id)
     row.sqlmodel_update(body.model_dump())

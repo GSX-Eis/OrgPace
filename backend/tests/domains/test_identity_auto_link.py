@@ -159,6 +159,7 @@ def test_only_unique_active_local_emails_link(tenant_data: tuple, db: Session) -
                 str(index), email=email, display_name=employees[0].display_name
             ),
             provenance={},
+            auto_link=auto_link_identities,
         )
     identity = db.exec(
         select(ExternalIdentity).where(ExternalIdentity.org_id == org.id)
@@ -168,11 +169,20 @@ def test_only_unique_active_local_emails_link(tenant_data: tuple, db: Session) -
     # An inactive duplicate does not make the one active employee ambiguous.
     employees[1].employment_status = EmploymentStatus.INACTIVE
     db.add(employees[1])
+    # Without an explicit auto_link callback, work ingestion stays decoupled from linking.
     ingest_record(
         db,
         org_id=org.id,
         record=record("unique", email="duplicate@example.com"),
         provenance={},
+    )
+    assert identity.employee_id is None
+    ingest_record(
+        db,
+        org_id=org.id,
+        record=record("unique", email="duplicate@example.com"),
+        provenance={},
+        auto_link=auto_link_identities,
     )
     assert identity.employee_id == employees[0].id
     foreign = ExternalIdentity(
@@ -221,7 +231,7 @@ def test_page_matching_has_constant_query_count(
         statements.clear()
         event.listen(engine, "before_cursor_execute", capture)
         try:
-            prepare_identities(db, org_id, [page])
+            prepare_identities(db, org_id, [page], auto_link=auto_link_identities)
             db.flush()
         finally:
             event.remove(engine, "before_cursor_execute", capture)
@@ -254,6 +264,7 @@ def test_auto_link_rolls_back_with_page(
             org_id=org_id,
             record=record("ROLLBACK", email="rollback@example.com"),
             provenance={},
+            auto_link=auto_link_identities,
         )
     db.rollback()
     assert not db.exec(

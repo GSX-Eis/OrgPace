@@ -5,6 +5,7 @@ from fastapi import Depends, HTTPException
 from sqlmodel import select
 
 from app.api.deps import CurrentUser, SessionDep
+from app.authz.policies import OrgAdminRequired as OrgAdminRequired
 from app.authz.principal import Principal
 from app.domains.audit.models import ActorKind
 from app.domains.org.models import OrgMembership, Role, RoleGrant
@@ -45,11 +46,6 @@ def get_org_principal(
 
 
 OrgPrincipalDep = Annotated[Principal, Depends(get_org_principal)]
-
-
-class OrgAdminRequired(HTTPException):
-    def __init__(self) -> None:
-        super().__init__(403, "需要企业管理员权限")
 
 
 def get_org_admin(principal: OrgPrincipalDep) -> Principal:

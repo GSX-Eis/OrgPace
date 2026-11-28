@@ -8,7 +8,6 @@ from sqlmodel import Session, col, delete, select
 from sqlmodel.sql.expression import SelectOfScalar
 
 from app.authz.principal import Principal
-from app.domains.account.service import lock_org
 from app.domains.audit.service import record_audit
 from app.domains.capability.models import (
     CapabilityDefinition,
@@ -17,6 +16,7 @@ from app.domains.capability.models import (
     SchemaStatus,
 )
 from app.domains.org.models import Department
+from app.domains.org.service import lock_admin_org
 from app.i18n import tr
 
 
@@ -170,7 +170,7 @@ def impact(db: Session, p: Principal, args: SetDepartmentCapabilities) -> BaseMo
 def set_department_capabilities(
     db: Session, p: Principal, args: SetDepartmentCapabilities, *, commit: bool = True
 ) -> DepartmentCapabilitiesPublic:
-    lock_org(db, p)
+    lock_admin_org(db, p)
     department = visible_department(db, p, args.department_id)
     before = snapshot(db, p, args).capability_keys
     after = sorted(set(args.capability_keys))

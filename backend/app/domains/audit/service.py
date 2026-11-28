@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from datetime import datetime
 from uuid import UUID
 
@@ -5,11 +6,9 @@ from pydantic import JsonValue
 from sqlalchemy import String, cast, func, or_
 from sqlmodel import Session, col, select
 
-from app.core.config import settings
 from app.domains.audit.models import ActorKind, AuditEvent
 from app.domains.audit.schemas import AuditActor, AuditEventPublic, AuditEventsPublic
 from app.domains.capability.models import CapabilitySchemaVersion
-from app.domains.capability.templates import load_catalog
 from app.domains.org.models import (
     Department,
     Organization,
@@ -73,6 +72,7 @@ def list_events(
     target_type: str | None = None,
     target_ids: list[str] | None = None,
     employee_id: UUID | None = None,
+    template_names: Mapping[str, str] | None = None,
 ) -> AuditEventsPublic:
     query = select(AuditEvent).where(AuditEvent.org_id == org_id)
     if target_type is not None:
@@ -202,10 +202,7 @@ def list_events(
             )
         ).all()
     }
-    templates = {
-        t.entry.id: t.entry.name
-        for t in load_catalog(settings.CAPABILITY_TEMPLATES_DIR)
-    }
+    templates = template_names or {}
     data = []
     for e in events:
         target_id = parse_id(e.target_id)

@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, JsonValue, RootModel, ValidationError
 from sqlmodel import Session, col, select
 
+from app.authz.policies import OrgAdminRequired
 from app.authz.principal import Principal
 from app.core.secrets import decrypt_secret, encrypt_secret
 from app.domains.account.service import AccountError
@@ -50,9 +51,9 @@ from app.domains.change_request.import_json import InvalidImport
 from app.domains.change_request.schemas import limit_validation_message
 from app.domains.im.settings import InvalidImSetting
 from app.domains.model.service import InvalidModelSetting
-from app.domains.org.models import Organization
 from app.domains.org.roster.service import RosterError
 from app.domains.org.roster.single import Offboard
+from app.domains.org.service import lock_org
 from app.domains.review.direct import SelfDirectEditForbidden
 from app.domains.source.identities import IdentityConflict, InvalidIdentityEmployee
 from app.domains.source.import_records import InvalidWorkRecords
@@ -68,11 +69,7 @@ class ChangeSetError(HTTPException):
 
 def _lock_org(db: Session, principal: Principal) -> None:
     # Manual settings writes take the same lock; snapshots must stay valid until commit.
-    db.exec(
-        select(Organization.id)
-        .where(Organization.id == principal.org_id)
-        .with_for_update()
-    ).one()
+    lock_org(db, principal.org_id)
     db.expire_all()
 
 
@@ -581,6 +578,7 @@ def apply(
     except (
         AccountError,
         DictionaryConflict,
+        OrgAdminRequired,
         ProposalConflict,
         IdentityConflict,
         InvalidIdentityEmployee,

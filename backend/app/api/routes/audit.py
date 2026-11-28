@@ -7,6 +7,7 @@ from app.api.deps import SessionDep
 from app.authz.deps import OrgAdminDep
 from app.domains.audit.schemas import AuditEventsPublic
 from app.domains.audit.service import list_events
+from app.domains.capability.templates import template_names
 from app.domains.org.service import visible_employee
 
 router = APIRouter(prefix="/orgs/{org_id}/audit-events", tags=["audit"])
@@ -40,4 +41,5 @@ def read_audit_events(
         target_type=target_type,
         target_ids=target_id,
         employee_id=employee_id,
+        template_names=template_names(),
     )

@@ -9,7 +9,6 @@ from pydantic import BaseModel, ConfigDict, RootModel, StringConstraints
 from sqlmodel import Session, col, select
 
 from app.authz.principal import Principal
-from app.domains.account.service import lock_org, require_admin
 from app.domains.audit.service import record_audit
 from app.domains.capability.department import DepartmentArgs
 from app.domains.org.models import (
@@ -22,7 +21,7 @@ from app.domains.org.models import (
 )
 from app.domains.org.paths import department_paths
 from app.domains.org.schemas import DepartmentPublic
-from app.domains.org.service import managed_scope
+from app.domains.org.service import lock_admin_org, managed_scope, require_admin
 from app.i18n import tr
 from app.models import Message, User
 
@@ -92,7 +91,7 @@ def validate_update(
 def update_department(
     db: Session, p: Principal, id: UUID, body: DepartmentUpdate, *, commit: bool = True
 ) -> DepartmentPublic:
-    org = lock_org(db, p)
+    org = lock_admin_org(db, p)
     row = validate_update(db, p, id, body)
     before = DepartmentPublic.model_validate(row)
     for field, value in body.model_dump(exclude_unset=True).items():
@@ -163,7 +162,7 @@ def deletable(db: Session, p: Principal, id: UUID) -> Department:
 def delete_department(
     db: Session, p: Principal, args: DepartmentArgs, *, commit: bool = True
 ) -> Message:
-    org = lock_org(db, p)
+    org = lock_admin_org(db, p)
     row = deletable(db, p, args.department_id)
     before = DepartmentPublic.model_validate(row)
     db.delete(row)
