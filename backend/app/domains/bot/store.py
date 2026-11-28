@@ -321,7 +321,18 @@ def list_messages(
     session = get_session(db, principal, session_id)
     messages = messages_for(db, session)
     current = session_scope(db, principal)
-    legacy_sensitive = _legacy_sensitive(messages, load_state(db, session))
+    # Evaluate the session-wide fallback before hiding any messages, but only
+    # when a legacy scope can actually depend on it.
+    legacy_sensitive = False
+    if any(
+        message.role == "assistant"
+        and isinstance(message.payload, dict)
+        and _needs_legacy_scope(message.payload.get("scope"), current)
+        for message in messages
+    ):
+        legacy_sensitive = _legacy_sensitive(messages, None) or _legacy_sensitive(
+            [], load_state(db, session)
+        )
     confirmed_card_ids: set[str] = set()
     for message in messages:
         if message.role != "assistant" or not isinstance(message.payload, dict):
@@ -596,6 +607,16 @@ def scope_shrank(
         )
         or (not isinstance(old_employees, list) and legacy_sensitive)
     )
+
+
+def _needs_legacy_scope(previous: JsonValue, current: dict[str, JsonValue]) -> bool:
+    if not isinstance(previous, dict):
+        return True
+    if isinstance(
+        previous.get("read_employee_ids", previous.get("visible_employee_ids")), list
+    ):
+        return False
+    return not scope_shrank(previous, current)
 
 
 def _legacy_sensitive(

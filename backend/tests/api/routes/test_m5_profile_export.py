@@ -1,22 +1,28 @@
 import csv
 import io
+from copy import deepcopy
 from datetime import datetime, timedelta
 from pathlib import Path
-from uuid import uuid4
+from typing import Any
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlmodel import Session, select
+from sqlalchemy import event as sa_event
+from sqlmodel import Session, col, select
 
 from app.domains.audit.models import AuditEvent
 from app.domains.base import utc_now
+from app.domains.capability.search import snapshot_claims
 from app.domains.evidence.models import Evidence
 from app.domains.org.models import Department
 from app.domains.profile.models import ProfileVersion
+from app.domains.profile.service import version_summaries
 from app.models import User
 from tests.api.routes.test_dictionary_versions import exported, upload
 from tests.api.routes.test_mcp import token_for
+from tests.domains.test_im_gateway import principal
 
 COLUMNS = [
     "employee_code",
@@ -429,3 +435,160 @@ def test_export_keeps_retired_capability_judgments(
             )
             for row in rows
         ]
+
+
+def test_export_multi_employee_multi_claim_first_publication_oracle(
+    export_data: tuple, client: TestClient, db: Session
+) -> None:
+    url, employees, auth, capabilities, now = export_data
+    org_id = employees["E01"].org_id
+    admin_user = db.exec(
+        select(User).where(User.email == "admin@demo.example.com")
+    ).one()
+    shared_claim_id = str(uuid4())
+    for code in ("E01", "E02", "E03", "E04"):
+        rev20 = db.exec(
+            select(ProfileVersion).where(
+                ProfileVersion.org_id == org_id,
+                ProfileVersion.subject_employee_id == employees[code].id,
+                ProfileVersion.revision == 20,
+            )
+        ).one()
+        rev21 = db.exec(
+            select(ProfileVersion).where(
+                ProfileVersion.org_id == org_id,
+                ProfileVersion.subject_employee_id == employees[code].id,
+                ProfileVersion.revision == 21,
+            )
+        ).one()
+        cap0_claim, cap1_claim = deepcopy(rev20.snapshot["claims"])
+        if code in ("E01", "E04"):
+            # Intentionally share claim.id across employees to verify (employee_id, claim_id) pairing.
+            cap0_claim["id"] = shared_claim_id
+        if code == "E04":
+            # E04 introduces shared_claim_id at rev 21 while E01 introduces it at rev 20.
+            rev20.snapshot = {"claims": []}
+            rev21.snapshot = {"claims": [cap0_claim, cap1_claim]}
+        else:
+            rev20.snapshot = {"claims": [cap0_claim]}
+            rev21.snapshot = {"claims": [cap0_claim, cap1_claim]}
+        rev20.published_at = now - timedelta(days=3)
+        rev21.published_at = now - timedelta(days=2)
+        db.add_all([rev20, rev21])
+        rev22_claims = deepcopy(rev21.snapshot["claims"])
+        if code in ("E01", "E03"):
+            rev22_claims[1]["id"] = str(uuid4())
+            rev22_claims[1]["level"] = "routine"
+        db.add(
+            ProfileVersion(
+                org_id=org_id,
+                subject_employee_id=employees[code].id,
+                revision=22,
+                schema_version_id=rev21.schema_version_id,
+                snapshot={"claims": rev22_claims},
+                published_at=now - timedelta(days=1),
+                published_by={"actor_type": "user", "user_id": str(admin_user.id)},
+            )
+        )
+    db.commit()
+
+    snapshot_queries: list[int] = []
+    version_metadata_rows: list[int] = []
+
+    def record(*args: Any) -> None:
+        cursor, sql = args[1], args[2]
+        if "FROM profile_version" not in sql:
+            return
+        projection = sql.split("FROM", 1)[0]
+        if "profile_version.snapshot" in projection:
+            snapshot_queries.append(cursor.rowcount)
+        elif "profile_version.published_at" in projection:
+            version_metadata_rows.append(cursor.rowcount)
+
+    bind = db.get_bind()
+    sa_event.listen(bind, "after_cursor_execute", record)
+    try:
+        response = client.get(
+            f"{url}/profile-export?format=json", headers=auth["admin"]
+        )
+    finally:
+        sa_event.remove(bind, "after_cursor_execute", record)
+    assert response.status_code == 200
+    rows = response.json()
+    assert len(snapshot_queries) == 1
+    assert sum(version_metadata_rows) > 0
+
+    all_versions = list(
+        db.exec(
+            select(ProfileVersion)
+            .where(ProfileVersion.org_id == org_id)
+            .order_by(col(ProfileVersion.revision))
+        ).all()
+    )
+    assert len(all_versions) > sum(version_metadata_rows)
+    p = principal(db, org_id, employees["E01"].id)
+    first_by_claim: dict[tuple[UUID, UUID], tuple[str, datetime]] = {}
+    latest_by_emp: dict[UUID, ProfileVersion] = {}
+    for version, summary in zip(
+        all_versions, version_summaries(db, p, all_versions), strict=True
+    ):
+        publisher = summary.published_by.display_name or summary.published_by.actor_type
+        for claim in snapshot_claims(version):
+            first_by_claim.setdefault(
+                (version.subject_employee_id, claim.id),
+                (publisher, summary.published_at),
+            )
+        latest_by_emp[version.subject_employee_id] = version
+
+    emp_by_code = {emp.employee_code: emp for emp in employees.values()}
+    cap_by_def = {
+        claim.capability_definition_id: cap["key"]
+        for claim, cap in zip(
+            snapshot_claims(latest_by_emp[employees["E01"].id]),
+            capabilities,
+            strict=True,
+        )
+    }
+    expected_publishers = {}
+    for emp_code in ("E01", "E02", "E03", "E04", "E06"):
+        emp = emp_by_code[emp_code]
+        for claim in snapshot_claims(latest_by_emp[emp.id]):
+            cap_key = cap_by_def[claim.capability_definition_id]
+            expected_publishers[(emp_code, cap_key)] = first_by_claim[
+                (emp.id, claim.id)
+            ]
+
+    for row in rows:
+        exp_pub, exp_at = expected_publishers[
+            (row["employee_code"], row["capability_key"])
+        ]
+        assert row["published_by"] == exp_pub
+        assert datetime.fromisoformat(row["published_at"]) == exp_at
+    # Verify E01 and E04 resolved independently despite identical claim.id.
+    e01_cap0 = next(
+        r
+        for r in rows
+        if r["employee_code"] == "E01" and r["capability_key"] == capabilities[0]["key"]
+    )
+    e04_cap0 = next(
+        r
+        for r in rows
+        if r["employee_code"] == "E04" and r["capability_key"] == capabilities[0]["key"]
+    )
+    assert e01_cap0["published_by"] == employees["E01"].display_name
+    assert e04_cap0["published_by"] == "system_worker"
+    e01_cap1 = next(
+        r
+        for r in rows
+        if r["employee_code"] == "E01" and r["capability_key"] == capabilities[1]["key"]
+    )
+    assert e01_cap1["published_by"] == (admin_user.full_name or admin_user.username)
+
+    csv_response = client.get(f"{url}/profile-export", headers=auth["admin"])
+    assert csv_response.status_code == 200
+    csv_rows = list(
+        csv.DictReader(io.StringIO(csv_response.content.decode("utf-8-sig")))
+    )
+    assert [(r["工号"], r["批准人"]) for r in csv_rows] == [
+        (r["employee_code"], r["published_by"]) for r in rows
+    ]

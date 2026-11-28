@@ -1,6 +1,7 @@
 from uuid import UUID
 
 from fastapi import HTTPException
+from sqlalchemy import func
 from sqlmodel import Session, col, select
 
 from app.authz.principal import Principal
@@ -47,7 +48,11 @@ from app.domains.review.publish import (
     jira_only,
     publish,
 )
-from app.domains.review.routing import can_review, review_assignment, reviewers_for
+from app.domains.review.routing import (
+    can_review,
+    inbox_review_access,
+    review_assignment,
+)
 from app.domains.review.schemas import (
     DecisionInput,
     DecisionResult,
@@ -67,7 +72,7 @@ class ReviewForbidden(HTTPException):
 
 def list_pending_reviews(principal: Principal, session: Session) -> PendingReviews:
     data = []
-    for request, subject, department in session.exec(
+    rows = session.exec(
         select(ProfileChangeRequest, Employee, Department)
         .join(
             Employee,
@@ -84,20 +89,33 @@ def list_pending_reviews(principal: Principal, session: Session) -> PendingRevie
             ProfileChangeRequest.status == RequestStatus.PENDING_REVIEW,
         )
         .order_by(col(ProfileChangeRequest.submitted_at), col(ProfileChangeRequest.id))
-    ).all():
-        reviewers = reviewers_for(session, principal.org_id, subject.id)
-        allowed = can_review(session, principal, subject.id) is not None
-        if not allowed and not (principal.is_org_admin and not reviewers):
-            continue
-        count = len(
+    ).all()
+    access = inbox_review_access(
+        session, principal, {subject.id for _, subject, _ in rows}
+    )
+    visible = []
+    for request, subject, department in rows:
+        has_reviewers, allowed = access.get(subject.id, (False, False))
+        if allowed or (principal.is_org_admin and not has_reviewers):
+            visible.append((request, subject, department, has_reviewers, allowed))
+    counts = (
+        dict(
             session.exec(
-                select(ChangeItem.id).where(
+                select(ChangeItem.request_id, func.count(col(ChangeItem.id)))
+                .where(
                     ChangeItem.org_id == principal.org_id,
-                    ChangeItem.request_id == request.id,
+                    col(ChangeItem.request_id).in_(
+                        {request.id for request, *_ in visible}
+                    ),
                     col(ChangeItem.decision).is_(None),
                 )
+                .group_by(col(ChangeItem.request_id))
             ).all()
         )
+        if visible
+        else {}
+    )
+    for request, subject, department, has_reviewers, allowed in visible:
         data.append(
             ReviewSummary(
                 id=request.id,
@@ -108,9 +126,9 @@ def list_pending_reviews(principal: Principal, session: Session) -> PendingRevie
                 submitted_via=request.submitted_via,
                 client_name=request.client_name,
                 owner_reviewed=request.submitted_via != SubmissionVia.ADMIN_HANDOVER,
-                item_count=count,
+                item_count=counts.get(request.id, 0),
                 can_decide=allowed,
-                unavailable_reason=None if reviewers else tr("没有可用的审批人"),
+                unavailable_reason=None if has_reviewers else tr("没有可用的审批人"),
             )
         )
     return PendingReviews(data=data, count=len(data))

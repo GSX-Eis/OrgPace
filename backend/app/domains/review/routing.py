@@ -340,8 +340,38 @@ def reviewable_employees(
     if user_id not in ctx.active_emp_by_user_id:
         return {}
     assignments = _review_assignments(session, principal.org_id, subject_ids, ctx=ctx)
+    return _reviewable_assignments(principal, ctx, assignments)
+
+
+def inbox_review_access(
+    session: Session, principal: Principal, subject_employee_ids: Collection[UUID]
+) -> dict[UUID, tuple[bool, bool]]:
+    """Return (has primary reviewers, can decide) from one routing context."""
+    if not subject_employee_ids:
+        return {}
+    ctx = _load_org_review_context(session, principal.org_id)
+    assignments = _review_assignments(
+        session, principal.org_id, subject_employee_ids, ctx=ctx
+    )
+    reviewable = _reviewable_assignments(principal, ctx, assignments)
+    return {
+        employee_id: (bool(reviewers), reviewable.get(employee_id) is not None)
+        for employee_id, (reviewers, _, _) in assignments.items()
+    }
+
+
+def _reviewable_assignments(
+    principal: Principal,
+    ctx: _OrgReviewContext,
+    assignments: dict[UUID, tuple[list[UUID], str | None, UUID | None]],
+) -> dict[UUID, UUID | None]:
+    user_id = principal.user_id
+    if user_id is None or user_id not in ctx.active_emp_by_user_id:
+        return {}
     result: dict[UUID, UUID | None] = {}
     for employee_id, (reviewers, _, matched_department_id) in assignments.items():
+        if employee_id == principal.employee_id:
+            continue
         if user_id in reviewers:
             result[employee_id] = user_id
         else:
