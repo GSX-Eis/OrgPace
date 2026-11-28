@@ -435,8 +435,12 @@ def test_shared_template_race_failure_readonly_cloning_and_pruning(
         with pytest.raises(ValueError, match="len <= 40"):
             migrations_mod.cleanup_run_databases(admin_dsn, "a" * 41)
 
-        sim_a = f"{run_prefix[:11]}_a_{suffix[:4]}"
-        sim_b = f"{run_prefix[:11]}_b_{suffix[:4]}"
+        extra_len = max(1, min(3, 20 - len(run_prefix) - 3))
+        sim_a = f"{run_prefix}_a_{suffix[:extra_len]}"
+        sim_b = f"{run_prefix}_b_{suffix[:extra_len]}"
+        assert len(sim_a) <= 20 and len(sim_b) <= 20
+        assert sim_a.startswith(f"{run_prefix}_") and sim_b.startswith(f"{run_prefix}_")
+        assert sim_a != sim_b
         # B1: Production ensure_shared_template staging DB uses run_scoped_db_name("stg")
         # when PYTEST_DB_PREFIX is set (and legacy prefix when unset), so crash cleanup reclaims it.
         real_stg_a: list[str] = []
@@ -477,30 +481,32 @@ def test_shared_template_race_failure_readonly_cloning_and_pruning(
         # B6: ensure_shared_template & isolated_database record template_s / db_clone_s fail-open.
         b6_metrics = tmp_path / "b6-metrics.jsonl"
         b6_tpl = f"{sim_a}_m_tpl_{suffix}"
-        with monkeypatch.context() as mp:
-            mp.setattr(migrations_mod, "migrate", lambda *_a: None)
-            migrations_mod.ensure_shared_template(
+        try:
+            with monkeypatch.context() as mp:
+                mp.setattr(migrations_mod, "migrate", lambda *_a: None)
+                migrations_mod.ensure_shared_template(
+                    engine.url,
+                    template_name=b6_tpl,
+                    max_templates=0,
+                    metrics_file=b6_metrics,
+                )
+            with migrations_mod.isolated_database(
                 engine.url,
-                template_name=b6_tpl,
-                max_templates=0,
+                f"{sim_a}_m_iso_{suffix}",
+                template=b6_tpl,
                 metrics_file=b6_metrics,
-            )
-        with migrations_mod.isolated_database(
-            engine.url,
-            f"{sim_a}_m_iso_{suffix}",
-            template=b6_tpl,
-            metrics_file=b6_metrics,
-        ):
-            pass
-        # Fail-open with unwritable metrics path still clones cleanly.
-        with migrations_mod.isolated_database(
-            engine.url,
-            f"{sim_a}_m_iso2_{suffix}",
-            template=b6_tpl,
-            metrics_file=tmp_path / "no-such-dir" / "metrics.jsonl",
-        ):
-            pass
-        _drop_dbs([b6_tpl])
+            ):
+                pass
+            # Fail-open with unwritable metrics path still clones cleanly.
+            with migrations_mod.isolated_database(
+                engine.url,
+                f"{sim_a}_m_iso2_{suffix}",
+                template=b6_tpl,
+                metrics_file=tmp_path / "no-such-dir" / "metrics.jsonl",
+            ):
+                pass
+        finally:
+            _drop_dbs([b6_tpl])
         metric_lines = b6_metrics.read_text(encoding="utf-8").splitlines()
         assert len(metric_lines) == 2
         assert '"kind":"template"' in metric_lines[0]
