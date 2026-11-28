@@ -34,6 +34,8 @@ from app.domains.capability.service import (
     read_editor,
 )
 from app.domains.capability.stats import read_stats
+from app.domains.change_request.handover import notify_dictionary_changed
+from app.domains.drafting.service import queue_drafting
 
 router = APIRouter(prefix="/orgs/{org_id}/capabilities", tags=["capabilities"])
 
@@ -83,7 +85,15 @@ def preview_dictionary(
 def save_dictionary(
     body: SaveDictionary, session: SessionDep, principal: OrgAdminDep
 ) -> ActiveSchemaPublic:
-    return publish_dictionary(session, principal, body)
+    return publish_dictionary(
+        session,
+        principal,
+        body,
+        on_redraft=lambda s, org_id: queue_drafting(
+            s, org_id, "all", pending_owner_only=True, commit=False
+        ),
+        on_request_remapped=notify_dictionary_changed,
+    )
 
 
 @router.get("/editor", response_model=DictionaryPreview)
@@ -107,7 +117,15 @@ def preview_dictionary_editor(
 def update_dictionary(
     body: SaveDictionary, session: SessionDep, principal: OrgAdminDep
 ) -> ActiveSchemaPublic:
-    return publish_dictionary(session, principal, body)
+    return publish_dictionary(
+        session,
+        principal,
+        body,
+        on_redraft=lambda s, org_id: queue_drafting(
+            s, org_id, "all", pending_owner_only=True, commit=False
+        ),
+        on_request_remapped=notify_dictionary_changed,
+    )
 
 
 class DictionaryTooLarge(HTTPException):

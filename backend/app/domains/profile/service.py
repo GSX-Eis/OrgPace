@@ -7,7 +7,7 @@ from sqlmodel import Session, col, func, select
 
 from app.authz.policies import can_view_evidence_content
 from app.authz.principal import Principal
-from app.domains.base import utc_now
+from app.domains.base import months_before, utc_now
 from app.domains.capability.department import department_assignments
 from app.domains.capability.models import (
     CapabilityDefinition,
@@ -20,7 +20,7 @@ from app.domains.capability.service import (
     level_exists,
     list_capabilities,
 )
-from app.domains.drafting.update_settings import months_before, read_update_settings
+from app.domains.drafting.models import UpdateSetting
 from app.domains.evidence.models import Evidence, EvidenceStatus, Visibility
 from app.domains.evidence.service import evidence_access, restricted_title
 from app.domains.org.models import Employee, OrgMembership
@@ -95,7 +95,12 @@ def profile_items(
         for k, c in by_key.items()
         if k not in active_keys
     ]
-    months = read_update_settings(session, principal.org_id).stale_after_months
+    configured_months = session.exec(
+        select(UpdateSetting.stale_after_months).where(
+            UpdateSetting.org_id == principal.org_id
+        )
+    ).one_or_none()
+    months = configured_months if configured_months is not None else 24
     cutoff = months_before(utc_now(), months)
     items = []
     for capability in [*capabilities, *removed]:

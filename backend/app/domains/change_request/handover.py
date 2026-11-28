@@ -88,6 +88,22 @@ def hand_over(
     return len(requests)
 
 
+def notify_dictionary_changed(
+    session: Session,
+    request: ProfileChangeRequest,
+    message_zh: str,
+    message_en: str,
+) -> None:
+    """Notify a request owner when an updated capability dictionary remaps their draft."""
+    notify(
+        session,
+        request,
+        InboxKind.DICTIONARY_CHANGED,
+        message_zh,
+        message_en=message_en,
+    )
+
+
 def withdraw_deactivated_requests(
     session: Session, principal: Principal, deactivated: set[UUID]
 ) -> None:

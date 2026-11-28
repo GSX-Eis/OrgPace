@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -25,15 +26,21 @@ from app.domains.change_request.models import (
     ProfileChangeRequest,
     RequestStatus,
 )
-from app.domains.inbox.models import InboxKind
-from app.domains.inbox.service import notify
 from app.domains.org.service import lock_org
 from app.domains.profile.models import ProfileClaim
 from app.i18n import bilingual, tr, use_locale
 
+type DictionaryChangeNotifier = Callable[
+    [Session, ProfileChangeRequest, str, str], None
+]
+
 
 def activate_template(
-    session: Session, principal: Principal, template_id: str
+    session: Session,
+    principal: Principal,
+    template_id: str,
+    *,
+    on_request_remapped: DictionaryChangeNotifier | None = None,
 ) -> CapabilitySchemaVersion:
     template = get_template(template_id)
     lock_org(session, principal.org_id)
@@ -53,6 +60,7 @@ def activate_template(
             for c in template.capabilities
         ],
         template_ref=template.template_ref,
+        on_request_remapped=on_request_remapped,
     )
 
 
@@ -141,6 +149,7 @@ def save_version(
     *,
     expected_version: int | None = None,
     template_ref: str | None = None,
+    on_request_remapped: DictionaryChangeNotifier | None = None,
 ) -> CapabilitySchemaVersion:
     SaveDictionary(definitions=definitions, expected_version=expected_version or 0)
     org_id = principal.org_id
@@ -185,7 +194,7 @@ def save_version(
         session.add(capability)
         new[definition.key] = capability
     session.flush()
-    _remap_requests(session, principal, new)
+    _remap_requests(session, principal, new, on_request_remapped=on_request_remapped)
     details: dict[str, JsonValue] = {
         "template_ref": template_ref,
         "schema_version_id": str(schema.id),
@@ -207,7 +216,11 @@ def save_version(
 
 
 def _remap_requests(
-    session: Session, principal: Principal, definitions: dict[str, CapabilityDefinition]
+    session: Session,
+    principal: Principal,
+    definitions: dict[str, CapabilityDefinition],
+    *,
+    on_request_remapped: DictionaryChangeNotifier | None = None,
 ) -> None:
     requests = session.exec(
         select(ProfileChangeRequest)
@@ -278,13 +291,8 @@ def _remap_requests(
                 msg_en = tr("词典调整后，{parts}", parts=tr("；").join(parts_en))
         else:
             msg_zh, msg_en = bilingual("能力词典已更新，请重新预览后提交")
-        notify(
-            session,
-            request,
-            InboxKind.DICTIONARY_CHANGED,
-            msg_zh,
-            message_en=msg_en,
-        )
+        if on_request_remapped is not None:
+            on_request_remapped(session, request, msg_zh, msg_en)
         record_audit(
             session,
             org_id=principal.org_id,

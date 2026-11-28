@@ -21,7 +21,7 @@ from app.domains.capability.schemas import (
 )
 from app.domains.capability.service import activate_template, read_editor
 from app.domains.capability.templates import get_template, load_catalog
-from app.domains.change_request.handover import hand_over
+from app.domains.change_request.handover import hand_over, notify_dictionary_changed
 from app.domains.drafting import settings
 from app.domains.drafting.note import DraftingNoteInput, read_note, save_note
 from app.domains.drafting.service import (
@@ -91,7 +91,9 @@ def apply_template(
     db: Session, p: Principal, args: TemplateArgs, *, commit: bool = True
 ) -> BaseModel:
     result = ActiveSchemaPublic.model_validate(
-        activate_template(db, p, args.template_id)
+        activate_template(
+            db, p, args.template_id, on_request_remapped=notify_dictionary_changed
+        )
     )
     if commit:
         db.commit()
@@ -239,7 +241,16 @@ def register_rules(functions: dict[str, AdminFunction]) -> None:
             "normal",
             "预览并发布能力词典；redraft 打开时重新起草尚未交付的初始画像",
             SaveDictionary,
-            save_dictionary,
+            lambda d, p, a, **kw: save_dictionary(
+                d,
+                p,
+                a,
+                on_redraft=lambda s, org_id: queue_drafting(
+                    s, org_id, "all", pending_owner_only=True, commit=False
+                ),
+                on_request_remapped=notify_dictionary_changed,
+                **kw,
+            ),
             "/admin/rules?tab=dictionary",
             (
                 ("POST", "/capabilities/editor/preview"),

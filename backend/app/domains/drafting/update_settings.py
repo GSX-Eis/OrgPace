@@ -1,4 +1,3 @@
-from calendar import monthrange
 from datetime import datetime
 from typing import Literal
 from uuid import UUID
@@ -8,6 +7,7 @@ from sqlmodel import Session, col, select
 
 from app.authz.principal import Principal
 from app.domains.audit.service import record_audit
+from app.domains.base import months_before as months_before
 from app.domains.base import utc_now
 from app.domains.drafting.models import UpdateSetting
 from app.domains.org.models import Organization
@@ -24,14 +24,6 @@ class UpdateSettingsInput(BaseModel):
 class UpdateSettingsPublic(UpdateSettingsInput):
     next_reminder_at: datetime | None
     updated_at: datetime | None
-
-
-def months_before(now: datetime, months: int) -> datetime:
-    year, month = divmod(now.year * 12 + now.month - 1 - months, 12)
-    month += 1
-    return now.replace(
-        year=year, month=month, day=min(now.day, monthrange(year, month)[1])
-    )
 
 
 def read_update_settings(session: Session, org_id: UUID) -> UpdateSettingsPublic:
