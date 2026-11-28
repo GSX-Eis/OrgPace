@@ -1303,29 +1303,15 @@ _PYTEST_DURATION_LINE_RE = re.compile(
 _PLAYWRIGHT_COUNT_RE = re.compile(
     r"^\s*(\d+)\s+(passed|failed|skipped|flaky|timed out|interrupted)(?:\s+\([^)]+\))?\s*$"
 )
+_PLAYWRIGHT_SUMMARY_DETAIL_RE = re.compile(r"^\s+\[[^\]]+\]\s+›\s+")
 _PREFLIGHT_STEP_RE = re.compile(
     r"^(同步检查|单一head|pre-commit|数据库环境|pytest|手动提示):\s*(通过|跳过|失败)\s*\((\d+)s\)$"
 )
-_INFRA_ERROR_RE = re.compile(
-    r"(?:Compose cleanup failed|Warm DB leftover cleanup failed|Port \d+ is occupied|"
-    r"Snapshot changed|Workspace sync failed|IAP SSH did not become ready|"
-    r"Could not update the local usage estimate|FIXTURE_CLEANUP_FAILURE|"
-    r"Cannot connect to the Docker daemon|Permission denied|Killed\b|Out of memory|"
-    r"INTERNALERROR>|SyntaxError:|UsageError:|ERROR: file or directory not found)",
-    re.IGNORECASE,
-)
+_SSH_CLOSED_RE = re.compile(r"^Shared connection to .+ closed\.$")
 
 
 def _clean_output(raw: str) -> str:
-    return "\n".join(
-        _ANSI_RE.sub(
-            "",
-            ln.rsplit("\r", 1)[-1]
-            if "\r" in ln and ln.rsplit("\r", 1)[-1]
-            else ln.replace("\r", ""),
-        )
-        for ln in raw.replace("\r\n", "\n").split("\n")
-    )
+    return _ANSI_RE.sub("", raw.replace("\r\n", "\n").replace("\r", "\n"))
 
 
 def _fmt_sec(raw: str) -> str:
@@ -1339,10 +1325,8 @@ def _fmt_sec(raw: str) -> str:
 
 def _parse_counts_and_durations(
     mode: str, lines: list[str]
-) -> tuple[
-    dict[str, int], list[str], int | None, list[tuple[str, str, int]], int | None
-]:
-    counts = {"passed": 0, "skipped": 0, "failed": 0, "errors": 0, "xfailed": 0}
+) -> tuple[dict[str, int] | None, list[str], list[tuple[str, str, int]]]:
+    counts: dict[str, int] | None = None
     summary_idx = next(
         (
             i
@@ -1354,6 +1338,7 @@ def _parse_counts_and_durations(
     if summary_idx is not None and (
         m := _PYTEST_SUMMARY_RE.match(lines[summary_idx].strip())
     ):
+        counts = {"passed": 0, "skipped": 0, "failed": 0, "errors": 0, "xfailed": 0}
         for num_raw, kind in _PYTEST_COUNT_RE.findall(m.group(1)):
             k = "errors" if kind in {"error", "errors"} else kind
             if k in counts:
@@ -1379,20 +1364,29 @@ def _parse_counts_and_durations(
                 durations.append(f"{dm.group(1)} {dm.group(2)} {dm.group(3)}")
 
     if mode == "playwright":
-        pw = {"passed": 0, "skipped": 0, "failed": 0, "errors": 0, "xfailed": 0}
-        found = False
-        for ln in lines[max(0, len(lines) - 40) :]:
-            if pm := _PLAYWRIGHT_COUNT_RE.match(ln):
-                found = True
-                kind = pm.group(2)
-                k = (
-                    "failed"
-                    if kind in {"failed", "timed out"}
-                    else ("errors" if kind == "interrupted" else kind)
-                )
-                if k in pw:
-                    pw[k] += int(pm.group(1))
-        if found:
+        last_pw = next(
+            (
+                i
+                for i in range(len(lines) - 1, -1, -1)
+                if _PLAYWRIGHT_COUNT_RE.match(lines[i])
+            ),
+            None,
+        )
+        if last_pw is not None:
+            pw = {"passed": 0, "skipped": 0, "failed": 0, "errors": 0, "xfailed": 0}
+            for i in range(last_pw, -1, -1):
+                ln = lines[i]
+                if pm := _PLAYWRIGHT_COUNT_RE.match(ln):
+                    kind = pm.group(2)
+                    k = (
+                        "failed"
+                        if kind in {"failed", "timed out"}
+                        else ("errors" if kind == "interrupted" else kind)
+                    )
+                    if k in pw:
+                        pw[k] += int(pm.group(1))
+                elif not _PLAYWRIGHT_SUMMARY_DETAIL_RE.match(ln) and ln.strip():
+                    break
             counts = pw
 
     pf_header = (
@@ -1416,104 +1410,7 @@ def _parse_counts_and_durations(
         if pf_header is not None
         else []
     )
-    return counts, durations[:5], summary_idx, pf_steps, pf_header
-
-
-def _extract_failure_diagnostics(
-    mode: str,
-    lines: list[str],
-    playwright_artifacts: str,
-    pf_steps: list[tuple[str, str, int]],
-    pf_header: int | None,
-    pytest_summary_idx: int | None,
-) -> list[str]:
-    sections: dict[str, list[str]] = {}
-    cur: str | None = None
-    for ln in lines:
-        if b := _PYTEST_BANNER_RE.match(ln.strip()):
-            t = b.group(1).strip()
-            cur = t if t in {"FAILURES", "ERRORS", "short test summary info"} else None
-            if cur:
-                sections.setdefault(cur, []).append(ln)
-        elif cur == "short test summary info" and (
-            _PYTEST_SUMMARY_RE.match(ln.strip())
-            or ln.startswith("EPP_METRIC ")
-            or re.match(r"^Shared connection to .* closed\.$", ln.strip())
-        ):
-            cur = None
-        elif cur:
-            sections[cur].append(ln)
-
-    non_metric = [ln for ln in lines if not ln.startswith("EPP_METRIC ")]
-    infra = [ln for ln in non_metric if _INFRA_ERROR_RE.search(ln)]
-    pytest_diag = [
-        ln
-        for k in ("FAILURES", "ERRORS", "short test summary info")
-        if k in sections
-        for ln in sections[k]
-    ]
-
-    if mode == "pytest":
-        if "FAILURES" not in sections and "ERRORS" not in sections:
-            return non_metric or ["(no output captured)"]
-        diag = [
-            *pytest_diag,
-            *(ln for ln in non_metric if ln.startswith("!") and "Interrupted:" in ln),
-        ]
-        seen = set(diag)
-        extra = [ln for ln in infra if ln not in seen]
-        return (
-            [*diag, "--- additional infrastructure/cleanup errors ---", *extra]
-            if extra
-            else diag
-        )
-
-    if mode == "preflight":
-        if [n for n, st, _ in pf_steps if st == "失败"] == ["pytest"] and (
-            "FAILURES" in sections or "ERRORS" in sections
-        ):
-            diag = list(pytest_diag)
-            if (
-                pytest_summary_idx is not None
-                and pf_header is not None
-                and pf_header > pytest_summary_idx
-            ):
-                diag.extend(
-                    ln
-                    for ln in lines[pytest_summary_idx:pf_header]
-                    if not ln.startswith("EPP_METRIC ")
-                )
-            if pf_header is not None:
-                diag.extend(
-                    ln for ln in lines[pf_header:] if not ln.startswith("EPP_METRIC ")
-                )
-            return diag
-        return non_metric or ["(no output captured)"]
-
-    if mode == "playwright":
-        diag = (
-            [f"Playwright artifacts: {playwright_artifacts}"]
-            if playwright_artifacts
-            else []
-        )
-        fail_start = next(
-            (
-                i
-                for i, ln in enumerate(non_metric)
-                if re.match(
-                    r"^\s*\d+\)\s+\[|^\s*\d+\s+(?:failed|timed out|interrupted)\b", ln
-                )
-            ),
-            None,
-        )
-        diag.extend(
-            non_metric[fail_start:]
-            if (fail_start is not None and not infra)
-            else (non_metric or ["(no output captured)"])
-        )
-        return diag
-
-    return non_metric or ["(no output captured)"]
+    return counts, durations[:5], pf_steps
 
 
 def build_summary_lines(
@@ -1536,9 +1433,7 @@ def build_summary_lines(
         for tok in ln[11:].split()
         if "=" in tok
     )
-    counts, durations, summary_idx, pf_steps, pf_header = _parse_counts_and_durations(
-        mode, lines
-    )
+    counts, durations, pf_steps = _parse_counts_and_durations(mode, lines)
     top_slow = list(durations)
     if not top_slow and pf_steps:
         active = sorted(
@@ -1546,6 +1441,11 @@ def build_summary_lines(
         )
         top_slow = [f"{s}s {n} ({st})" for s, n, st in active[:5]]
 
+    counts_str = (
+        f"passed={counts['passed']} skipped={counts['skipped']} failed={counts['failed']} errors={counts['errors']} xfailed={counts['xfailed']}"
+        if counts is not None
+        else "passed=n/a skipped=n/a failed=n/a errors=n/a xfailed=n/a"
+    )
     out = [
         f"[remote-test] {'PASS' if exit_code == 0 else 'FAIL'}",
         f"  mode: {mode}",
@@ -1554,7 +1454,7 @@ def build_summary_lines(
         f"  vm_budget: {vm_summary or 'n/a'}",
         f"  timings: queue_wait={_fmt_sec(queue_wait_s)} sync={_fmt_sec(sync_s)} db_prep={_fmt_sec(metric.get('db_prep_s', 'n/a'))} exec={_fmt_sec(metric.get('test_exec_s', 'n/a'))} total={_fmt_sec(total_s)}",
         f"  db: db_mode={metric.get('db_mode', 'unknown')} template_status={metric.get('template_status', 'unknown')}",
-        f"  counts: passed={counts['passed']} skipped={counts['skipped']} failed={counts['failed']} errors={counts['errors']} xfailed={counts['xfailed']}",
+        f"  counts: {counts_str}",
     ]
     if pf_steps:
         out.append(
@@ -1567,14 +1467,15 @@ def build_summary_lines(
         else ["  top_slow: n/a"]
     )
     if exit_code != 0:
-        out.extend(
-            [
-                "--- failure diagnostics ---",
-                *_extract_failure_diagnostics(
-                    mode, lines, playwright_artifacts, pf_steps, pf_header, summary_idx
-                ),
-            ]
-        )
+        replay = [
+            ln
+            for ln in lines
+            if not ln.startswith("EPP_METRIC ") and not _SSH_CLOSED_RE.match(ln.strip())
+        ]
+        out.append("--- failure diagnostics ---")
+        if playwright_artifacts:
+            out.append(f"Playwright artifacts: {playwright_artifacts}")
+        out.extend(replay or ["(no output captured)"])
     return out
 
 

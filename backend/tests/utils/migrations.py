@@ -186,6 +186,21 @@ def _rename_database(
     )
 
 
+def _record_template_status(
+    status_file: Path | None, status: Literal["built", "hit"]
+) -> None:
+    if status_file is None:
+        return
+    try:
+        fd = os.open(str(status_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        return
+    try:
+        os.write(fd, status.encode("ascii"))
+    finally:
+        os.close(fd)
+
+
 def ensure_shared_template(
     url: URL,
     *,
@@ -193,11 +208,16 @@ def ensure_shared_template(
     backend_dir: Path | None = None,
     max_templates: int = DEFAULT_MAX_SHARED_TEMPLATES,
     lease_stack: ExitStack | None = None,
+    status_file: Path | None = None,
 ) -> str:
     """Return an existing migrated template DB or atomically build one under advisory lock."""
     template = template_name or shared_template_name(backend_dir)
     if len(template) > 63 or not _SAFE_DB_PREFIX_RE.fullmatch(template):
         raise ValueError(f"Invalid shared template database name: {template!r}")
+    resolved_status_file = status_file
+    if resolved_status_file is None and template_name is None:
+        if raw_status_file := os.environ.get("EPP_TEMPLATE_STATUS_FILE", "").strip():
+            resolved_status_file = Path(raw_status_file)
 
     admin_url = url.set(drivername="postgresql", database="postgres")
     # Acquire session lease (key=1) before releasing/pruning so an active session's
@@ -238,6 +258,7 @@ def ensure_shared_template(
                     )
                     _rename_database(admin, staging, template)
                     published = True
+                    _record_template_status(resolved_status_file, "built")
                 finally:
                     if not published:
                         try:
@@ -263,6 +284,8 @@ def ensure_shared_template(
                         "ALTER DATABASE {} WITH IS_TEMPLATE true ALLOW_CONNECTIONS false"
                     ).format(sql.Identifier(template))
                 )
+            if row is not None:
+                _record_template_status(resolved_status_file, "hit")
             _prune_old_shared_templates(
                 admin, keep=template, max_templates=max_templates
             )

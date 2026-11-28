@@ -164,7 +164,7 @@ cloud_ssh() {
     --ssh-flag="-oControlPath=$ssh_control_path" "$@"
 }
 
-if [[ $mode != status && $no_cache != true && ${CLOUD_TEST_NO_CACHE:-0} != 1 ]]; then
+if [[ $mode != status && $no_cache != true && ${CLOUD_TEST_NO_CACHE:-0} != 1 && $verbose != true ]]; then
   if (cd "$scripts_dir/.." && python3 "$metadata" cache-lookup "$mode" -- "$@"); then
     exit 0
   fi
@@ -240,9 +240,14 @@ fi
 
 scratch=$(mktemp -d)
 observed_exit=false
+output_flushed=false
 finish() {
   local code=$1
   trap - EXIT
+  if [[ ${output_flushed:-false} != true && $code != 0 && -s $scratch/output.log ]]; then
+    cat "$scratch/output.log" >&2 || true
+    output_flushed=true
+  fi
   rm -rf -- "$scratch"
   if [[ ${observed_exit:-false} != true ]]; then
     if ! observe_for_mode; then
@@ -355,6 +360,7 @@ set +e
 if $verbose; then
   cloud_ssh --command="exec $locked bash -c $(printf '%q' "$execute")" -- -tt 2>&1 | tee "$scratch/output.log"
   code=${PIPESTATUS[0]}
+  output_flushed=true
 else
   cloud_ssh --command="exec $locked bash -c $(printf '%q' "$execute")" -- -tt >"$scratch/output.log" 2>&1
   code=$?
@@ -384,7 +390,7 @@ if ! observe_for_mode; then
 fi
 observed_exit=true
 
-total_s=$(python3 -c 'import sys, time; print(f"{float(sys.argv[1]) + max(0.0, time.monotonic() - float(sys.argv[2])):.3f}")' "$queue_wait_s" "$lock_acquired_mono")
+total_s=$(python3 -c 'import sys, time; print(f"{float(sys.argv[1]) + max(0.0, time.monotonic() - float(sys.argv[2])):.3f}")' "$queue_wait_s" "$lock_acquired_mono" 2>/dev/null || echo 0.000)
 summary_args=(
   --mode "$mode"
   --project "$project"
@@ -399,7 +405,15 @@ if [[ -n $playwright_artifacts ]]; then
   summary_args+=(--playwright-artifacts "$playwright_artifacts")
 fi
 if ! $verbose; then
+  set +e
   python3 "$metadata" format-summary "${summary_args[@]}" --summary-out "$scratch/summary.txt"
+  fmt_rc=$?
+  set -e
+  if [[ $fmt_rc != 0 ]]; then
+    echo "[remote-test] format-summary failed (exit=$fmt_rc); replaying raw output:" >&2
+    cat "$scratch/output.log" >&2 || true
+  fi
+  output_flushed=true
 elif [[ $code == 0 && -f $scratch/cache-meta.json ]]; then
   python3 "$metadata" format-summary "${summary_args[@]}" --summary-out "$scratch/summary.txt" >/dev/null || true
 fi

@@ -273,13 +273,17 @@ def test_shared_template_race_failure_readonly_cloning_and_pruning(
                 conn.execute(text("INSERT INTO tpl_probe (marker) VALUES ('seed')"))
 
         monkeypatch.setattr(migrations_mod, "migrate", slow_seed)
+        status_f1, status_f2 = tmp_path / "tpl_status_1", tmp_path / "tpl_status_2"
         barrier = threading.Barrier(2)
         with ThreadPoolExecutor(max_workers=2) as pool:
             f1 = pool.submit(
                 lambda: (
                     barrier.wait(timeout=5),
                     migrations_mod.ensure_shared_template(
-                        engine.url, template_name=tpl_main, max_templates=0
+                        engine.url,
+                        template_name=tpl_main,
+                        max_templates=0,
+                        status_file=status_f1,
                     ),
                 )[1]
             )
@@ -287,13 +291,20 @@ def test_shared_template_race_failure_readonly_cloning_and_pruning(
                 lambda: (
                     barrier.wait(timeout=5),
                     migrations_mod.ensure_shared_template(
-                        engine.url, template_name=tpl_main, max_templates=0
+                        engine.url,
+                        template_name=tpl_main,
+                        max_templates=0,
+                        status_file=status_f2,
                     ),
                 )[1]
             )
             assert f1.result(timeout=15) == tpl_main
             assert f2.result(timeout=15) == tpl_main
         assert migrate_calls == 1
+        assert sorted((status_f1.read_text(), status_f2.read_text())) == [
+            "built",
+            "hit",
+        ]
 
         # 3. Template is IS_TEMPLATE=true, ALLOW_CONNECTIONS=false and rejects direct connect.
         with psycopg.connect(admin_dsn, autocommit=True) as admin:
