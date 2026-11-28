@@ -10,7 +10,12 @@ from pydantic import JsonValue
 from sqlalchemy import ColumnElement
 from sqlmodel import Session, and_, col, func, or_, select
 
-from app.authz.policies import employee_scope_clause
+from app.authz.policies import (
+    can_manage_department,
+    can_view_org_aggregates,
+    employee_scope_clause,
+    manages_department,
+)
 from app.authz.principal import Principal
 from app.domains.capability.models import CapabilityDefinition
 from app.domains.capability.search import (
@@ -19,6 +24,13 @@ from app.domains.capability.search import (
     find_people,
 )
 from app.domains.capability.service import get_schema, list_capabilities
+from app.domains.capacity.common import (
+    CapacityConflict,
+    CapacityForbidden,
+    CapacityNotFound,
+    audit,
+    employee,
+)
 from app.domains.capacity.demand_schemas import (
     CapacityReference,
     CommitmentChange,
@@ -56,15 +68,8 @@ from app.domains.capacity.models import (
     RequesterPolicy,
 )
 from app.domains.capacity.schemas import REASON_LABELS, ReasonCode, Via
-from app.domains.capacity.settings import (
-    CapacityConflict,
-    CapacityForbidden,
-    CapacityNotFound,
-    audit,
-    read_settings,
-    require_enabled,
-)
-from app.domains.capacity.workload import employee, views
+from app.domains.capacity.settings import read_settings, require_enabled
+from app.domains.capacity.workload import views
 from app.domains.inbox.models import InboxItem, InboxKind
 from app.domains.inbox.service import add_item
 from app.domains.org.models import (
@@ -135,7 +140,7 @@ def require_requester(principal: Principal, session: Session) -> None:
     require_enabled(principal, session)
     if principal.user_id is None:
         raise CapacityForbidden()
-    if principal.is_org_admin or principal.managed_department_ids:
+    if can_view_org_aggregates(principal):
         return
     if read_settings(principal, session).requester_policy != RequesterPolicy.EVERYONE:
         raise CapacityForbidden()
@@ -260,10 +265,7 @@ def reference_for_viewer(
 
 
 def represents_department(principal: Principal, target_department_id: UUID) -> bool:
-    return (
-        principal.is_org_admin
-        or target_department_id in principal.managed_department_ids
-    )
+    return can_manage_department(principal, target_department_id)
 
 
 def can_view_demand_internals(principal: Principal, row: CapacityDemand) -> bool:
@@ -556,7 +558,7 @@ def demand_row(
     row = session.exec(query).one_or_none()
     if row is None or not (
         row.requester_user_id == principal.user_id
-        or row.requesting_department_id in principal.managed_department_ids
+        or manages_department(principal, row.requesting_department_id)
         or represents_department(principal, row.target_department_id)
     ):
         raise CapacityNotFound(DEMAND_NOT_FOUND)
@@ -673,9 +675,7 @@ def list_demands(
     if status is not None:
         query = query.where(CapacityDemand.status == status)
     if actionable_only:
-        if principal.user_id is None or (
-            not principal.is_org_admin and not principal.managed_department_ids
-        ):
+        if principal.user_id is None or not can_view_org_aggregates(principal):
             return DemandList(data=[], count=0)
         query = query.where(
             or_(
@@ -745,15 +745,13 @@ def require_requesting_department(
     if principal.user_id is None:
         raise CapacityForbidden()
     department(session, principal.org_id, requesting_department_id)
-    if not principal.is_org_admin:
-        if principal.managed_department_ids:
-            allowed = requesting_department_id in principal.managed_department_ids
-        else:
-            allowed = (
-                employee(principal, session, principal.employee_id).department_id
-                == requesting_department_id
-            )
-        if not allowed:
+    if not can_manage_department(principal, requesting_department_id):
+        if can_view_org_aggregates(principal):
+            raise CapacityForbidden()
+        if (
+            employee(principal, session, principal.employee_id).department_id
+            != requesting_department_id
+        ):
             raise CapacityForbidden()
     return principal.user_id
 
@@ -1209,7 +1207,7 @@ def respond_demand(
     row = demand_row(principal, session, demand_id, lock=True)
     if principal.user_id is None or not (
         row.requester_user_id == principal.user_id
-        or row.requesting_department_id in principal.managed_department_ids
+        or manages_department(principal, row.requesting_department_id)
     ):
         raise CapacityNotFound(DEMAND_NOT_FOUND)
     from app.domains.capacity import proposal

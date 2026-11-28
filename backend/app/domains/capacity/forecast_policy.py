@@ -5,9 +5,15 @@ from pydantic import JsonValue
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import Session, col, select
 
+from app.authz.policies import can_manage_department, can_view_org_aggregates
 from app.authz.principal import Principal
 from app.domains.base import utc_now
 from app.domains.capacity import calendar
+from app.domains.capacity.common import (
+    CapacityForbidden,
+    CapacityNotFound,
+    audit,
+)
 from app.domains.capacity.models import (
     CapacityForecastEvent,
     CapacityForecastPolicy,
@@ -25,12 +31,7 @@ from app.domains.capacity.schemas import (
     ForecastRefreshResult,
     Via,
 )
-from app.domains.capacity.settings import (
-    CapacityForbidden,
-    CapacityNotFound,
-    audit,
-    require_enabled,
-)
+from app.domains.capacity.settings import require_enabled
 from app.domains.org.models import Department, Employee, EmploymentStatus
 from app.domains.org.service import department_ancestry, managed_scope
 from app.i18n import tr
@@ -86,7 +87,7 @@ def build_policy_label(
 
 
 def require_manager_or_admin(principal: Principal) -> None:
-    if not principal.is_org_admin and not principal.managed_department_ids:
+    if not can_view_org_aggregates(principal):
         raise CapacityForbidden()
 
 
@@ -118,22 +119,17 @@ def require_write_scope(
     if principal.user_id is None:
         raise CapacityForbidden()
     if department_id is None:
-        if not principal.is_org_admin:
+        if not can_manage_department(principal, None):
             raise CapacityForbidden()
         return None
     dept = _require_department(session, principal.org_id, department_id)
-    if (
-        not principal.is_org_admin
-        and department_id not in principal.managed_department_ids
-    ):
+    if not can_manage_department(principal, department_id):
         raise CapacityForbidden()
     return dept
 
 
 def _can_edit_scope(principal: Principal, department_id: UUID | None) -> bool:
-    return principal.is_org_admin or (
-        department_id is not None and department_id in principal.managed_department_ids
-    )
+    return can_manage_department(principal, department_id)
 
 
 def _visible_ancestors(
@@ -460,10 +456,7 @@ def list_forecast_events(
     if department_id is not None:
         if department_id not in depts_by_id:
             raise CapacityNotFound("未找到该部门")
-        if (
-            not principal.is_org_admin
-            and department_id not in principal.managed_department_ids
-        ):
+        if not can_manage_department(principal, department_id):
             raise CapacityForbidden()
         ancestors = set(department_ancestry(depts_by_id, department_id))
         descendants = managed_scope(

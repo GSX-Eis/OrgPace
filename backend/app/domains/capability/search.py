@@ -12,6 +12,10 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import QueryableAttribute, load_only
 from sqlmodel import Session, col, select
 
+from app.authz.policies import (
+    can_manage_department,
+    can_view_org_aggregates,
+)
 from app.authz.principal import Principal
 from app.domains.audit.models import ActorKind
 from app.domains.capability.models import CapabilityDefinition, DepartmentCapability
@@ -103,10 +107,8 @@ class PeopleSearchInvalid(HTTPException):
 def find_people(
     session: Session, principal: Principal, args: PeopleSearchInput
 ) -> PeopleSearchResult:
-    if (
-        principal.actor_type != ActorKind.SYSTEM_WORKER
-        and not principal.is_org_admin
-        and not principal.managed_department_ids
+    if principal.actor_type != ActorKind.SYSTEM_WORKER and not can_view_org_aggregates(
+        principal
     ):
         raise CapabilityStatsForbidden()
     for start, end in (
@@ -133,8 +135,7 @@ def find_people(
     if (
         args.department_id
         and principal.actor_type != ActorKind.SYSTEM_WORKER
-        and not principal.is_org_admin
-        and args.department_id not in principal.managed_department_ids
+        and not can_manage_department(principal, args.department_id)
     ):
         raise CapabilityStatsForbidden()
     department_ids = (
@@ -265,7 +266,7 @@ def find_people(
 def export_published_claims(
     session: Session, principal: Principal
 ) -> list[ExportedClaimRow]:
-    if not principal.is_org_admin and not principal.managed_department_ids:
+    if not can_view_org_aggregates(principal):
         raise CapabilityStatsForbidden()
     org_id = principal.org_id
     schema = get_schema(session, org_id)
@@ -274,8 +275,7 @@ def export_published_claims(
     claims = [
         (employee, claim)
         for employee, version in latest_profiles(session, principal)
-        if principal.is_org_admin
-        or employee.department_id in principal.managed_department_ids
+        if can_manage_department(principal, employee.department_id)
         for claim in snapshot_claims(version)
         if claim.assessment_status != AssessmentStatus.UNKNOWN
     ]

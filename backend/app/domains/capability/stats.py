@@ -1,7 +1,7 @@
 from fastapi import HTTPException
 from sqlmodel import Session, col, select
 
-from app.authz.policies import employee_scope_clause
+from app.authz.policies import can_view_org_aggregates, employee_scope_clause
 from app.authz.principal import Principal
 from app.domains.capability.models import CapabilityDefinition
 from app.domains.capability.schemas import CapabilityStats, CapabilityStatsPublic
@@ -17,7 +17,7 @@ class CapabilityStatsForbidden(HTTPException):
 
 
 def read_stats(session: Session, principal: Principal) -> CapabilityStatsPublic:
-    if not principal.is_org_admin and not principal.managed_department_ids:
+    if not can_view_org_aggregates(principal):
         raise CapabilityStatsForbidden()
     schema = get_schema(session, principal.org_id)
     counts = {

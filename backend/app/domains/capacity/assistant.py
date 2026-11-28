@@ -3,7 +3,7 @@ import re
 from collections.abc import Callable, Iterable
 from dataclasses import replace
 from datetime import date
-from typing import Literal
+from typing import Literal, Protocol
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -19,13 +19,24 @@ from pydantic import (
 from pydantic.json_schema import SkipJsonSchema
 from sqlmodel import Session, col, func, select
 
-from app.authz.policies import can_view_employee
+from app.authz.policies import (
+    can_manage_department,
+    can_view_employee,
+    can_view_org_aggregates,
+    manages_department,
+)
 from app.authz.principal import Principal
 from app.domains.bot import schemas as s
 from app.domains.bot.models import BotSession
 from app.domains.capability.service import get_schema, list_capabilities
 from app.domains.capacity import demand, forecast_policy, proposal
 from app.domains.capacity.assignment import assignment_rows
+from app.domains.capacity.common import (
+    CapacityConflict,
+    CapacityForbidden,
+    CapacityNotFound,
+    employee,
+)
 from app.domains.capacity.demand_schemas import (
     DemandInput,
     DemandList,
@@ -56,6 +67,7 @@ from app.domains.capacity.schemas import (
     LeaveInput,
     TeamWorkloadInput,
     UnavailabilityInput,
+    Via,
     WorkloadRequestInput,
     WorkloadRequestPublic,
     WorkloadWeekItem,
@@ -64,15 +76,11 @@ from app.domains.capacity.schemas import (
     _strip_optional_text,
 )
 from app.domains.capacity.settings import (
-    CapacityConflict,
-    CapacityForbidden,
-    CapacityNotFound,
     read_settings,
     require_enabled,
 )
 from app.domains.capacity.tools import CAPACITY_TOOLS
 from app.domains.capacity.workload import (
-    employee,
     get_my_workload,
     register_unavailability,
     set_weeks,
@@ -346,8 +354,7 @@ def definitions(db: Session, p: Principal) -> list[ToolDefinition]:
             not in {"prepare_demand", "capacity_reference", "list_capacity_departments"}
         )
         and (
-            p.is_org_admin
-            or p.managed_department_ids
+            can_view_org_aggregates(p)
             or name not in {"get_demand_basis", "prepare_demand_reply"}
         )
         and (
@@ -446,7 +453,7 @@ def get_forecast_config_for_bot(p: Principal, db: Session) -> dict[str, JsonValu
                 "parent_department_id": (
                     str(d.parent_department_id) if d.parent_department_id else None
                 ),
-                "can_edit": p.is_org_admin or d.id in p.managed_department_ids,
+                "can_edit": can_manage_department(p, d.id),
             }
             for d in depts
         ],
@@ -886,7 +893,7 @@ def check_demand_response(
     row = demand.demand_row(p, db, body.demand_id)
     if p.user_id is None or not (
         row.requester_user_id == p.user_id
-        or row.requesting_department_id in p.managed_department_ids
+        or manages_department(p, row.requesting_department_id)
     ):
         raise CapacityNotFound(demand.DEMAND_NOT_FOUND)
     if (
@@ -1116,9 +1123,8 @@ def check_team_workload(db: Session, p: Principal, value: BaseModel) -> str:
     subject = employee(scoped, db, body.employee_id)
     if not can_view_employee(scoped, subject):
         raise CapacityNotFound()
-    if (
-        subject.id == scoped.employee_id
-        or subject.department_id not in scoped.managed_department_ids
+    if subject.id == scoped.employee_id or not manages_department(
+        scoped, subject.department_id
     ):
         raise CapacityForbidden()
     return tr(
@@ -1304,12 +1310,26 @@ def call(
         return {"error": tr(exc.detail) if isinstance(exc.detail, str) else exc.detail}
 
 
+class PlanReplyHandler(Protocol):
+    def __call__(
+        self,
+        p: Principal,
+        db: Session,
+        body: PlanReplyDemandInput,
+        *,
+        via: Via,
+        client_name: str,
+    ) -> DemandPublic: ...
+
+
 def act(
     db: Session,
     p: Principal,
     session: BotSession,
     cards: list[s.Message],
     action: s.CapacityAction,
+    *,
+    on_plan_reply: PlanReplyHandler | None = None,
 ) -> s.CapacityCard:
     card = next(
         (
@@ -1504,10 +1524,9 @@ def act(
                     )
                     return card
                 if plan_reply:
-                    # Planning/Capacity composition belongs to the Agent entrypoint.
-                    from app.domains.bot.tools import confirm_plan_reply
-
-                    result = confirm_plan_reply(
+                    if on_plan_reply is None:
+                        raise RuntimeError("on_plan_reply callback is required")
+                    result = on_plan_reply(
                         p,
                         db,
                         PlanReplyDemandInput.model_validate(body),

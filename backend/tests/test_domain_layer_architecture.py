@@ -43,11 +43,8 @@ LAYER_BY_DOMAIN: dict[str, int] = {
     "setup": 3,
 }
 
-# Temporary whitelist strictly reserved for D10a (capacity/assistant.py -> bot).
-# Remove entries immediately once the underlying dependency is eliminated.
-UPWARD_WHITELIST: set[tuple[str, str]] = {
-    ("capacity/assistant.py", "app.domains.bot.tools.confirm_plan_reply"),
-}
+# All cross-layer upward edges have been eliminated.
+UPWARD_WHITELIST: set[tuple[str, str]] = set()
 
 # Temporary whitelist strictly reserved for D9a (bot <-> admin_assistant L3 cycle).
 # Remove entries immediately once chat_runtime is extracted.

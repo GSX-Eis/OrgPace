@@ -14,6 +14,17 @@ from app.domains.capacity.assignment import (
     assignment_rows,
     change_due_date,
 )
+from app.domains.capacity.common import (
+    CapacityConflict,
+    CapacityNotFound,
+    audit,
+    employee,
+    notify_employee,
+    record_capacity_inbox_link,
+)
+from app.domains.capacity.common import (
+    user_names as user_names,
+)
 from app.domains.capacity.demand import (
     represents_department,
     responder_user_ids,
@@ -34,16 +45,7 @@ from app.domains.capacity.models import (
     CapacityRequestStatus,
 )
 from app.domains.capacity.schemas import Via
-from app.domains.capacity.settings import (
-    CapacityConflict,
-    CapacityNotFound,
-    audit,
-    require_enabled,
-)
-from app.domains.capacity.workload import (
-    employee,
-    notify_employee,
-)
+from app.domains.capacity.settings import require_enabled
 from app.domains.inbox.models import InboxItem, InboxKind
 from app.domains.inbox.service import REDACTED_EXTENSION_RECEIPT_MESSAGE, add_item
 from app.domains.org.models import Department, Employee, EmploymentStatus, OrgMembership
@@ -115,27 +117,6 @@ def extension_public(
         current_due_date=row.due_date,
         committed_end_date=demand.committed_end_date,
     )
-
-
-def user_names(session: Session, org_id: UUID, user_ids: set[UUID]) -> dict[UUID, str]:
-    if not user_ids:
-        return {}
-    return {
-        user_id: employee_name or full_name or tr("企业管理员")
-        for user_id, employee_name, full_name in session.exec(
-            select(OrgMembership.user_id, Employee.display_name, User.full_name)
-            .join(User, col(User.id) == OrgMembership.user_id)
-            .outerjoin(
-                Employee,
-                (col(Employee.org_id) == OrgMembership.org_id)
-                & (col(Employee.id) == OrgMembership.employee_id),
-            )
-            .where(
-                OrgMembership.org_id == org_id, col(OrgMembership.user_id).in_(user_ids)
-            )
-            .order_by(col(User.id))
-        ).all()
-    }
 
 
 def request_extension(
@@ -481,8 +462,6 @@ def decide_extension_request(
             extension_request_id=request.id,
         )
     else:
-        from app.domains.capacity.inbox_detail import record_capacity_inbox_link
-
         msg_zh, msg_en = bilingual(
             "延期申请已退回（{cap}，申请延至 {date}）。请前往「我的负荷」查看。退回说明：{note}",
             cap=demand.capability_name,
@@ -538,8 +517,6 @@ def decide_extension_request(
         else employee(principal, session, row.employee_id).display_name
     )
     if request.decided_for_user_id is not None and lender is None:
-        from app.domains.capacity.inbox_detail import record_capacity_inbox_link
-
         assert principal.user_id is not None
         original_user = session.exec(
             select(User)

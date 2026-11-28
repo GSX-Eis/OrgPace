@@ -6,6 +6,7 @@ from sqlmodel import Session
 from app.authz.principal import Principal
 from app.domains.capacity import demand, project, proposal
 from app.domains.capacity.assignment import list_my_assignments
+from app.domains.capacity.common import CapacityForbidden
 from app.domains.capacity.demand import (
     capacity_reference,
     get_demand,
@@ -34,7 +35,6 @@ from app.domains.capacity.schemas import (
     Via,
     WorkloadRequestInput,
 )
-from app.domains.capacity.settings import CapacityForbidden
 from app.domains.capacity.workload import get_my_workload, request_workload_change
 from app.domains.employee_tools import EmployeeTool
 

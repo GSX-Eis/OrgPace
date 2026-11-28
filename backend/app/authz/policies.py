@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from fastapi import HTTPException
 from sqlalchemy import and_, or_, true
 from sqlalchemy.sql.elements import ColumnElement
@@ -60,3 +62,18 @@ def can_view_evidence_content(
             )
         )
     )
+
+
+def manages_department(p: Principal, department_id: UUID | None) -> bool:
+    """Return whether principal holds a direct/descendant manager grant for department_id."""
+    return department_id is not None and department_id in p.managed_department_ids
+
+
+def can_manage_department(p: Principal, department_id: UUID | None) -> bool:
+    """Return whether principal may manage department_id (None represents org-wide scope)."""
+    return p.is_org_admin or manages_department(p, department_id)
+
+
+def can_view_org_aggregates(p: Principal) -> bool:
+    """Return whether principal holds org-admin or department-manager scope."""
+    return p.is_org_admin or bool(p.managed_department_ids)

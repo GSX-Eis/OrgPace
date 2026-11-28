@@ -13,6 +13,20 @@ from app.authz.policies import can_view_employee, employee_scope_clause
 from app.authz.principal import Principal
 from app.domains.base import utc_now
 from app.domains.capacity import calendar
+from app.domains.capacity.common import (
+    CapacityConflict,
+    CapacityForbidden,
+    CapacityNotFound,
+    audit,
+    record_capacity_inbox_link,
+    user_names,
+)
+from app.domains.capacity.common import (
+    employee as employee,
+)
+from app.domains.capacity.common import (
+    notify_employee as notify_employee,
+)
 from app.domains.capacity.forecast import open_jira_task_counts, refresh_org_forecasts
 from app.domains.capacity.models import (
     AssignmentStatus,
@@ -54,13 +68,7 @@ from app.domains.capacity.schemas import (
     WorkloadUnavailabilitySegment,
     WorkloadWeeksInput,
 )
-from app.domains.capacity.settings import (
-    CapacityConflict,
-    CapacityForbidden,
-    CapacityNotFound,
-    audit,
-    require_enabled,
-)
+from app.domains.capacity.settings import require_enabled
 from app.domains.inbox.models import InboxItem, InboxKind
 from app.domains.inbox.service import add_item
 from app.domains.org.models import (
@@ -91,24 +99,6 @@ class WorkloadWeekExpired(HTTPException):
 def validate_request_week(end_week: date, current: date) -> None:
     if end_week < current:
         raise WorkloadWeekExpired()
-
-
-def employee(
-    principal: Principal,
-    session: Session,
-    employee_id: UUID | None,
-    *,
-    lock: bool = False,
-) -> Employee:
-    query = select(Employee).where(
-        Employee.org_id == principal.org_id, Employee.id == employee_id
-    )
-    if lock:
-        query = query.with_for_update().execution_options(populate_existing=True)
-    row = session.exec(query).one_or_none()
-    if row is None or row.employment_status != EmploymentStatus.ACTIVE:
-        raise CapacityNotFound()
-    return row
 
 
 @dataclass
@@ -500,34 +490,6 @@ def list_workloads(
     return WorkloadList(data=data, count=len(data))
 
 
-def notify_employee(
-    principal: Principal,
-    session: Session,
-    employee_id: UUID,
-    message: str,
-    *,
-    message_en: str | None = None,
-    workload_request_id: UUID | None = None,
-    extension_request_id: UUID | None = None,
-) -> None:
-    from app.domains.capacity.inbox_detail import record_capacity_inbox_link
-
-    item = InboxItem(
-        org_id=principal.org_id,
-        recipient_employee_id=employee_id,
-        kind=InboxKind.CAPACITY,
-        message=message,
-        message_en=message_en,
-    )
-    add_item(session, item)
-    record_capacity_inbox_link(
-        session,
-        item,
-        workload_request_id=workload_request_id,
-        extension_request_id=extension_request_id,
-    )
-
-
 def workload_reviewers(
     principal: Principal, session: Session, employee_id: UUID
 ) -> list[User]:
@@ -561,8 +523,6 @@ def workload_reviewers(
 def workload_reviewer_names(
     principal: Principal, session: Session, users: list[User]
 ) -> list[str]:
-    from app.domains.capacity.extension import user_names
-
     return list(
         user_names(session, principal.org_id, {user.id for user in users}).values()
     )
@@ -1064,8 +1024,6 @@ def _department_names(
 def _reversible_batches(
     principal: Principal, session: Session
 ) -> list[ReversibleBatch]:
-    from app.domains.capacity.extension import user_names
-
     batches = list(
         session.exec(
             select(CapacityCarryOver)
@@ -1188,8 +1146,6 @@ def commit_carry_over(
     via: Via = "web",
     client_name: str | None = None,
 ) -> CarryOverBatchPublic:
-    from app.domains.capacity.extension import user_names
-
     require_enabled(principal, session)
     if (
         principal.is_org_admin
@@ -1510,8 +1466,6 @@ def request_workload_change(
 def list_workload_requests(
     principal: Principal, session: Session
 ) -> WorkloadRequestList:
-    from app.domains.capacity.extension import user_names
-
     require_enabled(principal, session)
     query = (
         select(CapacityWorkloadRequest, Employee.display_name)
@@ -1677,9 +1631,6 @@ def decide_workload_request(
         workload_request_id=row.id,
     )
     if row.decided_for_user_id is not None:
-        from app.domains.capacity.extension import user_names
-        from app.domains.capacity.inbox_detail import record_capacity_inbox_link
-
         assert principal.user_id is not None
         with use_locale("zh-CN"):
             actor_zh = user_names(session, principal.org_id, {principal.user_id}).get(

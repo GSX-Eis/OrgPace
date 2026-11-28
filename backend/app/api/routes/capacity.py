@@ -2,7 +2,6 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Query
-from sqlmodel import col, select
 
 from app.api.deps import SessionDep
 from app.authz.deps import OrgAdminDep, OrgPrincipalDep
@@ -44,8 +43,6 @@ from app.domains.capacity.demand_schemas import (
     ProposalWithdrawInput,
     ReferenceInput,
     RespondInput,
-    SnapshotDecision,
-    SnapshotOptionDecision,
 )
 from app.domains.capacity.extension_schemas import (
     ExtensionDecisionInput,
@@ -56,7 +53,6 @@ from app.domains.capacity.extension_schemas import (
 from app.domains.capacity.models import (
     CapacityDemandEvent,
     DemandEventKind,
-    DemandOutcome,
     DemandStatus,
 )
 from app.domains.capacity.schemas import (
@@ -92,16 +88,7 @@ from app.domains.capacity.schemas import (
     WorkloadWeeksInput,
 )
 from app.domains.org.schemas import DepartmentsPublic
-from app.domains.planning import service as planning
-from app.domains.planning.models import (
-    OptionKind,
-    PlanningCase,
-    PlanningOption,
-    PlanningSnapshot,
-    PlanVerdict,
-)
-from app.domains.planning.schemas import KIND_LABELS, VERDICT_LABELS
-from app.i18n import tr
+from app.domains.planning import compose as planning_compose
 
 router = APIRouter(prefix="/orgs/{org_id}", tags=["capacity"])
 playwright_router = APIRouter(
@@ -246,50 +233,7 @@ def get_demand(
 def get_demand_history(
     principal: OrgPrincipalDep, session: SessionDep, demand_id: UUID
 ) -> DemandHistory:
-    row = demand.demand_row(principal, session, demand_id)
-    history = demand.decision_history(principal, session, row)
-    if demand.can_view_demand_internals(principal, row):
-        snapshots: dict[UUID, SnapshotDecision] = {}
-        for snapshot_id, created_at, kind, verdict in session.exec(
-            select(
-                PlanningSnapshot.id,
-                PlanningSnapshot.created_at,
-                PlanningOption.kind,
-                PlanningOption.verdict,
-            )
-            .join(
-                PlanningCase,
-                (col(PlanningCase.org_id) == PlanningSnapshot.org_id)
-                & (col(PlanningCase.id) == PlanningSnapshot.case_id),
-            )
-            .outerjoin(
-                PlanningOption,
-                (col(PlanningOption.org_id) == PlanningSnapshot.org_id)
-                & (col(PlanningOption.snapshot_id) == PlanningSnapshot.id),
-            )
-            .where(
-                PlanningCase.org_id == principal.org_id,
-                PlanningCase.demand_id == row.id,
-            )
-            .order_by(
-                col(PlanningSnapshot.created_at),
-                col(PlanningSnapshot.id),
-                col(PlanningOption.created_at),
-                col(PlanningOption.id),
-            )
-        ):
-            snapshot = snapshots.setdefault(
-                snapshot_id, SnapshotDecision(id=snapshot_id, created_at=created_at)
-            )
-            if kind is not None and verdict is not None:
-                snapshot.options.append(
-                    SnapshotOptionDecision(
-                        kind_label=tr(KIND_LABELS[OptionKind(kind)]),
-                        verdict_label=tr(VERDICT_LABELS[PlanVerdict(verdict)]),
-                    )
-                )
-        history.snapshots = list(snapshots.values())
-    return history
+    return planning_compose.demand_snapshot_history(principal, session, demand_id)
 
 
 @router.get("/capacity/demands/{demand_id}/basis")
@@ -316,83 +260,11 @@ def reply_demand(
             **body.model_dump(exclude={"lender_department_id", "borrow_headcount"}),
         )
     else:
-        result = propose_plan(principal, session, demand_id, body)
+        result = planning_compose.propose_plan(
+            principal, session, demand_id, body, include_previous=True
+        )
     session.commit()
     return result
-
-
-def propose_plan(
-    principal: OrgPrincipalDep,
-    session: SessionDep,
-    demand_id: UUID,
-    body: PlanReplyInput | ChangeProposalInput,
-) -> DemandPublic:
-    fields = {"lender_department_id", "borrow_headcount"}
-    assert body.option_id is not None
-    row = demand.demand_row(principal, session, demand_id, lock=True)
-    if not demand.represents_department(principal, row.target_department_id):
-        raise planning.PlanningStale()
-    if isinstance(body, PlanReplyInput) and body.outcome == DemandOutcome.NOT_NOW:
-        raise proposal.ProposalConflict("暂不能承接的答复不能带方案")
-    found = session.exec(
-        select(PlanningOption, PlanningSnapshot.case_id)
-        .join(
-            PlanningSnapshot,
-            (col(PlanningSnapshot.org_id) == PlanningOption.org_id)
-            & (col(PlanningSnapshot.id) == PlanningOption.snapshot_id),
-        )
-        .where(
-            PlanningOption.org_id == principal.org_id,
-            PlanningOption.id == body.option_id,
-        )
-    ).one_or_none()
-    if found is None:
-        raise planning.PlanningStale()
-    saved, case_id = found
-    _, snapshot, case_demand = planning.authorized_case(principal, session, case_id)
-    if case_demand.id != demand_id or saved.snapshot_id != snapshot.id:
-        raise planning.PlanningStale()
-    if saved.verdict not in (PlanVerdict.FEASIBLE, PlanVerdict.CONDITIONAL):
-        raise proposal.ProposalConflict("只有可行或有条件可行的方案可以提议")
-    lines = proposal.plan_lines(
-        principal,
-        session,
-        row,
-        body,
-        saved.params,
-        borrow=saved.kind == OptionKind.BORROW,
-    )
-    current = planning.get_case(principal, session, case_id)
-    if current.stale or current.snapshot_id != saved.snapshot_id:
-        raise planning.PlanningStale()
-    if isinstance(body, ChangeProposalInput):
-        proposal.create(principal, session, row, body.option_id, lines, change=body)
-    else:
-        direct = proposal.is_direct_commit(
-            row, lines, is_borrow=saved.kind == OptionKind.BORROW
-        )
-        demand.reply_demand(
-            principal,
-            session,
-            demand_id,
-            **body.model_dump(
-                exclude=fields
-                | {"option_id", "outside_basis", "start_date", "end_date"}
-            ),
-            start_date=min(line.start_date for line in lines),
-            end_date=max(line.end_date for line in lines),
-            allow_legacy_reply=True,
-            notify_requester=not direct,
-        )
-        proposal.create(
-            principal,
-            session,
-            row,
-            body.option_id,
-            lines,
-            direct_commit=direct,
-        )
-    return demand.get_demand(principal, session, demand_id, include_previous=True)
 
 
 @router.post("/capacity/demands/{demand_id}/change")
@@ -402,7 +274,9 @@ def propose_change(
     demand_id: UUID,
     body: ChangeProposalInput,
 ) -> DemandPublic:
-    result = propose_plan(principal, session, demand_id, body)
+    result = planning_compose.propose_plan(
+        principal, session, demand_id, body, include_previous=True
+    )
     session.commit()
     return result
 

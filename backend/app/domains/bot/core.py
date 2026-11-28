@@ -339,7 +339,11 @@ def act(
     if isinstance(action, s.ProjectDraftAction):
         messages = [project_drafts.confirm(db, p, session, cards, action)]
     elif isinstance(action, s.CapacityAction):
-        messages = [capacity.act(db, p, session, cards, action)]
+        messages = [
+            capacity.act(
+                db, p, session, cards, action, on_plan_reply=tools.confirm_plan_reply
+            )
+        ]
     elif isinstance(action, s.ProfileEditAction):
         edit_card = next(
             (

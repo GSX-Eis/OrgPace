@@ -7,7 +7,12 @@ from fastapi.testclient import TestClient
 from sqlalchemy import event, text
 from sqlmodel import Session
 
-from app.authz.deps import managed_scope
+from app.authz.deps import get_org_principal, managed_scope
+from app.authz.policies import (
+    can_manage_department,
+    can_view_org_aggregates,
+    manages_department,
+)
 from app.core.db import engine
 from app.domains.base import utc_now
 from app.domains.capability.models import CapabilitySchemaVersion
@@ -311,3 +316,20 @@ def test_nonmember_and_missing_org_are_identical(
         == responses[1].json()
         == {"detail": "未找到该企业或你没有权限访问"}
     )
+
+
+def test_principal_department_policy_includes_descendants(
+    readonly_hierarchy: tuple, db: Session
+) -> None:
+    orgs, departments, _, users, _ = readonly_hierarchy
+    org_depts = departments[0]  # 0: 研发中心, 1: 平台部, 2: 质量组, 3: 市场中心
+    # users[1] manages 平台部 (index 1), whose descendant is 质量组 (index 2).
+    mgr = get_org_principal(orgs[0].id, users[1], db)
+    assert can_view_org_aggregates(mgr) is True
+    assert can_manage_department(mgr, org_depts[1].id) is True
+    assert can_manage_department(mgr, org_depts[2].id) is True
+    assert can_manage_department(mgr, org_depts[0].id) is False
+    assert can_manage_department(mgr, org_depts[3].id) is False
+    assert can_manage_department(mgr, None) is False
+    assert manages_department(mgr, org_depts[2].id) is True
+    assert manages_department(mgr, None) is False

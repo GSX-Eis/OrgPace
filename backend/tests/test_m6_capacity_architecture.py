@@ -106,6 +106,25 @@ def violations(root: Path) -> list[str]:
                             and module
                             == "app.domains.capacity.forecast.refresh_org_forecasts"
                         )
+                        or (
+                            relative == "domains/planning/compose.py"
+                            and (
+                                module.startswith(
+                                    "app.domains.capacity.demand_schemas."
+                                )
+                                or module
+                                in {
+                                    "app.domains.capacity.demand.can_view_demand_internals",
+                                    "app.domains.capacity.demand.decision_history",
+                                    "app.domains.capacity.demand.reply_demand",
+                                    "app.domains.capacity.proposal.ProposalConflict",
+                                    "app.domains.capacity.proposal.create",
+                                    "app.domains.capacity.proposal.is_direct_commit",
+                                    "app.domains.capacity.proposal.plan_lines",
+                                    "app.domains.capacity.schemas.Via",
+                                }
+                            )
+                        )
                     )
                 )
                 and (
