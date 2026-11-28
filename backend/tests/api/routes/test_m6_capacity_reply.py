@@ -16,7 +16,7 @@ from app.authz.principal import Principal
 from app.core.security import create_access_token
 from app.domains.audit.models import AuditEvent
 from app.domains.base import utc_now
-from app.domains.capacity import common
+from app.domains.capacity import common, demand_views
 from app.domains.capacity import demand as service
 from app.domains.capacity.calendar import this_week
 from app.domains.capacity.models import (
@@ -196,6 +196,7 @@ def test_flow_privacy_snapshot_notifications_and_profile_invariance(
     with monkeypatch.context() as patch:
         patch.setattr(service, "find_people", scoped_find)
         patch.setattr(common, "find_people", scoped_find)
+        patch.setattr(demand_views, "find_people", scoped_find)
         basis = api(path + "/basis", "b")
     assert callers == [members[employees["E05"].id].user_id, None]
     assert basis["count"] == 5
