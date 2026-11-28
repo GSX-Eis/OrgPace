@@ -105,7 +105,10 @@ def _iter_runtime_imports(tree: ast.AST) -> list[tuple[str, int]]:
         if isinstance(node, ast.Import):
             results.extend((alias.name, 0) for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
-            results.append((node.module or "", node.level))
+            prefix = node.module or ""
+            for alias in node.names:
+                mod = f"{prefix}.{alias.name}" if prefix else alias.name
+                results.append((mod, node.level))
         stack.extend(ast.iter_child_nodes(node))
     return results
 
@@ -160,12 +163,13 @@ def test_l0_layer_boundaries(tmp_path: Path) -> None:
     (probe / "capability").mkdir(parents=True)
     (probe / "org").mkdir(parents=True)
     (probe / "profile" / "bad_top.py").write_text(
-        "import app.domains.drafting.update_settings\n"
+        "import app.domains.drafting.update_settings\nfrom app.domains import drafting\n"
     )
     (probe / "capability" / "bad_lazy.py").write_text(
         "def f():\n"
         "    from app.domains.inbox.service import notify\n"
         "    from ..drafting.service import queue_drafting\n"
+        "    from .. import inbox\n"
     )
     (probe / "org" / "bad_cap.py").write_text(
         "from app.domains.capability.department import DepartmentArgs\n"
@@ -180,8 +184,10 @@ def test_l0_layer_boundaries(tmp_path: Path) -> None:
     assert sorted(_l0_boundary_violations(probe)) == sorted(
         [
             "profile/bad_top.py: app.domains.drafting.update_settings",
-            "capability/bad_lazy.py: app.domains.inbox.service",
-            "capability/bad_lazy.py: app.domains.drafting.service",
-            "org/bad_cap.py: app.domains.capability.department",
+            "profile/bad_top.py: app.domains.drafting",
+            "capability/bad_lazy.py: app.domains.inbox.service.notify",
+            "capability/bad_lazy.py: app.domains.drafting.service.queue_drafting",
+            "capability/bad_lazy.py: app.domains.inbox",
+            "org/bad_cap.py: app.domains.capability.department.DepartmentArgs",
         ]
     )
