@@ -1,14 +1,15 @@
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from typing import Literal
+from typing import Literal, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import Uuid, any_, literal
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy import Uuid, any_, case, column, func, literal, true, tuple_
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.orm import QueryableAttribute, load_only
 from sqlmodel import Session, col, select
 
 from app.authz.principal import Principal
@@ -408,20 +409,58 @@ def _published_claim_details(
             )
         ).all()
     }
+    raw_claims = col(ProfileVersion.snapshot)["claims"]
+    claims = func.jsonb_array_elements(
+        case(
+            (func.jsonb_typeof(raw_claims) == "array", raw_claims),
+            else_=literal([], JSONB),
+        )
+    ).table_valued(column("value", JSONB))
+    claim_id = claims.c.value["id"].astext.cast(Uuid)
+    first = {
+        (employee_id, id_): version_id
+        for employee_id, id_, version_id in session.exec(
+            select(ProfileVersion.subject_employee_id, claim_id, ProfileVersion.id)
+            .select_from(ProfileVersion)
+            .join(claims, true())
+            .where(
+                ProfileVersion.org_id == principal.org_id,
+                col(ProfileVersion.subject_employee_id).in_(employee_ids),
+                tuple_(col(ProfileVersion.subject_employee_id), claim_id).in_(
+                    {(employee.id, claim.id) for employee, claim, _ in candidates}
+                ),
+            )
+            .distinct(col(ProfileVersion.subject_employee_id), claim_id)
+            .order_by(
+                col(ProfileVersion.subject_employee_id),
+                claim_id,
+                col(ProfileVersion.revision),
+            )
+        ).all()
+    }
     versions = list(
         session.exec(
             select(ProfileVersion)
             .where(
                 ProfileVersion.org_id == principal.org_id,
-                col(ProfileVersion.subject_employee_id).in_(employee_ids),
+                col(ProfileVersion.id).in_(set(first.values())),
             )
-            .order_by(col(ProfileVersion.revision))
+            .options(
+                load_only(
+                    *cast(
+                        tuple[QueryableAttribute[object], ...],
+                        (
+                            col(ProfileVersion.id),
+                            col(ProfileVersion.revision),
+                            col(ProfileVersion.schema_version_id),
+                            col(ProfileVersion.published_by),
+                            col(ProfileVersion.published_at),
+                        ),
+                    )
+                )
+            )
         ).all()
     )
-    first: dict[tuple[UUID, UUID], UUID] = {}
-    for version in versions:
-        for claim in snapshot_claims(version):
-            first.setdefault((version.subject_employee_id, claim.id), version.id)
     publishers = {
         v.id: summary
         for v, summary in zip(
