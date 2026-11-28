@@ -32,7 +32,7 @@ from tests.utils.im import telegram_server  # noqa: F401
 from tests.utils.migrations import (
     MIGRATION_TEMPLATE,
     isolated_database,
-    sanitize_db_prefix,
+    run_scoped_db_name,
 )
 from tests.utils.org import ORG_MODELS, cleanup_new_users, delete_test_organization
 from tests.utils.pi import _pi_process, pi_service  # noqa: F401
@@ -96,10 +96,9 @@ def migration_template(pytestconfig: pytest.Config) -> str:
 
 @pytest.fixture
 def migration_engine(migration_template: str) -> Generator[Engine]:
-    raw_prefix = os.environ.get("PYTEST_DB_PREFIX", "").strip()
     db_name = (
-        f"{sanitize_db_prefix(raw_prefix)}_mig_{uuid4().hex}"
-        if raw_prefix
+        run_scoped_db_name("mig")
+        if os.environ.get("PYTEST_DB_PREFIX", "").strip()
         else f"migration_test_{uuid4().hex}"
     )
     with isolated_database(

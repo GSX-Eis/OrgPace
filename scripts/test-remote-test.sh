@@ -495,8 +495,37 @@ cp -R "$scratch/real-snap/.remote-test-snapshot" "$scratch/real-worker/"
   done
   expect_failure 'fatal:' env PREFLIGHT_BASE_REF=origin/missing bash "$worker" fixture nere123 preflight 4
 )
-# Verify remote-test-worker.sh warm DB lifecycle: cold start, fast-path reuse,
-# fingerprint rebuild, EPP_WARM_DB=0/probe-failure fallback, playwright isolation, and prefix cleanup.
+# Verify remote-test.sh validates and forwards EPP_WARM_DB / EPP_WARM_DB_PORT via SSH remote_env.
+expect_failure 'Set EPP_WARM_DB to 0 or 1' env COMPOSE_PROJECT_NAME=nere123 EPP_WARM_DB=2 "$runner" --force --no-cache pytest tests/test_a.py
+expect_failure 'Set EPP_WARM_DB_PORT' env COMPOSE_PROJECT_NAME=nere123 EPP_WARM_DB_PORT=5432 "$runner" --force --no-cache pytest tests/test_a.py
+mkdir -p "$scratch/ssh-bin"
+cat > "$scratch/ssh-bin/gcloud" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  'compute instances describe example-instance --project sample-project '*)
+    printf '%s\n' '{"status":"RUNNING"}' ;;
+  'compute ssh '*)
+    for arg in "$@"; do
+      if [[ $arg == --command=* ]]; then printf '%s\n' "${arg#--command=}" >> "$MOCK_SSH_LOG"; fi
+    done ;;
+  *) echo "Unexpected gcloud: $*" >&2; exit 3 ;;
+esac
+MOCK
+cat > "$scratch/ssh-bin/rsync" <<'MOCK'
+#!/usr/bin/env bash
+exit 0
+MOCK
+chmod +x "$scratch/ssh-bin/"*
+: > "$scratch/ssh.log"
+env PATH="$scratch/ssh-bin:$PATH" MOCK_SSH_LOG="$scratch/ssh.log" \
+  COMPOSE_PROJECT_NAME=nere123 EPP_WARM_DB=0 EPP_WARM_DB_PORT=14533 \
+  "$runner" --force --no-cache pytest tests/test_a.py >/dev/null
+grep -Fq 'EPP_WARM_DB=0' "$scratch/ssh.log" && grep -Fq 'EPP_WARM_DB_PORT=14533' "$scratch/ssh.log"
+
+# Verify remote-test-worker.sh warm DB lifecycle: real kernel fcntl.flock usage lease,
+# cold start, fast-path reuse, dynamic Compose command rebuild, B1 concurrent protection,
+# EPP_WARM_DB=0/probe-failure fallback, playwright isolation, and prefix cleanup.
 mkdir -p "$scratch/warm-repo/backend/.venv/bin" "$scratch/warm-repo/pi/node_modules" \
   "$scratch/warm-repo/tests" "$scratch/warm-repo/scripts" "$scratch/warm-repo/frontend" "$scratch/warm-bin"
 cp "$scripts_dir/remote-test-worker.sh" "$scratch/warm-repo/scripts/remote-test-worker.sh"
@@ -506,15 +535,50 @@ printf 'services:\n  db:\n    command: ["postgres", "-c", "fsync=off"]\n' > "$sc
 printf 'lock\n' > "$scratch/warm-repo/pi/package-lock.json"
 python3 -c 'import hashlib, pathlib; p = pathlib.Path(r"'"$scratch"'/warm-repo/pi"); (p / "node_modules/.package-lock.sha256").write_text(hashlib.sha256((p / "package-lock.json").read_bytes()).hexdigest() + "\n")'
 
-printf '#!/usr/bin/env bash\nexit 0\n' > "$scratch/warm-bin/flock"
+cat > "$scratch/warm-bin/flock" <<'MOCK'
+#!/usr/bin/env python3
+import fcntl, sys, time
+args = sys.argv[1:]
+mode, nonblock, wait_s, fail_rc = fcntl.LOCK_EX, False, 0.0, 1
+i = 0
+while i < len(args):
+    a = args[i]
+    if a.startswith("-") and not a[1:].isdigit():
+        if "s" in a: mode = fcntl.LOCK_SH
+        if "x" in a: mode = fcntl.LOCK_EX
+        if "n" in a: nonblock = True
+        if a == "-E": fail_rc = int(args[i + 1]); i += 1
+        elif a == "-w": wait_s = float(args[i + 1]); i += 1
+    else:
+        fd = int(a)
+    i += 1
+deadline = time.monotonic() + wait_s
+while True:
+    try:
+        fcntl.flock(fd, mode | (fcntl.LOCK_NB if (nonblock or wait_s > 0) else 0))
+        sys.exit(0)
+    except BlockingIOError:
+        if nonblock or time.monotonic() >= deadline:
+            sys.exit(fail_rc)
+        time.sleep(0.02)
+MOCK
 printf '#!/usr/bin/env bash\nexit 1\n' > "$scratch/warm-bin/lsof"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$scratch/warm-bin/bun"
 # shellcheck disable=SC2016
 {
   printf '#!/usr/bin/env bash\nprintf "playwright_base=%%s\\n" "${PLAYWRIGHT_BASE_URL:-}" >> "$MOCK_PYTEST_LOG"\n' > "$scratch/warm-bin/bunx"
   printf '#!/usr/bin/env bash\npython3 -c "import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest(), sys.argv[1])" "$1"\n' > "$scratch/warm-bin/sha256sum"
-  printf '#!/usr/bin/env bash\nprintf "cmd=%%s POSTGRES_PORT=%%s PYTEST_SHARED_TEMPLATE=%%s PYTEST_DB_PREFIX=%%s\\n" "$*" "${POSTGRES_PORT:-}" "${PYTEST_SHARED_TEMPLATE:-}" "${PYTEST_DB_PREFIX:-}" >> "$MOCK_PYTEST_LOG"\n' > "$scratch/warm-bin/uv"
 }
+cat > "$scratch/warm-bin/uv" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ -n ${MOCK_HOLD_TOUCH:-} && -n ${MOCK_HOLD_WAIT:-} ]]; then
+  touch "$MOCK_HOLD_TOUCH"
+  while [[ ! -f $MOCK_HOLD_WAIT ]]; do sleep 0.02; done
+fi
+printf 'cmd=%s POSTGRES_PORT=%s PYTEST_SHARED_TEMPLATE=%s PYTEST_DB_PREFIX=%s\n' \
+  "$*" "${POSTGRES_PORT:-}" "${PYTEST_SHARED_TEMPLATE:-}" "${PYTEST_DB_PREFIX:-}" >> "$MOCK_PYTEST_LOG"
+MOCK
 cat > "$scratch/warm-bin/docker" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -526,7 +590,9 @@ case "${1:-}" in
   compose)
     shift; proj=''; args=("$@")
     for ((i=0; i<${#args[@]}; i++)); do [[ ${args[i]} == -p && $((i+1)) -lt ${#args[@]} ]] && proj=${args[i+1]}; done
-    if [[ " $* " == *" up -d "* && $proj == epp-warm-db ]]; then touch "$MOCK_WARM_RUNNING"
+    if [[ " $* " == *" config --format json "* ]]; then
+      python3 -c 'import json, pathlib, re; t = pathlib.Path("tests/postgres-fast.yml").read_text(); m = re.search(r"command:\s*(\[.*\])", t); print(json.dumps({"services": {"db": {"command": json.loads(m.group(1))}}}))'
+    elif [[ " $* " == *" up -d "* && $proj == epp-warm-db ]]; then touch "$MOCK_WARM_RUNNING"
     elif [[ " $* " == *" down "* && $proj == epp-warm-db ]]; then rm -f "$MOCK_WARM_RUNNING"
     elif [[ " $* " == *" port db 5432 "* ]]; then [[ $proj == epp-warm-db ]] && echo '127.0.0.1:14532' || echo "127.0.0.1:${POSTGRES_PORT}"; fi ;;
 esac
@@ -534,9 +600,12 @@ MOCK
 cat > "$scratch/warm-repo/backend/.venv/bin/python" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ ${1:-} == -c ]]; then
+  printf 'cleanup_prefix=%s\n' "${PYTEST_DB_PREFIX:-}" >> "$MOCK_CLEANUP_LOG"
+  exit 0
+fi
 script=$(cat)
 if grep -Fq 'SELECT 1' <<< "$script"; then [[ ${MOCK_PROBE_FAIL:-0} == 0 ]]; exit $?; fi
-if grep -Fq 'DROP DATABASE IF EXISTS' <<< "$script"; then printf 'cleanup_prefix=%s\n' "${PYTEST_DB_PREFIX:-}" >> "$MOCK_CLEANUP_LOG"; fi
 MOCK
 chmod +x "$scratch/warm-bin/"* "$scratch/warm-repo/backend/.venv/bin/python"
 
@@ -549,7 +618,7 @@ warm_env=(env PATH="$scratch/warm-bin:$PATH" EPP_WARM_DB_DIR="$warm_test_dir/dot
   grep -Fq 'compose --env-file /dev/null -p epp-warm-db' "$warm_test_dir/docker.log"
   grep -Fq 'up -d --wait db' "$warm_test_dir/docker.log"
   [[ $(tail -n 1 "$warm_test_dir/docker.log") != *" down "* ]]
-  grep -Fq 'max_connections=300' "$warm_test_dir/dot-warm/warm-override.yml"
+  grep -Fq '"max_connections=300"' "$warm_test_dir/dot-warm/warm-override.yml"
   grep -Fq '127.0.0.1:14532:5432' "$warm_test_dir/dot-warm/warm-override.yml"
   python3 -c 'import os, stat, sys; assert stat.S_IMODE(os.stat(sys.argv[1]).st_mode) == 0o600' "$warm_test_dir/dot-warm/password"
   grep -Eq 'POSTGRES_PORT=14532 PYTEST_SHARED_TEMPLATE=1 PYTEST_DB_PREFIX=r123_[0-9a-f]{8}' "$warm_test_dir/pytest.log"
@@ -562,10 +631,35 @@ warm_env=(env PATH="$scratch/warm-bin:$PATH" EPP_WARM_DB_DIR="$warm_test_dir/dot
   prefix2=$(sed -n 's/.*PYTEST_DB_PREFIX=\([^ ]*\).*/\1/p' "$warm_test_dir/pytest.log")
   [[ -n $prefix2 && $prefix1 != "$prefix2" ]]
 
+  # B6: Fingerprint change preserves dynamic Postgres flags (e.g. work_mem=64MB) alongside max_connections=300.
   printf 'services:\n  db:\n    command: ["postgres", "-c", "fsync=off", "-c", "work_mem=64MB"]\n' > tests/postgres-fast.yml
   : > "$warm_test_dir/docker.log"
   "${warm_env[@]}" bash scripts/remote-test-worker.sh run00003 nere123 pytest '' tests/test_a.py -q
   grep -Fq 'up -d --wait db' "$warm_test_dir/docker.log"
+  grep -Fq '"work_mem=64MB"' "$warm_test_dir/dot-warm/warm-override.yml" && grep -Fq '"max_connections=300"' "$warm_test_dir/dot-warm/warm-override.yml"
+
+  # B1: While A holds shared warm lease, B (fingerprint change or probe fail) NEVER tears down epp-warm-db and falls back safely.
+  cp -R "$scratch/warm-repo" "$scratch/warm-repo-b"
+  printf 'services:\n  db:\n    command: ["postgres", "-c", "fsync=off", "-c", "work_mem=128MB"]\n' > "$scratch/warm-repo-b/tests/postgres-fast.yml"
+  "${warm_env[@]}" env MOCK_HOLD_TOUCH="$warm_test_dir/a.active" MOCK_HOLD_WAIT="$warm_test_dir/a.release" \
+    bash scripts/remote-test-worker.sh runA nere123 pytest '' tests/test_a.py -q &
+  pid_a=$!
+  for _ in {1..100}; do [[ -f $warm_test_dir/a.active ]] && break; sleep 0.02; done
+  [[ -f $warm_test_dir/a.active ]]
+  for b_mode in "fp_change" "probe_fail"; do
+    : > "$warm_test_dir/docker.log"; : > "$warm_test_dir/pytest.log"
+    b_dir=$([[ $b_mode == fp_change ]] && echo "$scratch/warm-repo-b" || echo "$scratch/warm-repo")
+    b_probe=$([[ $b_mode == probe_fail ]] && echo 1 || echo 0)
+    (cd "$b_dir" && "${warm_env[@]}" env MOCK_PROBE_FAIL="$b_probe" bash scripts/remote-test-worker.sh "runB_$b_mode" nere124 pytest '' tests/test_a.py -q 2>/dev/null)
+    if grep -E -- '-p epp-warm-db.*(up -d|down )' "$warm_test_dir/docker.log"; then exit 1; fi
+    grep -Fq -- '-p nere124' "$warm_test_dir/docker.log" && grep -Fq 'POSTGRES_PORT=15124' "$warm_test_dir/pytest.log"
+  done
+  touch "$warm_test_dir/a.release"
+  wait "$pid_a"
+  : > "$warm_test_dir/docker.log"
+  (cd "$scratch/warm-repo-b" && "${warm_env[@]}" bash scripts/remote-test-worker.sh runC nere124 pytest '' tests/test_a.py -q)
+  grep -E -- '-p epp-warm-db.*up -d --wait db' "$warm_test_dir/docker.log"
+  grep -Fq '"work_mem=128MB"' "$warm_test_dir/dot-warm/warm-override.yml"
 
   for fallback_env in "EPP_WARM_DB=0" "MOCK_PROBE_FAIL=1"; do
     : > "$warm_test_dir/docker.log"; : > "$warm_test_dir/pytest.log"; : > "$warm_test_dir/cleanup.log"

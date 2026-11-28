@@ -79,12 +79,17 @@ def _create_template(stack: ExitStack, url: URL) -> str:
         ensure_shared_template,
         isolated_database,
         migrate,
+        run_scoped_db_name,
     )
 
     if _shared_template_mode():
-        return ensure_shared_template(url)
+        return ensure_shared_template(url, lease_stack=stack)
 
-    template = f"migration_template_{uuid4().hex}"
+    template = (
+        run_scoped_db_name("tpl")
+        if os.environ.get("PYTEST_DB_PREFIX", "").strip()
+        else f"migration_template_{uuid4().hex}"
+    )
     engine = stack.enter_context(isolated_database(url, template))
     migrate(engine, "upgrade", "head")
     engine.dispose()
@@ -120,17 +125,14 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     from tests.utils.migrations import (
         MIGRATION_TEMPLATE,
         isolated_database,
-        sanitize_db_prefix,
+        run_scoped_db_name,
     )
 
     with ExitStack() as stack:
         url = _database_url()
         raw_worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
         worker = re.sub(r"[^A-Za-z0-9_]", "_", raw_worker)[:9] or "main"
-        prefix = sanitize_db_prefix(
-            os.environ.get("PYTEST_DB_PREFIX"), fallback=url.database or "app"
-        )
-        database = f"{prefix}_{worker}_{uuid4().hex}"
+        database = run_scoped_db_name(worker, fallback_prefix=url.database or "app")
         patch = stack.enter_context(pytest.MonkeyPatch.context())
         # Configure before importing any app module, including Alembic's model imports.
         patch.setenv(

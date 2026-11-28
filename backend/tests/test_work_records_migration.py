@@ -16,7 +16,12 @@ from app.domains.source.models import SourceConnection, SyncRun
 from app.domains.work.models import SyncRunTask, Task
 from app.domains.work.preview import list_work_records
 from app.models import User
-from tests.utils.migrations import insert_historical_rows, isolated_database, migrate
+from tests.utils.migrations import (
+    insert_historical_rows,
+    isolated_database,
+    migrate,
+    run_scoped_db_name,
+)
 
 
 def _seed_org_records(
@@ -214,7 +219,8 @@ def test_upgrade_from_current_c910001bc001_preserves_existing_data(
 @pytest.mark.slow
 def test_fresh_empty_database_install_and_roundtrip(migration_engine: Engine) -> None:
     with isolated_database(
-        migration_engine.url, f"fresh_install_{uuid4().hex}"
+        migration_engine.url,
+        run_scoped_db_name("fresh", fallback_prefix="fresh_install"),
     ) as fresh_engine:
         migrate(fresh_engine, "upgrade", "head")
         insp = inspect(fresh_engine)
