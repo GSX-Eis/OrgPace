@@ -13,6 +13,7 @@ x-backend: &backend
     FASTAPI_ENV:
     DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?Variable not set}@db:5432/app
     SENTRY_DSN: ${SENTRY_DSN:-}
+    SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.1}
     LOGIN_MAX_FAILURES: ${LOGIN_MAX_FAILURES:-5}
     LOGIN_MAX_FAILURES_PER_IP: ${LOGIN_MAX_FAILURES_PER_IP:-300}
     LOGIN_LOCK_MINUTES: ${LOGIN_LOCK_MINUTES:-15}
@@ -86,6 +87,8 @@ services:
     command: ["python", "-m", "app.im"]
     restart: unless-stopped
     depends_on:
+      pi:
+        condition: service_healthy
       prestart:
         condition: service_completed_successfully
 

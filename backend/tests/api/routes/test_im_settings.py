@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import Engine, inspect, text
 from sqlmodel import Session, select
 
+from app.core.observability import before_breadcrumb
 from app.core.secrets import decrypt_secret
 from app.domains.audit.models import AuditEvent
 from app.domains.im.models import ImSetting
@@ -162,7 +163,9 @@ def test_connection(
         ).status_code
         == 200
     )
-    with sentry_sdk.init(dsn="", default_integrations=True):
+    with sentry_sdk.init(
+        dsn="", default_integrations=True, before_breadcrumb=before_breadcrumb
+    ):
 
         def unexpected_release() -> None:
             pytest.fail("Telegram requests must not auto-detect a Sentry release")

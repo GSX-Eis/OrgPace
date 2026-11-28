@@ -13,7 +13,6 @@ from urllib.parse import quote
 from uuid import UUID
 
 import httpx
-import sentry_sdk
 from pydantic import JsonValue, TypeAdapter, ValidationError
 
 from app.domains.bot.attachments import AttachmentError, size_limit
@@ -109,18 +108,14 @@ class Feishu:
         if authenticated:
             await self._authenticate()
         try:
-            with sentry_sdk.new_scope() as scope:
-                scope.set_client(
-                    sentry_sdk.Client(dsn="", default_integrations=False, release="")
-                )
-                response = await self.client.request(
-                    method,
-                    path,
-                    json=body,
-                    headers={"Authorization": f"Bearer {self.token}"}
-                    if authenticated
-                    else {},
-                )
+            response = await self.client.request(
+                method,
+                path,
+                json=body,
+                headers={"Authorization": f"Bearer {self.token}"}
+                if authenticated
+                else {},
+            )
             if response.status_code in (401, 403):
                 raise ImError("credentials")
             if response.status_code == 429:
@@ -186,33 +181,29 @@ class Feishu:
         limit = size_limit(filename)
         await self._authenticate()
         try:
-            with sentry_sdk.new_scope() as scope:
-                scope.set_client(
-                    sentry_sdk.Client(dsn="", default_integrations=False, release="")
-                )
-                async with self.client.stream(
-                    "GET",
-                    f"im/v1/messages/{quote(message_id, safe='')}/resources/{quote(key, safe='')}",
-                    params={"type": kind},
-                    headers={"Authorization": f"Bearer {self.token}"},
-                ) as response:
-                    if response.status_code in (400, 401, 403):
-                        raise AttachmentError(
-                            "无法读取文件，请让管理员在飞书开放平台开通文件权限"
-                        )
-                    if response.status_code != 200:
-                        raise AttachmentError("无法读取文件，请稍后重试")
-                    if int(response.headers.get("content-length", "0")) > limit:
+            async with self.client.stream(
+                "GET",
+                f"im/v1/messages/{quote(message_id, safe='')}/resources/{quote(key, safe='')}",
+                params={"type": kind},
+                headers={"Authorization": f"Bearer {self.token}"},
+            ) as response:
+                if response.status_code in (400, 401, 403):
+                    raise AttachmentError(
+                        "无法读取文件，请让管理员在飞书开放平台开通文件权限"
+                    )
+                if response.status_code != 200:
+                    raise AttachmentError("无法读取文件，请稍后重试")
+                if int(response.headers.get("content-length", "0")) > limit:
+                    raise AttachmentError(
+                        "文件超出限制：图片不超过 5 MB，文件不超过 10 MB"
+                    )
+                data = bytearray()
+                async for chunk in response.aiter_bytes(64 * 1024):
+                    if len(data) + len(chunk) > limit:
                         raise AttachmentError(
                             "文件超出限制：图片不超过 5 MB，文件不超过 10 MB"
                         )
-                    data = bytearray()
-                    async for chunk in response.aiter_bytes(64 * 1024):
-                        if len(data) + len(chunk) > limit:
-                            raise AttachmentError(
-                                "文件超出限制：图片不超过 5 MB，文件不超过 10 MB"
-                            )
-                        data.extend(chunk)
+                    data.extend(chunk)
         except httpx.HTTPError, ValueError:
             raise AttachmentError("无法读取文件，请稍后重试") from None
         if kind == "image":

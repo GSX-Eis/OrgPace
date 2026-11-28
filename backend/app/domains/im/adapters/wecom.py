@@ -8,7 +8,6 @@ from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
 import httpx
-import sentry_sdk
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import WebSocketException
 
@@ -73,16 +72,12 @@ class Wecom:
         )
         self.pending[req_id] = future
         try:
-            with sentry_sdk.new_scope() as scope:
-                scope.set_client(
-                    sentry_sdk.Client(dsn="", default_integrations=False, release="")
+            await self.socket.send(
+                json.dumps(
+                    {"cmd": cmd, "headers": {"req_id": req_id}, "body": body or {}}
                 )
-                await self.socket.send(
-                    json.dumps(
-                        {"cmd": cmd, "headers": {"req_id": req_id}, "body": body or {}}
-                    )
-                )
-                frame = await asyncio.wait_for(future, 5)
+            )
+            frame = await asyncio.wait_for(future, 5)
             if frame.get("errcode") != 0:
                 if frame.get("errcode") in (45009, 45033):
                     raise ImError("rate_limited", retryable=True)
@@ -335,52 +330,48 @@ class Wecom:
             return None
         private = _private_http.set(True)
         try:
-            with sentry_sdk.new_scope() as scope:
-                scope.set_client(
-                    sentry_sdk.Client(dsn="", default_integrations=False, release="")
+            response = await self.client.get(
+                "https://qyapi.weixin.qq.com/cgi-bin/gettoken",
+                params={
+                    "corpid": self.credentials["corp_id"],
+                    "corpsecret": self.credentials["contact_secret"],
+                },
+            )
+            token = response.json().get("access_token")
+            if response.status_code != 200 or not isinstance(token, str):
+                return None
+            params = {"access_token": token, "userid": user}
+            response = await self.client.get(
+                "https://qyapi.weixin.qq.com/cgi-bin/user/get", params=params
+            )
+            data = response.json()
+            if data.get("errcode"):
+                converted = await self.client.post(
+                    "https://qyapi.weixin.qq.com/cgi-bin/batch/openuserid_to_userid",
+                    params={"access_token": token},
+                    json={"open_userid_list": [user]},
                 )
-                response = await self.client.get(
-                    "https://qyapi.weixin.qq.com/cgi-bin/gettoken",
-                    params={
-                        "corpid": self.credentials["corp_id"],
-                        "corpsecret": self.credentials["contact_secret"],
-                    },
-                )
-                token = response.json().get("access_token")
-                if response.status_code != 200 or not isinstance(token, str):
+                matches = converted.json().get("userid_list", [])
+                if (
+                    converted.status_code != 200
+                    or len(matches) != 1
+                    or matches[0].get("open_userid") != user
+                ):
                     return None
-                params = {"access_token": token, "userid": user}
+                params["userid"] = matches[0]["userid"]
                 response = await self.client.get(
                     "https://qyapi.weixin.qq.com/cgi-bin/user/get", params=params
                 )
                 data = response.json()
-                if data.get("errcode"):
-                    converted = await self.client.post(
-                        "https://qyapi.weixin.qq.com/cgi-bin/batch/openuserid_to_userid",
-                        params={"access_token": token},
-                        json={"open_userid_list": [user]},
-                    )
-                    matches = converted.json().get("userid_list", [])
-                    if (
-                        converted.status_code != 200
-                        or len(matches) != 1
-                        or matches[0].get("open_userid") != user
-                    ):
-                        return None
-                    params["userid"] = matches[0]["userid"]
-                    response = await self.client.get(
-                        "https://qyapi.weixin.qq.com/cgi-bin/user/get", params=params
-                    )
-                    data = response.json()
-                email = data.get("biz_mail")
-                return (
-                    email
-                    if response.status_code == 200
-                    and data.get("errcode") == 0
-                    and isinstance(email, str)
-                    and "@" in email
-                    else None
-                )
+            email = data.get("biz_mail")
+            return (
+                email
+                if response.status_code == 200
+                and data.get("errcode") == 0
+                and isinstance(email, str)
+                and "@" in email
+                else None
+            )
         except httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError:
             return None
         finally:
